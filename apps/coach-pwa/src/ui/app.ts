@@ -46,6 +46,23 @@ type LiveDeviceRow = FleetDevice & {
 };
 
 const ONLINE_SEC = 120;
+const LS_MAP_FOLLOW = 'crewsight_map_follow_fleet';
+
+function loadMapFollowPref(): boolean {
+  try {
+    return localStorage.getItem(LS_MAP_FOLLOW) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function saveMapFollowPref(enabled: boolean) {
+  try {
+    localStorage.setItem(LS_MAP_FOLLOW, enabled ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
 
 /** Resolve static assets for web (/) and Capacitor (./). */
 function asset(path: string): string {
@@ -65,7 +82,8 @@ export function mountApp(root: HTMLElement): void {
   let markersLayer: L.LayerGroup | null = null;
   /** @type {Map<string, L.Marker>} */
   const markers = new Map<string, L.Marker>();
-  let mapAutoFitDone = false;
+  /** When true, map pans/zooms to keep active devices in view. Toggle via Follow fleet button. */
+  let mapFollowFleet = loadMapFollowPref();
   let mapTickUnsub: (() => void) | null = null;
   let historyPanel: HistoryPanel | null = null;
 
@@ -155,7 +173,6 @@ export function mountApp(root: HTMLElement): void {
     if (!el) return;
     if (map && map.getContainer() !== el) {
       destroyMap();
-      mapAutoFitDone = false;
     }
     if (map) return;
     try {
@@ -165,6 +182,18 @@ export function mountApp(root: HTMLElement): void {
         attribution: '&copy; OpenStreetMap',
       }).addTo(map);
       markersLayer = L.layerGroup().addTo(map);
+      map.on('dragstart', () => {
+        if (!mapFollowFleet) return;
+        mapFollowFleet = false;
+        saveMapFollowPref(false);
+        updateMapFollowButton();
+      });
+      map.on('zoomstart', (e: L.LeafletEvent) => {
+        if (!e.originalEvent || !mapFollowFleet) return;
+        mapFollowFleet = false;
+        saveMapFollowPref(false);
+        updateMapFollowButton();
+      });
       setTimeout(() => map?.invalidateSize(), 150);
     } catch (e) {
       setStatus(
@@ -202,6 +231,75 @@ export function mountApp(root: HTMLElement): void {
     return L.latLng(lat, lon);
   }
 
+  function activeMapLatLngs(): L.LatLng[] {
+    const posById = new Map(positions.map((p) => [p.deviceId, p]));
+    const latlngs: L.LatLng[] = [];
+    for (const d of devices) {
+      if (!d.online) continue;
+      const p = posById.get(d.deviceId);
+      if (!p || !Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) continue;
+      const ago = d.lastSeenAgoSec ?? p.lastSeenAgoSec ?? p.fixAgeSec ?? 999;
+      if (ago > ONLINE_SEC) continue;
+      latlngs.push(mapLatLngFor(p));
+    }
+    return latlngs;
+  }
+
+  function expandBoundsMinSpan(bounds: L.LatLngBounds, minMeters: number): L.LatLngBounds {
+    const center = bounds.getCenter();
+    const ne = bounds.getNorthEast();
+    if (center.distanceTo(ne) >= minMeters / 2) return bounds;
+    const halfLat = minMeters / 2 / 111_320;
+    const cosLat = Math.max(Math.cos((center.lat * Math.PI) / 180), 0.2);
+    const halfLng = minMeters / 2 / (111_320 * cosLat);
+    return L.latLngBounds(
+      [center.lat - halfLat, center.lng - halfLng],
+      [center.lat + halfLat, center.lng + halfLng],
+    );
+  }
+
+  function fleetOutsideMapInset(latlngs: L.LatLng[]): boolean {
+    if (!map || latlngs.length === 0) return false;
+    const view = map.getBounds();
+    const latSpan = view.getNorth() - view.getSouth();
+    const lngSpan = view.getEast() - view.getWest();
+    const inset = L.latLngBounds(
+      [view.getSouth() + latSpan * 0.15, view.getWest() + lngSpan * 0.15],
+      [view.getNorth() - latSpan * 0.15, view.getEast() - lngSpan * 0.15],
+    );
+    return latlngs.some((ll) => !inset.contains(ll));
+  }
+
+  function fitMapToActiveDevices(latlngs: L.LatLng[]) {
+    if (!map || latlngs.length === 0) return;
+    if (latlngs.length === 1) {
+      const zoom = Math.min(Math.max(map.getZoom(), 15), 17);
+      map.setView(latlngs[0], zoom, { animate: true });
+      return;
+    }
+    let bounds = L.latLngBounds(latlngs);
+    bounds = expandBoundsMinSpan(bounds, 250);
+    map.fitBounds(bounds, { padding: [48, 48], maxZoom: 16, animate: true });
+  }
+
+  function followActiveDevicesOnMap() {
+    if (!mapFollowFleet) return;
+    const active = activeMapLatLngs();
+    if (active.length === 0) return;
+    if (active.length === 1) {
+      fitMapToActiveDevices(active);
+      return;
+    }
+    if (fleetOutsideMapInset(active)) fitMapToActiveDevices(active);
+  }
+
+  function updateMapFollowButton() {
+    const btn = root.querySelector('[data-map-follow]') as HTMLButtonElement | null;
+    if (!btn) return;
+    btn.classList.toggle('coach-btn--active', mapFollowFleet);
+    btn.setAttribute('aria-pressed', mapFollowFleet ? 'true' : 'false');
+  }
+
   function updateMap() {
     ensureMap();
     if (!map || !markersLayer) return;
@@ -230,10 +328,7 @@ export function mountApp(root: HTMLElement): void {
         markers.delete(id);
       }
     }
-    if (latlngs.length > 0 && !mapAutoFitDone) {
-      map.fitBounds(L.latLngBounds(latlngs), { padding: [32, 32], maxZoom: 15 });
-      mapAutoFitDone = true;
-    }
+    followActiveDevicesOnMap();
     setTimeout(() => map?.invalidateSize(), 100);
   }
 
@@ -399,7 +494,6 @@ export function mountApp(root: HTMLElement): void {
 
   function render() {
     if (tab === 'live') destroyMap();
-    mapAutoFitDone = false;
     const caps = capsizeCount();
     root.innerHTML = `
       <div class="coach-app">
@@ -431,6 +525,9 @@ export function mountApp(root: HTMLElement): void {
         </nav>
         <section class="coach-panel" data-panel="live" ${tab === 'live' ? '' : 'hidden'}>
           <p class="poll-line" data-poll-status>—</p>
+          <div class="coach-map-bar">
+            <button type="button" class="coach-btn coach-btn--ghost ${mapFollowFleet ? 'coach-btn--active' : ''}" data-map-follow aria-pressed="${mapFollowFleet ? 'true' : 'false'}">Follow fleet</button>
+          </div>
           <div id="coachMap" class="coach-map"></div>
           <div class="live-devices-section">
             <h2 class="live-devices__title">Active devices <span class="live-devices__count" data-active-count>0</span></h2>
@@ -453,6 +550,12 @@ export function mountApp(root: HTMLElement): void {
         </section>
       </div>`;
 
+    root.querySelector('[data-map-follow]')?.addEventListener('click', () => {
+      mapFollowFleet = !mapFollowFleet;
+      saveMapFollowPref(mapFollowFleet);
+      updateMapFollowButton();
+      if (mapFollowFleet) followActiveDevicesOnMap();
+    });
     root.querySelector('[data-start-monitor]')?.addEventListener('click', () => void onStartMonitoring());
     root.querySelector('[data-stop-monitor]')?.addEventListener('click', () => void onStopMonitoring());
     root.querySelectorAll('[data-tab]').forEach((btn) => {

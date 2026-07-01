@@ -3,6 +3,7 @@ const LS_POLL = 'rnz_dashboard_poll_ms';
 const LS_POLL_BEFORE_SMOOTH = 'rnz_dashboard_poll_before_smooth';
 const LS_STALE = 'rnz_dashboard_stale_sec';
 const LS_MAP_POSITION = 'rnz_dashboard_map_position';
+const LS_MAP_FOLLOW = 'rnz_dashboard_map_follow';
 /** @deprecated migrated to LS_MAP_POSITION */
 const LS_LIVE_MAP = 'rnz_dashboard_live_map';
 const LS_PREDICT_MODE = 'rnz_dashboard_predict_mode';
@@ -26,8 +27,7 @@ let map = null;
 let markersLayer = null;
 /** @type {Map<string, L.Marker>} */
 const deviceMarkers = new Map();
-let mapAutoFitDone = false;
-let mapUserInteracted = false;
+let mapFollowFleet = loadMapFollowPref();
 let mapIgnoreMoveEvents = false;
 let lastPollDurationMs = null;
 let lastMapDurationMs = null;
@@ -516,6 +516,94 @@ function updateRowingSummary(devices) {
   }
 }
 
+function loadMapFollowPref() {
+  try {
+    return localStorage.getItem(LS_MAP_FOLLOW) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function saveMapFollowPref(enabled) {
+  try {
+    localStorage.setItem(LS_MAP_FOLLOW, enabled ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
+function updateMapFollowButton() {
+  const btn = $('#mapFollowBtn');
+  if (!btn) return;
+  btn.classList.toggle('hub-btn--active', mapFollowFleet);
+  btn.setAttribute('aria-pressed', mapFollowFleet ? 'true' : 'false');
+}
+
+function activeMapLatLngsFromPositions(positions) {
+  const latlngs = [];
+  for (const p of positions) {
+    if (p.latitude == null || p.longitude == null) continue;
+    if (!p.online) continue;
+    const ago = p.lastSeenAgoSec ?? p.fixAgeSec ?? 999;
+    if (ago > ONLINE_SEC) continue;
+    const { lat, lon } = displayLatLonForPosition(p);
+    latlngs.push(L.latLng(lat, lon));
+  }
+  return latlngs;
+}
+
+function expandBoundsMinSpan(bounds, minMeters) {
+  const center = bounds.getCenter();
+  const ne = bounds.getNorthEast();
+  if (center.distanceTo(ne) >= minMeters / 2) return bounds;
+  const halfLat = minMeters / 2 / 111320;
+  const cosLat = Math.max(Math.cos((center.lat * Math.PI) / 180), 0.2);
+  const halfLng = minMeters / 2 / (111320 * cosLat);
+  return L.latLngBounds(
+    [center.lat - halfLat, center.lng - halfLng],
+    [center.lat + halfLat, center.lng + halfLng],
+  );
+}
+
+function fleetOutsideMapInset(latlngs) {
+  if (!map || latlngs.length === 0) return false;
+  const view = map.getBounds();
+  const latSpan = view.getNorth() - view.getSouth();
+  const lngSpan = view.getEast() - view.getWest();
+  const inset = L.latLngBounds(
+    [view.getSouth() + latSpan * 0.15, view.getWest() + lngSpan * 0.15],
+    [view.getNorth() - latSpan * 0.15, view.getEast() - lngSpan * 0.15],
+  );
+  return latlngs.some((ll) => !inset.contains(ll));
+}
+
+function fitMapToActiveDevices(latlngs) {
+  if (!map || latlngs.length === 0) return;
+  mapIgnoreMoveEvents = true;
+  if (latlngs.length === 1) {
+    const zoom = Math.min(Math.max(map.getZoom(), 15), 17);
+    map.setView(latlngs[0], zoom, { animate: true });
+  } else {
+    let bounds = L.latLngBounds(latlngs);
+    bounds = expandBoundsMinSpan(bounds, 250);
+    map.fitBounds(bounds, { padding: [48, 48], maxZoom: 16, animate: true });
+  }
+  setTimeout(() => {
+    mapIgnoreMoveEvents = false;
+  }, 150);
+}
+
+function followActiveDevicesOnMap(positions) {
+  if (!mapFollowFleet) return;
+  const active = activeMapLatLngsFromPositions(positions);
+  if (active.length === 0) return;
+  if (active.length === 1) {
+    fitMapToActiveDevices(active);
+    return;
+  }
+  if (fleetOutsideMapInset(active)) fitMapToActiveDevices(active);
+}
+
 function esc(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -536,7 +624,10 @@ function initMap() {
   markersLayer = L.layerGroup().addTo(map);
 
   const onUserMapMove = () => {
-    if (!mapIgnoreMoveEvents) mapUserInteracted = true;
+    if (mapIgnoreMoveEvents || !mapFollowFleet) return;
+    mapFollowFleet = false;
+    saveMapFollowPref(false);
+    updateMapFollowButton();
   };
   map.on('zoomstart', onUserMapMove);
   map.on('dragstart', onUserMapMove);
@@ -548,20 +639,7 @@ function initMap() {
   if (typeof window.dashboardInitSections === 'function') {
     window.dashboardInitSections();
   }
-}
-
-function maybeAutoFitMap(latlngs) {
-  if (!map || mapUserInteracted || latlngs.length === 0 || mapAutoFitDone) return;
-  mapIgnoreMoveEvents = true;
-  if (latlngs.length === 1) {
-    map.setView(latlngs[0], Math.max(map.getZoom(), MAP_ZOOM));
-  } else {
-    map.fitBounds(L.latLngBounds(latlngs), { padding: [36, 36] });
-  }
-  mapAutoFitDone = true;
-  setTimeout(() => {
-    mapIgnoreMoveEvents = false;
-  }, 100);
+  updateMapFollowButton();
 }
 
 /** @returns {'live' | 'amber' | 'lost'} */
@@ -699,7 +777,7 @@ function updateMap(positions) {
 
   setCapsizeUiActive(capsizeN > 0);
 
-  maybeAutoFitMap(latlngs);
+  followActiveDevicesOnMap(positions);
 }
 
 function mergeMapWithDeviceGps(devices, positions) {
@@ -1185,6 +1263,12 @@ function init() {
   });
 
   $('#refreshBtn')?.addEventListener('click', () => void poll());
+  $('#mapFollowBtn')?.addEventListener('click', () => {
+    mapFollowFleet = !mapFollowFleet;
+    saveMapFollowPref(mapFollowFleet);
+    updateMapFollowButton();
+    if (mapFollowFleet) followActiveDevicesOnMap(latestMapPositions);
+  });
   $('#clearCapsizeBtn')?.addEventListener('click', () => void clearCapsizeAlert());
   $('#applyBtn')?.addEventListener('click', () => {
     startPolling();
