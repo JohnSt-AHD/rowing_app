@@ -389,7 +389,7 @@ export function mountApp(root: HTMLElement): void {
 
   function startPollTimer() {
     stopPollTimer();
-    pollTimer = setInterval(() => void pollLive(), 2000);
+    pollTimer = setInterval(() => void pollLive(), 1000);
   }
 
   function stopPollTimer() {

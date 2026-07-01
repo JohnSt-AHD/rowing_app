@@ -62,6 +62,7 @@ export function smoothChartSeriesByTime(
   yToValue: (y: number) => number,
   valueToY: (v: number) => number,
   opts?: SpeedSmoothOptions,
+  stepSec = 0.25,
 ): { x: number; y: number }[] {
   if (points.length <= 1) return points.slice();
 
@@ -70,8 +71,65 @@ export function smoothChartSeriesByTime(
     opts,
   );
 
-  return smoothed.map((p) => ({
-    x: (p.tMs - t0Ms) / 1000,
-    y: valueToY(p.value),
-  }));
+  return densifyChartSeries(
+    smoothed.map((p) => ({
+      x: (p.tMs - t0Ms) / 1000,
+      y: valueToY(p.value),
+    })),
+    stepSec,
+  );
+}
+
+/** Linear interpolation of an already-smoothed series for a denser chart line. */
+export function densifyTimeSeries(
+  points: TimeValuePoint[],
+  stepSec = 0.25,
+): TimeValuePoint[] {
+  if (points.length <= 1) return points.map((p) => ({ ...p }));
+
+  const stepMs = Math.max(50, stepSec * 1000);
+  const out: TimeValuePoint[] = [{ ...points[0] }];
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const span = b.tMs - a.tMs;
+    if (span <= 0) continue;
+
+    for (let tMs = a.tMs + stepMs; tMs < b.tMs; tMs += stepMs) {
+      const f = (tMs - a.tMs) / span;
+      out.push({
+        tMs,
+        value: a.value + f * (b.value - a.value),
+      });
+    }
+    out.push({ ...b });
+  }
+
+  return out;
+}
+
+export function densifyChartSeries(
+  points: { x: number; y: number }[],
+  stepSec = 0.25,
+): { x: number; y: number }[] {
+  if (points.length <= 1) return points.slice();
+
+  const step = Math.max(0.05, stepSec);
+  const out: { x: number; y: number }[] = [{ ...points[0] }];
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const span = b.x - a.x;
+    if (span <= 0) continue;
+
+    for (let x = a.x + step; x < b.x - step * 0.01; x += step) {
+      const f = (x - a.x) / span;
+      out.push({ x, y: a.y + f * (b.y - a.y) });
+    }
+    out.push({ ...b });
+  }
+
+  return out;
 }

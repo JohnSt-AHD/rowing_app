@@ -1,6 +1,9 @@
 import type { MapPosition } from './api';
 import { resolveSpeedMps } from './map-smooth';
-import { smoothSpeedTimeSeries } from './chart-smooth';
+import { densifyTimeSeries, smoothSpeedTimeSeries } from './chart-smooth';
+
+/** Interpolate smoothed live speed every N seconds for a dense chart line. */
+const LIVE_CHART_DENSIFY_SEC = 0.25;
 import { colorForDevice, type ChartSeries } from './history-track';
 
 const WINDOW_MS = 5 * 60 * 1000;
@@ -45,7 +48,8 @@ export function recordLiveSpeedSamples(positions: MapPosition[]): void {
 
     const prev = buf.points[buf.points.length - 1];
 
-    if (prev && Math.abs(t - prev.t) < 400 && Math.abs(speed - prev.speedMps) < 0.05) {
+    if (prev && Math.abs(t - prev.t) < 80) {
+      prev.speedMps = speed;
       prune(buf, now);
       continue;
     }
@@ -69,8 +73,9 @@ export function liveSpeedVsTimeSeries(activeDeviceIds: string[]): ChartSeries[] 
     const pts = buffers.get(id)!.points;
     const t0 = pts[0].t;
     const order = deviceOrder.get(id) ?? i;
-    const smoothed = smoothSpeedTimeSeries(
-      pts.map((p) => ({ tMs: p.t, value: p.speedMps })),
+    const smoothed = densifyTimeSeries(
+      smoothSpeedTimeSeries(pts.map((p) => ({ tMs: p.t, value: p.speedMps }))),
+      LIVE_CHART_DENSIFY_SEC,
     );
     return {
       id,
