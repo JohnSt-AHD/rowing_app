@@ -46,6 +46,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -167,6 +168,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private long lastFusedNudgeWallMs;
     private final ArrayList<GpsWindowFix> gpsWindowBuffer = new ArrayList<>();
     private long lastWindowCollectWallMs;
+    /** Prevents piled-up getCurrentLocation calls from starving the upload timer. */
+    private final AtomicBoolean freshGpsRequestInFlight = new AtomicBoolean(false);
     private int nativeGpsCount;
     private int sampleCount;
     private float lastAx;
@@ -508,7 +511,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         Location uploadLoc = weightedAverageWindowLocation();
         if (uploadLoc == null) {
-            uploadLoc = latestGpsLocation;
+            uploadLoc = resolveCachedUploadLocation();
         }
         if (uploadLoc == null || !canUploadGpsFix(uploadLoc, scheduledTick)) return;
         if (ingestT - lastUploadedFixTimeMs < GPS_COORD_DEDUPE_MS
@@ -649,16 +652,18 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return Math.abs(a.getLatitude() - lat) < 1e-6 && Math.abs(a.getLongitude() - lon) < 1e-6;
     }
 
-    /** Timer-driven upload — weighted average of fixes collected since last report. */
+    /** Timer-driven upload — never block on getCurrentLocation (it can hang when fused goes quiet). */
     private void tickScheduledGpsUpload() {
         if (!enableGps) return;
+        uploadWindowAverageGps(true);
         requestFreshGpsLocation(
                 loc -> {
                     if (loc != null) {
                         cacheGpsLocation(loc);
                         addFixToGpsWindow(loc);
+                        lastFusedDeliveryWallMs = System.currentTimeMillis();
+                        savePulseDiagnostics();
                     }
-                    uploadWindowAverageGps(true);
                 });
     }
 
@@ -676,20 +681,39 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             onResult.accept(null);
             return;
         }
-        if (fusedClient != null) {
-            CancellationTokenSource cts = new CancellationTokenSource();
-            mainHandler.postDelayed(cts::cancel, 4_000L);
-            fusedClient
-                    .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cts.getToken())
-                    .addOnSuccessListener(onResult::accept)
-                    .addOnFailureListener(
-                            e -> {
-                                Log.w(TAG, "getCurrentLocation failed", e);
-                                onResult.accept(null);
-                            });
+        if (fusedClient == null) {
+            onResult.accept(null);
             return;
         }
-        onResult.accept(null);
+        if (!freshGpsRequestInFlight.compareAndSet(false, true)) {
+            return;
+        }
+        final java.util.function.Consumer<Location> finish =
+                loc -> {
+                    if (freshGpsRequestInFlight.compareAndSet(true, false)) {
+                        onResult.accept(loc);
+                    }
+                };
+        CancellationTokenSource cts = new CancellationTokenSource();
+        Runnable timeout =
+                () -> {
+                    cts.cancel();
+                    finish.accept(null);
+                };
+        mainHandler.postDelayed(timeout, 4_000L);
+        fusedClient
+                .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cts.getToken())
+                .addOnSuccessListener(
+                        loc -> {
+                            mainHandler.removeCallbacks(timeout);
+                            finish.accept(loc);
+                        })
+                .addOnFailureListener(
+                        e -> {
+                            mainHandler.removeCallbacks(timeout);
+                            Log.w(TAG, "getCurrentLocation failed", e);
+                            finish.accept(null);
+                        });
     }
 
     private void scheduleGpsFlush() {
