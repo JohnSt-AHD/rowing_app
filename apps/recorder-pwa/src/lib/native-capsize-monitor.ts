@@ -70,6 +70,19 @@ export type NativeRecordingSetupStatus = {
   openedBatterySettings?: boolean;
 };
 
+export type NativeGeofenceZone = {
+  name: string;
+  kind?: string;
+  shapeType: 'circle' | 'polygon';
+  centerLat: number;
+  centerLon: number;
+  radiusM: number;
+  polygonCoords: Array<[number, number]>;
+  enabled: boolean;
+  economyIntervalSec: number;
+  disableCapsize: boolean;
+};
+
 export interface NativeCapsizeMonitorPlugin {
   start(config: NativeCapsizeMonitorConfig): Promise<void>;
   stop(): Promise<void>;
@@ -79,6 +92,7 @@ export interface NativeCapsizeMonitorPlugin {
   setLiveMapMode(options: { active: boolean }): Promise<void>;
   setGpsIntervalMs(options: { gpsIntervalMs: number }): Promise<void>;
   setEconomyMode(mode: NativeEconomyMode): Promise<void>;
+  setGeofences(options: { geofences: NativeGeofenceZone[] }): Promise<void>;
   checkRecordingSetup(): Promise<NativeRecordingSetupStatus>;
   prepareRecording(): Promise<NativeRecordingSetupStatus>;
   getPulse(): Promise<NativeRecordingPulse>;
@@ -179,6 +193,15 @@ export async function setNativeEconomyMode(mode: NativeEconomyMode): Promise<voi
   if (!IS_NATIVE) return;
   try {
     await CapsizeMonitor.setEconomyMode(mode);
+  } catch {
+    /* optional */
+  }
+}
+
+export async function setNativeGeofences(geofences: NativeGeofenceZone[]): Promise<void> {
+  if (!IS_NATIVE) return;
+  try {
+    await CapsizeMonitor.setGeofences({ geofences });
   } catch {
     /* optional */
   }

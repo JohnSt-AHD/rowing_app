@@ -135,6 +135,14 @@ public class CapsizeMonitorPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void setGeofences(PluginCall call) {
+        com.getcapacitor.JSArray arr = call.getArray("geofences");
+        String json = arr != null ? arr.toString() : "[]";
+        CapsizeMonitorService.setGeofences(getContext(), json);
+        call.resolve();
+    }
+
+    @PluginMethod
     public void checkRecordingSetup(PluginCall call) {
         call.resolve(RecordingSetupHelper.buildStatus(getContext()));
     }

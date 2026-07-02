@@ -814,6 +814,34 @@ function displayGpsAgeSec(fixAgeSec, ingestAgoSec) {
   return fixAgeSec;
 }
 
+/** Age for delayed-GPS health — prefers upload time when fix clock lags. */
+function gpsHealthAgeSec(gps) {
+  if (!gps) return null;
+  if (gps.displayAgeSec != null && Number.isFinite(gps.displayAgeSec)) {
+    return gps.displayAgeSec;
+  }
+  return gps.ageSec ?? null;
+}
+
+function enrichMapPositionDisplayAge(p, now, registryRow) {
+  const ingestAgoSec =
+    registryRow?.lastGpsIngestMs != null
+      ? Math.max(0, Math.round((now - registryRow.lastGpsIngestMs) / 1000))
+      : p.lastSeenAgoSec ?? null;
+  const displayFixAgeSec = displayGpsAgeSec(p.fixAgeSec, ingestAgoSec);
+  return {
+    ...p,
+    ingestAgoSec,
+    displayFixAgeSec,
+  };
+}
+
+function enrichMapPositionsDisplayAge(positions, now, registryTimes) {
+  return positions.map((p) =>
+    enrichMapPositionDisplayAge(p, now, registryTimes?.get(p.deviceId)),
+  );
+}
+
 function buildDeviceEntry(entry, windowMs, onlineMs, now, registryTimes) {
   const stats = sensorStats(entry.samples, windowMs, entry.deviceId);
   const sampleLastSeenMs = entry.lastSeenMs ?? entry.updatedAt ?? now;
@@ -847,6 +875,8 @@ function buildDeviceEntry(entry, windowMs, onlineMs, now, registryTimes) {
     ? Math.max(0, Math.round((now - registryTimes.lastGpsIngestMs) / 1000))
     : null;
   const gpsDisplayAgeSec = displayGpsAgeSec(fixAgeSec, gpsIngestAgoSec);
+  const fixClockLagSec =
+    fixAgeSec != null && gpsIngestAgoSec != null ? fixAgeSec - gpsIngestAgoSec : null;
   return {
     deviceId: entry.deviceId,
     athleteId: entry.athleteId || null,
@@ -861,6 +891,7 @@ function buildDeviceEntry(entry, windowMs, onlineMs, now, registryTimes) {
       ...stats.gps,
       ingestAgoSec: gpsIngestAgoSec,
       displayAgeSec: gpsDisplayAgeSec,
+      fixClockLagSec,
     },
     heartbeat,
     battery,
@@ -992,7 +1023,7 @@ async function listDevices(opts = {}) {
   );
   const onlineDevices = devices.filter((d) => d.online);
   const gpsAges = onlineDevices
-    .map((d) => d.gps?.ageSec)
+    .map((d) => gpsHealthAgeSec(d.gps))
     .filter((v) => Number.isFinite(v));
   const ingestRates = onlineDevices
     .map((d) => d.ingestRateHz)
@@ -1023,7 +1054,9 @@ async function listDevices(opts = {}) {
           ? 'idle'
           : 'ok',
     onlineDevices: onlineDevices.length,
-    delayedGpsDevices: onlineDevices.filter((d) => (d.gps?.ageSec ?? 1e9) > 30).length,
+    delayedGpsDevices: onlineDevices.filter(
+      (d) => (gpsHealthAgeSec(d.gps) ?? 1e9) > 30,
+    ).length,
     capsizeDevices: onlineDevices.filter((d) => d.rowing?.capsize).length,
     avgGpsAgeSec: gpsAges.length
       ? Math.round((gpsAges.reduce((a, b) => a + b, 0) / gpsAges.length) * 10) / 10
@@ -1377,6 +1410,7 @@ async function getMapPositions(onlineMs, staleMs, opts = {}) {
 
   if (db.hasDb()) {
     try {
+      const registryTimes = await db.getDeviceRegistryTimes();
       const registryPositions = await db.getRegistryMapPositions(onlineMs, staleMs);
       const dbPositions = await db.getMapPositions(onlineMs, staleMs);
       const byDevice = await db.fetchRecentSamplesByDevice(telemetryWindowMs);
@@ -1411,7 +1445,7 @@ async function getMapPositions(onlineMs, staleMs, opts = {}) {
         rowingMetricsByDevice(byDevice, rowingWindowMs),
       );
       attachTelemetryToMapPositions(positions, byDevice, rowingWindowMs);
-      return positions;
+      return enrichMapPositionsDisplayAge(positions, now, registryTimes);
     } catch (err) {
       console.error('[ingest-store] getMapPositions DB failed:', err);
     }
@@ -1434,7 +1468,11 @@ async function getMapPositions(onlineMs, staleMs, opts = {}) {
       tiltDeg: rowing.tiltDeg ?? null,
     };
   });
-  return attachTelemetryToMapPositions(mapped, telemetryByDevice, rowingWindowMs);
+  return enrichMapPositionsDisplayAge(
+    attachTelemetryToMapPositions(mapped, telemetryByDevice, rowingWindowMs),
+    now,
+    null,
+  );
 }
 
 function getMetrics() {

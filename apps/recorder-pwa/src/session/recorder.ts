@@ -21,6 +21,7 @@ import {
 import {
   getNativeRecordingPulse,
   setNativeEconomyMode,
+  setNativeGeofences,
   setNativeGpsIntervalMs,
   setNativeLiveMapMode,
   startNativeCapsizeMonitor,
@@ -208,6 +209,47 @@ export async function startRecorder(
   let liveMapPushTimer: ReturnType<typeof setInterval> | null = null;
   let lastLiveMapPushAt = 0;
   let lastEconomySignature = '';
+  let lastNativeEconomySignature = '';
+
+  const nativeEconomySignature = () =>
+    [
+      inBoatPark ? '1' : '0',
+      effectiveGpsIntervalMs,
+      effectiveUploadIntervalMs,
+      capsizeAllowed ? '1' : '0',
+    ].join('|');
+
+  const syncNativeEconomyMode = () => {
+    if (!nativeCapsizeMonitorOn) return;
+    const sig = nativeEconomySignature();
+    if (sig === lastNativeEconomySignature) return;
+    lastNativeEconomySignature = sig;
+    void setNativeEconomyMode({
+      active: inBoatPark,
+      gpsIntervalMs: effectiveGpsIntervalMs,
+      uploadIntervalMs: effectiveUploadIntervalMs,
+      enableCapsize: capsizeAllowed,
+    });
+    void setNativeLiveMapMode(!inBoatPark && Boolean(settings.liveMapMode));
+  };
+
+  const pushNativeGeofences = (list: GeofenceConfig[]) => {
+    if (!IS_NATIVE || !list.length) return;
+    void setNativeGeofences(
+      list.map((g) => ({
+        name: g.name,
+        kind: g.kind,
+        shapeType: g.shapeType,
+        centerLat: g.centerLat,
+        centerLon: g.centerLon,
+        radiusM: g.radiusM,
+        polygonCoords: g.polygonCoords,
+        enabled: g.enabled,
+        economyIntervalSec: g.economyIntervalSec,
+        disableCapsize: g.disableCapsize,
+      })),
+    );
+  };
 
   const applyRegattaMessage = (msg: { id: number; text: string } | null) => {
     const prevId = regattaMessage?.id ?? null;
@@ -252,13 +294,7 @@ export async function startRecorder(
           : `${match!.name} config updated: every ${Math.round(effectiveGpsIntervalMs / 1000)}s${capsizeAllowed ? '' : ', capsize off'}.`,
       );
       if (nativeCapsizeMonitorOn) {
-        void setNativeEconomyMode({
-          active: inBoatPark,
-          gpsIntervalMs: effectiveGpsIntervalMs,
-          uploadIntervalMs: effectiveUploadIntervalMs,
-          enableCapsize: capsizeAllowed,
-        });
-        void setNativeLiveMapMode(!inBoatPark && Boolean(settings.liveMapMode));
+        syncNativeEconomyMode();
       }
       if (!capsizeAllowed && capsizeActive) {
         capsizeActive = false;
@@ -297,6 +333,7 @@ export async function startRecorder(
     if (list.length) {
       onLog(`${list.length} geofence(s) loaded from dashboard.`);
     }
+    pushNativeGeofences(list);
     recheckGeofenceFromLastPosition();
   });
 
@@ -307,6 +344,7 @@ export async function startRecorder(
   geofenceRefreshTimer = setInterval(() => {
     void fetchGeofences(settings.ingestUrl, settings.ingestToken, true).then((list) => {
       geofences = list;
+      pushNativeGeofences(list);
       recheckGeofenceFromLastPosition();
     });
   }, 5 * 60 * 1000);
@@ -441,6 +479,8 @@ export async function startRecorder(
     }
     if (nativeCapsizeMonitorOn && settings.enableGps) {
       await setNativeGpsIntervalMs(settings.gpsIntervalMs);
+      syncNativeEconomyMode();
+      pushNativeGeofences(geofences);
       const sec =
         Math.round((Math.max(500, settings.gpsIntervalMs) / 1000) * 10) / 10;
       onLog(`GPS upload interval set to ${sec}s`, false);

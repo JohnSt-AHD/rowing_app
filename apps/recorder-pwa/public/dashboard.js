@@ -189,7 +189,30 @@ function destinationLatLon(lat, lon, course, distanceM) {
   return [toDeg(φ2), ((toDeg(λ2) + 540) % 360) - 180];
 }
 
+/** Age used for map live/delayed/lost — prefers upload time when fix clock lags. */
+function mapDisplayAgeSec(p) {
+  if (!p || typeof p !== 'object') return null;
+  if (p.displayFixAgeSec != null && Number.isFinite(p.displayFixAgeSec)) {
+    return p.displayFixAgeSec;
+  }
+  const ingest = p.ingestAgoSec ?? p.lastSeenAgoSec;
+  if (
+    p.fixAgeSec != null &&
+    ingest != null &&
+    Number.isFinite(p.fixAgeSec) &&
+    Number.isFinite(ingest) &&
+    p.fixAgeSec - ingest > 20
+  ) {
+    return ingest;
+  }
+  return p.fixAgeSec ?? null;
+}
+
 function positionFixMs(p) {
+  const dispAge = mapDisplayAgeSec(p);
+  if (dispAge != null && Number.isFinite(dispAge)) {
+    return Date.now() - dispAge * 1000;
+  }
   if (p.fixMs != null && Number.isFinite(p.fixMs)) return p.fixMs;
   if (p.fixAgeSec != null && Number.isFinite(p.fixAgeSec)) {
     return Date.now() - p.fixAgeSec * 1000;
@@ -643,10 +666,8 @@ function initMap() {
 }
 
 /** @returns {'live' | 'amber' | 'lost'} */
-function gpsFixState(fixAgeSec, gps) {
-  const age = Number(
-    gps?.displayAgeSec ?? gps?.ingestAgoSec ?? fixAgeSec,
-  );
+function gpsFixState(p) {
+  const age = Number(mapDisplayAgeSec(typeof p === 'object' ? p : { fixAgeSec: p }));
   if (!Number.isFinite(age)) return 'lost';
   if (age <= GPS_LIVE_SEC) return 'live';
   if (age <= GPS_STALE_SEC) return 'amber';
@@ -687,8 +708,9 @@ function setCapsizeUiActive(hasCapsize) {
 }
 
 function popupHtml(p) {
-  const state = gpsFixState(p.fixAgeSec);
+  const state = gpsFixState(p);
   const status = gpsStatusLabel(state);
+  const dispAge = mapDisplayAgeSec(p);
   const smoothNote = isMapSmoothed()
     ? '<br><span class="map-popup-note">Smoothed position (display only)</span>'
     : '';
@@ -709,7 +731,7 @@ function popupHtml(p) {
     p.batteryPct != null
       ? `<br>Battery: <strong>${fmtBatteryPct(p.batteryPct)}</strong>${p.batteryAgeSec != null ? ` · ${fmtAgoSec(p.batteryAgeSec)}` : ''}`
       : '';
-  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}<br>GPS fix ${p.fixAgeSec}s ago · seen ${p.lastSeenAgoSec}s ago${smoothNote}${hb}${bat}${hr}${spm}${tilt}${cap}</div>`;
+  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${p.lastSeenAgoSec}s ago${smoothNote}${hb}${bat}${hr}${spm}${tilt}${cap}</div>`;
 }
 
 function updateMap(positions) {
@@ -730,7 +752,7 @@ function updateMap(positions) {
 
     const latlng = L.latLng(lat, lon);
     let marker = deviceMarkers.get(p.deviceId);
-    const state = gpsFixState(p.fixAgeSec);
+    const state = gpsFixState(p);
     const icon = markerIcon(state, Boolean(p.capsize));
 
     if (marker) {
@@ -759,7 +781,7 @@ function updateMap(positions) {
   for (const p of positions) {
     if (p.latitude == null || p.longitude == null) continue;
     if (p.capsize) capsizeN++;
-    const s = gpsFixState(p.fixAgeSec);
+    const s = gpsFixState(p);
     if (s === 'live') liveN++;
     else if (s === 'amber') amberN++;
     else lostN++;
@@ -998,7 +1020,12 @@ function renderDevice(d) {
   const rowing = d.rowing || {};
   const gpsState = rowing.capsize
     ? 'capsize'
-    : gpsFixState(d.gps?.ageSec ?? d.lastSeenAgoSec, d.gps);
+    : gpsFixState({
+        fixAgeSec: d.gps?.ageSec ?? d.lastSeenAgoSec,
+        displayFixAgeSec: d.gps?.displayAgeSec,
+        ingestAgoSec: d.gps?.ingestAgoSec,
+        lastSeenAgoSec: d.lastSeenAgoSec,
+      });
   const collapsed = isDeviceCollapsed(d);
   card.className = `device-card device-card--${gpsState}${collapsed ? ' device-card--collapsed' : ''}`;
   card.dataset.deviceId = d.deviceId;
@@ -1084,7 +1111,19 @@ function renderDevice(d) {
         <span>Total samples <strong>${d.totalSamples}</strong></span>
         <span>Last seen <strong>${d.lastSeenAgoSec}s ago</strong></span>
       </div>
-      ${coords ? `<div class="coords">${coords}${gpsDisplayAge(gps) != null ? ` · GPS ${gpsDisplayAge(gps)}s ago${gps.ingestAgoSec != null && gps.ageSec != null && gps.ageSec - gps.ingestAgoSec > 20 ? ` (fix ${gps.ageSec}s on device)` : ''}` : ''}</div>` : ''}
+      ${coords ? `<div class="coords">${coords}${(() => {
+        const disp = gpsDisplayAge(gps);
+        if (disp == null) return '';
+        const lag =
+          gps.ingestAgoSec != null && gps.ageSec != null
+            ? gps.ageSec - gps.ingestAgoSec
+            : 0;
+        const fixNote =
+          disp > GPS_LIVE_SEC && lag > 20
+            ? ` (fix timestamp ${gps.ageSec}s on device)`
+            : '';
+        return ` · GPS ${disp}s ago${fixNote}`;
+      })()}</div>` : ''}
       ${
         regattaMsg
           ? `<div class="regatta-device-msg" title="Active regatta control message"><span class="regatta-device-msg__label">Regatta</span> ${esc(regattaMsg.text)}</div>`

@@ -415,6 +415,60 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         savePulseDiagnostics();
         cacheGpsLocation(location);
         addFixToGpsWindow(location);
+        maybeApplyGeofenceEconomy(location.getLatitude(), location.getLongitude());
+    }
+
+    private String lastNativeGeofenceSignature = "";
+
+    private void maybeApplyGeofenceEconomy(double lat, double lon) {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        JSONArray geofences;
+        try {
+            geofences = new JSONArray(prefs.getString(GeofenceHelper.PREFS_GEOFENCES_JSON, "[]"));
+        } catch (Exception e) {
+            return;
+        }
+        if (geofences.length() == 0) return;
+
+        JSONObject match = GeofenceHelper.findBoatParkAt(getApplicationContext(), lat, lon);
+        final String signature;
+        if (match != null) {
+            signature =
+                    match.optString("name", "")
+                            + "|"
+                            + GeofenceHelper.economyIntervalSec(match)
+                            + "|"
+                            + GeofenceHelper.disableCapsize(match);
+        } else {
+            signature = "";
+        }
+        if (signature.equals(lastNativeGeofenceSignature)) return;
+        lastNativeGeofenceSignature = signature;
+        if (match != null) {
+            long intervalMs =
+                    Math.max(1000L, (long) GeofenceHelper.economyIntervalSec(match) * 1000L);
+            setEconomyMode(
+                    getApplicationContext(),
+                    true,
+                    intervalMs,
+                    intervalMs,
+                    !GeofenceHelper.disableCapsize(match));
+            Log.i(
+                    TAG,
+                    "Native geofence active: "
+                            + match.optString("name", "?")
+                            + " gpsUploadMs="
+                            + intervalMs);
+        } else {
+            loadSessionFlagsFromPrefs();
+            setEconomyMode(
+                    getApplicationContext(),
+                    false,
+                    gpsIntervalMs,
+                    UPLOAD_FLUSH_INTERVAL_MS,
+                    true);
+            Log.i(TAG, "Native geofence cleared — user GPS interval restored");
+        }
     }
 
     private void addFixToGpsWindow(Location location) {
@@ -594,16 +648,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return Math.abs(a.getLatitude() - lat) < 1e-6 && Math.abs(a.getLongitude() - lon) < 1e-6;
     }
 
-    /** Timer-driven upload — KRI model: refresh fix, then window-average upload in callback. */
+    /** Timer-driven upload — upload first from window/cache, then refresh fix (KRI). */
     private void tickScheduledGpsUpload() {
         if (!enableGps) return;
+        uploadWindowAverageGps(true);
         requestFreshGpsLocation(
                 loc -> {
                     if (loc != null) {
                         cacheGpsLocation(loc);
                         addFixToGpsWindow(loc);
                     }
-                    uploadWindowAverageGps(true);
                 });
     }
 
@@ -937,6 +991,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 }
             }
             if (appendFreshStrokeRate(derived)) hasDerived = true;
+            loadEconomyFromPrefs();
+            if (economyActive) {
+                derived.put("inBoatPark", true);
+                hasDerived = true;
+            }
             if (hasDerived) sample.put("derived", derived);
             offerIngestSample(sample, flushNow);
             markGpsSampleOffered(t);
@@ -1643,16 +1702,29 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
+    public static void setGeofences(Context ctx, String geofencesJson) {
+        GeofenceHelper.saveGeofences(ctx, geofencesJson != null ? geofencesJson : "[]");
+        CapsizeMonitorService inst = runningInstance != null ? runningInstance.get() : null;
+        if (inst != null) {
+            inst.mainHandler.post(
+                    () -> {
+                        Location loc = inst.latestGpsLocation;
+                        if (loc != null) {
+                            inst.maybeApplyGeofenceEconomy(
+                                    loc.getLatitude(), loc.getLongitude());
+                        }
+                    });
+        }
+    }
+
     private void applyEconomyModeChanged() {
         loadEconomyFromPrefs();
         if (enableGps) {
+            lastGpsUploadWallMs = 0L;
+            lastUploadedGpsBucket = -1L;
             registerLocation();
             scheduleGpsFlush();
-            if (!economyActive) {
-                lastGpsUploadWallMs = 0L;
-                lastUploadedGpsBucket = -1L;
-                tickScheduledGpsUpload();
-            }
+            tickScheduledGpsUpload();
         }
         scheduleIngestFlush();
         Log.i(
