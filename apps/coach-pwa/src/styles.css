@@ -327,38 +327,27 @@
   gap: 0.5rem;
 }
 
-.history-subtabs {
+.history-toolbar {
   display: flex;
-  gap: 0.35rem;
+  justify-content: flex-end;
 }
 
-.history-subtab {
-  flex: 1;
-  border: 1px solid var(--ahd-border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ahd-muted);
-  padding: 0.5rem 0.75rem;
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  font-family: inherit;
+.history-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--ahd-border);
+  margin-bottom: 0.25rem;
 }
 
-.history-subtab.active {
-  background: rgba(13, 148, 136, 0.2);
-  border-color: rgba(13, 148, 136, 0.65);
-  color: #5eead4;
-}
-
-.history-setup,
-.history-track {
+.history-main {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
-.history-track__hint {
+.history-main__hint {
   margin: 0;
 }
 

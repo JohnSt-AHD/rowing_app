@@ -11,11 +11,8 @@ import { drawMultiSeriesChart } from '../lib/history-charts';
 import {
   buildDeviceTrack,
   colorForDevice,
-  computeDeviceStats,
   defaultSelection,
   filterTracks,
-  formatDuration,
-  formatSpeedKmh,
   maxDistance,
   speedVsDistanceSeries,
   speedVsTimeSeries,
@@ -26,7 +23,6 @@ import {
 import { HistoryTimeline } from '../lib/history-timeline';
 
 type StatusFn = (msg: string, err?: boolean) => void;
-type HistoryView = 'track' | 'settings';
 
 export class HistoryPanel {
   private host: HTMLElement;
@@ -39,7 +35,7 @@ export class HistoryPanel {
   private historyLines = new Map<string, L.Polyline>();
   private knownDevices: string[] = [];
   private sessionMeta: { from: string; to: string } | null = null;
-  private view: HistoryView = 'track';
+  private setupOpen = false;
 
   constructor(host: HTMLElement, getSettings: () => CoachSettings, onStatus: StatusFn) {
     this.host = host;
@@ -50,11 +46,10 @@ export class HistoryPanel {
   mount(): void {
     this.host.innerHTML = `
       <div class="history-panel">
-        <nav class="history-subtabs" aria-label="History views">
-          <button type="button" class="history-subtab ${this.view === 'track' ? 'active' : ''}" data-history-view="track">Track</button>
-          <button type="button" class="history-subtab ${this.view === 'settings' ? 'active' : ''}" data-history-view="settings">Settings</button>
-        </nav>
-        <div class="history-setup" data-history-setup ${this.view === 'settings' ? '' : 'hidden'}>
+        <div class="history-toolbar">
+          <button type="button" class="coach-btn coach-btn--ghost ${this.setupOpen ? 'coach-btn--active' : ''}" data-toggle-setup aria-expanded="${this.setupOpen ? 'true' : 'false'}">Setup</button>
+        </div>
+        <div class="history-setup" data-history-setup ${this.setupOpen ? '' : 'hidden'}>
           <fieldset class="history-devices-field">
             <legend>Devices <span class="history-hint">(select one or more)</span></legend>
             <div class="history-device-list" data-device-list>
@@ -72,14 +67,13 @@ export class HistoryPanel {
           </label>
           <button type="button" class="coach-btn coach-btn--primary" data-load-track>Load trace &amp; charts</button>
         </div>
-        <div class="history-track" data-history-track ${this.view === 'track' ? '' : 'hidden'}>
-          <p class="poll-line history-track__hint" data-track-hint hidden>Open Settings to choose devices and load a session.</p>
-          <div data-timeline-mount></div>
-          <div class="history-stats" data-stats hidden></div>
-          <div class="history-map-wrap">
+        <div class="history-main" data-history-main>
+          <p class="poll-line history-main__hint" data-track-hint>Tap Setup to choose devices and load a session.</p>
+          <div data-timeline-mount hidden></div>
+          <div class="history-map-wrap" hidden>
             <div class="history-map" data-history-map></div>
           </div>
-          <div class="history-charts">
+          <div class="history-charts" hidden>
             <canvas class="history-chart" data-chart-speed-time height="200"></canvas>
             <canvas class="history-chart" data-chart-speed-dist height="200"></canvas>
             <canvas class="history-chart" data-chart-spm height="200"></canvas>
@@ -87,21 +81,12 @@ export class HistoryPanel {
         </div>
       </div>`;
 
-    this.host.querySelectorAll('[data-history-view]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const next = (btn as HTMLElement).dataset.historyView as HistoryView;
-        if (next === this.view) return;
-        this.view = next;
-        this.host.querySelector('[data-history-setup]')?.toggleAttribute('hidden', this.view !== 'settings');
-        this.host.querySelector('[data-history-track]')?.toggleAttribute('hidden', this.view !== 'track');
-        this.host.querySelectorAll('[data-history-view]').forEach((b) => {
-          b.classList.toggle('active', (b as HTMLElement).dataset.historyView === this.view);
-        });
-        if (this.view === 'track') {
-          this.updateTrackHint();
-          setTimeout(() => this.historyMap?.invalidateSize(), 120);
-        }
-      });
+    this.host.querySelector('[data-toggle-setup]')?.addEventListener('click', () => {
+      this.setupOpen = !this.setupOpen;
+      this.updateSetupUi();
+      if (!this.setupOpen) {
+        setTimeout(() => this.historyMap?.invalidateSize(), 120);
+      }
     });
 
     this.host.querySelector('[data-load-devices]')?.addEventListener('click', () => void this.loadDeviceList());
@@ -133,10 +118,22 @@ export class HistoryPanel {
     this.host.innerHTML = '';
   }
 
+  private updateSetupUi(): void {
+    const btn = this.host.querySelector('[data-toggle-setup]') as HTMLButtonElement | null;
+    if (btn) {
+      btn.classList.toggle('coach-btn--active', this.setupOpen);
+      btn.setAttribute('aria-expanded', this.setupOpen ? 'true' : 'false');
+    }
+    this.host.querySelector('[data-history-setup]')?.toggleAttribute('hidden', !this.setupOpen);
+  }
+
   private updateTrackHint(): void {
     const hint = this.host.querySelector('[data-track-hint]') as HTMLElement | null;
-    if (!hint) return;
-    hint.hidden = this.tracks.length > 0;
+    const hasTracks = this.tracks.length > 0;
+    if (hint) hint.hidden = hasTracks;
+    this.host.querySelector('[data-timeline-mount]')?.toggleAttribute('hidden', !hasTracks);
+    this.host.querySelector('.history-map-wrap')?.toggleAttribute('hidden', !hasTracks);
+    this.host.querySelector('.history-charts')?.toggleAttribute('hidden', !hasTracks);
   }
 
   private selectedDeviceIds(): string[] {
@@ -281,12 +278,8 @@ export class HistoryPanel {
         tMax,
         totalDistM: maxDistance(this.tracks),
       });
-      this.view = 'track';
-      this.host.querySelector('[data-history-setup]')?.setAttribute('hidden', '');
-      this.host.querySelector('[data-history-track]')?.removeAttribute('hidden');
-      this.host.querySelectorAll('[data-history-view]').forEach((b) => {
-        b.classList.toggle('active', (b as HTMLElement).dataset.historyView === 'track');
-      });
+      this.setupOpen = false;
+      this.updateSetupUi();
       this.updateTrackHint();
       this.refreshViews();
       this.onStatus(
@@ -299,36 +292,8 @@ export class HistoryPanel {
 
   private refreshViews(): void {
     if (!this.selection || !this.tracks.length) return;
-    this.renderStats();
     this.renderMap();
     this.renderCharts();
-  }
-
-  private renderStats(): void {
-    const el = this.host.querySelector('[data-stats]') as HTMLElement;
-    if (!el || !this.selection) return;
-    const stats = computeDeviceStats(this.tracks, this.selection);
-    el.hidden = false;
-    el.innerHTML = `
-      <h3 class="history-stats__title">Selection stats</h3>
-      <div class="history-stats__grid">
-        ${stats
-          .map(
-            (s) => `
-          <div class="history-stats__card" style="--device-color:${s.color}">
-            <div class="history-stats__device">${esc(s.deviceId)}</div>
-            <dl class="history-stats__dl">
-              <div><dt>Duration</dt><dd>${formatDuration(s.durationSec)}</dd></div>
-              <div><dt>Distance</dt><dd>${Math.round(s.distanceM)} m</dd></div>
-              <div><dt>Avg speed</dt><dd>${formatSpeedKmh(s.avgSpeedMps)}</dd></div>
-              <div><dt>Max speed</dt><dd>${formatSpeedKmh(s.maxSpeedMps)}</dd></div>
-              <div><dt>Avg stroke rate</dt><dd>${s.avgStrokeRate != null ? `${Math.round(s.avgStrokeRate)} spm` : '—'}</dd></div>
-              <div><dt>Points</dt><dd>${s.pointCount}</dd></div>
-            </dl>
-          </div>`,
-          )
-          .join('')}
-      </div>`;
   }
 
   private renderMap(): void {
