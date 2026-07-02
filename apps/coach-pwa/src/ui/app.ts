@@ -371,6 +371,9 @@ export function mountApp(root: HTMLElement): void {
     const gpsAge = d.gpsAgeSec ?? resolveGpsDisplayAge(d);
     const gpsLabel = gpsAge == null ? 'GPS —' : gpsStatusLabel(gpsAge);
     const accent = liveDeviceColor(d.deviceId);
+    const meta = monitoring
+      ? `${d.online ? 'Online' : 'Offline'} · ${gpsLabel}`
+      : `${d.online ? 'Online' : 'Offline'} · ${gpsLabel} · seen ${d.lastSeenAgoSec ?? '—'}s ago`;
     return `<li>
       <details class="device-card ${cap ? 'capsize' : ''}" data-device-id="${esc(d.deviceId)}" ${expanded ? 'open' : ''}>
         <summary class="device-card__summary">
@@ -386,7 +389,7 @@ export function mountApp(root: HTMLElement): void {
           </span>
         </summary>
         <div class="device-card__body">
-          <div class="device-card__meta">${d.online ? 'Online' : 'Offline'} · ${gpsLabel} · seen ${d.lastSeenAgoSec ?? '—'}s ago</div>
+          <div class="device-card__meta">${meta}</div>
         </div>
       </details>
     </li>`;
