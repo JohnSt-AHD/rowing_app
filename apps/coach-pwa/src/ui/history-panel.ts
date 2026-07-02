@@ -24,10 +24,44 @@ import { HistoryTimeline } from '../lib/history-timeline';
 
 type StatusFn = (msg: string, err?: boolean) => void;
 
+const SETUP_HTML = `
+  <fieldset class="history-devices-field">
+    <legend>Devices <span class="history-hint">(select one or more)</span></legend>
+    <div class="history-device-list" data-device-list>
+      <p class="poll-line">Load device list or type IDs below.</p>
+    </div>
+    <label class="coach-field history-device-add">
+      Add device ID
+      <input type="text" data-device-add placeholder="e.g. A2" />
+    </label>
+    <button type="button" class="coach-btn coach-btn--ghost" data-load-devices>Refresh device list</button>
+  </fieldset>
+  <button type="button" class="coach-btn coach-btn--ghost" data-load-sessions>Load sessions (first device)</button>
+  <label class="coach-field">Session
+    <select data-session-select><option value="">— load sessions first —</option></select>
+  </label>
+  <button type="button" class="coach-btn coach-btn--primary" data-load-track>Load trace &amp; charts</button>`;
+
+const TRACK_HTML = `
+  <div class="history-main" data-history-main>
+    <p class="poll-line history-main__hint" data-track-hint>Use Settings to choose devices and load a session.</p>
+    <div data-timeline-mount hidden></div>
+    <div class="history-map-wrap" hidden>
+      <div class="history-map" data-history-map></div>
+    </div>
+    <div class="history-charts" hidden>
+      <canvas class="history-chart" data-chart-speed-time height="200"></canvas>
+      <canvas class="history-chart" data-chart-speed-dist height="200"></canvas>
+      <canvas class="history-chart" data-chart-spm height="200"></canvas>
+    </div>
+  </div>`;
+
 export class HistoryPanel {
-  private host: HTMLElement;
   private getSettings: () => CoachSettings;
   private onStatus: StatusFn;
+  private onTracksLoaded?: () => void;
+  private setupHost: HTMLElement | null = null;
+  private trackHost: HTMLElement | null = null;
   private tracks: DeviceTrack[] = [];
   private selection: HistorySelection | null = null;
   private timeline: HistoryTimeline | null = null;
@@ -35,114 +69,114 @@ export class HistoryPanel {
   private historyLines = new Map<string, L.Polyline>();
   private knownDevices: string[] = [];
   private sessionMeta: { from: string; to: string } | null = null;
-  private setupOpen = false;
+  private devicesLoaded = false;
 
-  constructor(host: HTMLElement, getSettings: () => CoachSettings, onStatus: StatusFn) {
-    this.host = host;
+  constructor(
+    getSettings: () => CoachSettings,
+    onStatus: StatusFn,
+    onTracksLoaded?: () => void,
+  ) {
     this.getSettings = getSettings;
     this.onStatus = onStatus;
+    this.onTracksLoaded = onTracksLoaded;
   }
 
-  mount(): void {
-    this.host.innerHTML = `
-      <div class="history-panel">
-        <div class="history-toolbar">
-          <button type="button" class="coach-btn coach-btn--ghost ${this.setupOpen ? 'coach-btn--active' : ''}" data-toggle-setup aria-expanded="${this.setupOpen ? 'true' : 'false'}">Setup</button>
-        </div>
-        <div class="history-setup" data-history-setup ${this.setupOpen ? '' : 'hidden'}>
-          <fieldset class="history-devices-field">
-            <legend>Devices <span class="history-hint">(select one or more)</span></legend>
-            <div class="history-device-list" data-device-list>
-              <p class="poll-line">Load device list or type IDs below.</p>
-            </div>
-            <label class="coach-field history-device-add">
-              Add device ID
-              <input type="text" data-device-add placeholder="e.g. A2" />
-            </label>
-            <button type="button" class="coach-btn coach-btn--ghost" data-load-devices>Refresh device list</button>
-          </fieldset>
-          <button type="button" class="coach-btn coach-btn--ghost" data-load-sessions>Load sessions (first device)</button>
-          <label class="coach-field">Session
-            <select data-session-select><option value="">— load sessions first —</option></select>
-          </label>
-          <button type="button" class="coach-btn coach-btn--primary" data-load-track>Load trace &amp; charts</button>
-        </div>
-        <div class="history-main" data-history-main>
-          <p class="poll-line history-main__hint" data-track-hint>Tap Setup to choose devices and load a session.</p>
-          <div data-timeline-mount hidden></div>
-          <div class="history-map-wrap" hidden>
-            <div class="history-map" data-history-map></div>
-          </div>
-          <div class="history-charts" hidden>
-            <canvas class="history-chart" data-chart-speed-time height="200"></canvas>
-            <canvas class="history-chart" data-chart-speed-dist height="200"></canvas>
-            <canvas class="history-chart" data-chart-spm height="200"></canvas>
-          </div>
-        </div>
-      </div>`;
+  /** Call before app re-render clears host elements. */
+  prepareForRender(nextTab: 'live' | 'history' | 'settings'): void {
+    if (nextTab !== 'history') {
+      this.teardownMap();
+      this.timeline = null;
+      this.trackHost = null;
+    }
+    if (nextTab !== 'settings') {
+      this.setupHost = null;
+    }
+  }
 
-    this.host.querySelector('[data-toggle-setup]')?.addEventListener('click', () => {
-      this.setupOpen = !this.setupOpen;
-      this.updateSetupUi();
-      if (!this.setupOpen) {
-        setTimeout(() => this.historyMap?.invalidateSize(), 120);
-      }
-    });
-
-    this.host.querySelector('[data-load-devices]')?.addEventListener('click', () => void this.loadDeviceList());
-    this.host.querySelector('[data-load-sessions]')?.addEventListener('click', () => void this.loadSessions());
-    this.host.querySelector('[data-load-track]')?.addEventListener('click', () => void this.loadTracks());
-    this.host.querySelector('[data-device-add]')?.addEventListener('keydown', (e) => {
+  mountSetup(host: HTMLElement): void {
+    this.setupHost = host;
+    host.innerHTML = SETUP_HTML;
+    host.querySelector('[data-load-devices]')?.addEventListener('click', () => void this.loadDeviceList());
+    host.querySelector('[data-load-sessions]')?.addEventListener('click', () => void this.loadSessions());
+    host.querySelector('[data-load-track]')?.addEventListener('click', () => void this.loadTracks());
+    host.querySelector('[data-device-add]')?.addEventListener('keydown', (e) => {
       if ((e as KeyboardEvent).key === 'Enter') this.addDeviceFromInput();
     });
-    this.host.querySelector('[data-device-add]')?.addEventListener('blur', () => this.addDeviceFromInput());
+    host.querySelector('[data-device-add]')?.addEventListener('blur', () => this.addDeviceFromInput());
+    if (!this.devicesLoaded) {
+      this.devicesLoaded = true;
+      void this.loadDeviceList();
+    } else {
+      this.renderDeviceCheckboxes();
+    }
+  }
 
-    const tlMount = this.host.querySelector('[data-timeline-mount]') as HTMLElement;
-    this.timeline = new HistoryTimeline(tlMount, {
-      onChange: (sel) => {
-        this.selection = sel;
-        this.refreshViews();
-      },
-    });
-
+  mountTrack(host: HTMLElement): void {
+    this.trackHost = host;
+    host.innerHTML = TRACK_HTML;
+    const tlMount = this.q<HTMLElement>('[data-timeline-mount]');
+    if (tlMount) {
+      this.timeline = new HistoryTimeline(tlMount, {
+        onChange: (sel) => {
+          this.selection = sel;
+          this.refreshViews();
+        },
+      });
+      if (this.selection && this.tracks.length) {
+        const tMin = Math.min(...this.tracks.map((t) => t.tMin));
+        const tMax = Math.max(...this.tracks.map((t) => t.tMax));
+        this.timeline.setSelection(this.selection, {
+          tMin,
+          tMax,
+          totalDistM: maxDistance(this.tracks),
+        });
+      }
+    }
     this.updateTrackHint();
-    void this.loadDeviceList();
+    if (this.tracks.length) this.refreshViews();
   }
 
   destroy(): void {
+    this.teardownMap();
+    this.timeline = null;
+    this.setupHost = null;
+    this.trackHost = null;
+    this.devicesLoaded = false;
+    this.tracks = [];
+    this.selection = null;
+    this.knownDevices = [];
+  }
+
+  private q<T extends Element>(sel: string): T | null {
+    return (this.setupHost?.querySelector(sel) ??
+      this.trackHost?.querySelector(sel) ??
+      null) as T | null;
+  }
+
+  private teardownMap(): void {
     if (this.historyMap) {
       this.historyMap.remove();
       this.historyMap = null;
     }
     this.historyLines.clear();
-    this.host.innerHTML = '';
-  }
-
-  private updateSetupUi(): void {
-    const btn = this.host.querySelector('[data-toggle-setup]') as HTMLButtonElement | null;
-    if (btn) {
-      btn.classList.toggle('coach-btn--active', this.setupOpen);
-      btn.setAttribute('aria-expanded', this.setupOpen ? 'true' : 'false');
-    }
-    this.host.querySelector('[data-history-setup]')?.toggleAttribute('hidden', !this.setupOpen);
   }
 
   private updateTrackHint(): void {
-    const hint = this.host.querySelector('[data-track-hint]') as HTMLElement | null;
+    const hint = this.q<HTMLElement>('[data-track-hint]');
     const hasTracks = this.tracks.length > 0;
     if (hint) hint.hidden = hasTracks;
-    this.host.querySelector('[data-timeline-mount]')?.toggleAttribute('hidden', !hasTracks);
-    this.host.querySelector('.history-map-wrap')?.toggleAttribute('hidden', !hasTracks);
-    this.host.querySelector('.history-charts')?.toggleAttribute('hidden', !hasTracks);
+    this.q('[data-timeline-mount]')?.toggleAttribute('hidden', !hasTracks);
+    this.q('.history-map-wrap')?.toggleAttribute('hidden', !hasTracks);
+    this.q('.history-charts')?.toggleAttribute('hidden', !hasTracks);
   }
 
   private selectedDeviceIds(): string[] {
-    const boxes = this.host.querySelectorAll<HTMLInputElement>('[data-device-id]:checked');
+    const boxes = this.setupHost?.querySelectorAll<HTMLInputElement>('[data-device-id]:checked') ?? [];
     return [...boxes].map((b) => b.value);
   }
 
   private renderDeviceCheckboxes(): void {
-    const list = this.host.querySelector('[data-device-list]');
+    const list = this.q<HTMLElement>('[data-device-list]');
     if (!list) return;
     if (!this.knownDevices.length) {
       list.innerHTML = '<p class="poll-line">No devices — add IDs manually.</p>';
@@ -157,19 +191,19 @@ export class HistoryPanel {
   }
 
   private addDeviceFromInput(): void {
-    const input = this.host.querySelector('[data-device-add]') as HTMLInputElement;
+    const input = this.q<HTMLInputElement>('[data-device-add]');
     const id = input?.value.trim().toUpperCase();
     if (!id) return;
     if (!this.knownDevices.includes(id)) {
       this.knownDevices.push(id);
       this.knownDevices.sort();
       this.renderDeviceCheckboxes();
-      const box = this.host.querySelector(
+      const box = this.setupHost?.querySelector(
         `[data-device-id][value="${CSS.escape(id)}"]`,
-      ) as HTMLInputElement;
+      ) as HTMLInputElement | null;
       if (box) box.checked = true;
     }
-    input.value = '';
+    if (input) input.value = '';
   }
 
   private async loadDeviceList(): Promise<void> {
@@ -194,7 +228,8 @@ export class HistoryPanel {
     try {
       const settings = this.getSettings();
       const sessions = await listSessions(settings, devices[0]);
-      const sel = this.host.querySelector('[data-session-select]') as HTMLSelectElement;
+      const sel = this.q<HTMLSelectElement>('[data-session-select]');
+      if (!sel) return;
       sel.innerHTML =
         sessions.length === 0
           ? '<option value="">No sessions</option>'
@@ -211,8 +246,8 @@ export class HistoryPanel {
   }
 
   private sessionTimeRange(): { from: string; to: string } | null {
-    const sel = this.host.querySelector('[data-session-select]') as HTMLSelectElement;
-    const opt = sel.selectedOptions[0];
+    const sel = this.q<HTMLSelectElement>('[data-session-select]');
+    const opt = sel?.selectedOptions[0];
     if (!opt?.value) return null;
     const from = opt.dataset.from ?? '';
     let to = opt.dataset.to ?? '';
@@ -227,7 +262,7 @@ export class HistoryPanel {
       return;
     }
     const settings = this.getSettings();
-    const sessionId = (this.host.querySelector('[data-session-select]') as HTMLSelectElement).value;
+    const sessionId = this.q<HTMLSelectElement>('[data-session-select]')?.value ?? '';
     let fromTo = this.sessionTimeRange();
 
     try {
@@ -252,9 +287,7 @@ export class HistoryPanel {
         return;
       }
 
-      if (devices.length === 1 && loaded.length) {
-        // single-device session already loaded
-      } else {
+      if (!(devices.length === 1 && loaded.length)) {
         for (let i = 0; i < devices.length; i++) {
           const deviceId = devices[i];
           if (loaded.some((t) => t.deviceId === deviceId)) continue;
@@ -278,13 +311,12 @@ export class HistoryPanel {
         tMax,
         totalDistM: maxDistance(this.tracks),
       });
-      this.setupOpen = false;
-      this.updateSetupUi();
       this.updateTrackHint();
       this.refreshViews();
       this.onStatus(
         `Loaded ${this.tracks.length} device(s) · ${this.tracks.reduce((n, t) => n + t.points.length, 0)} points`,
       );
+      this.onTracksLoaded?.();
     } catch (e) {
       this.onStatus(e instanceof Error ? e.message : String(e), true);
     }
@@ -298,7 +330,7 @@ export class HistoryPanel {
 
   private renderMap(): void {
     if (!this.selection) return;
-    const mapEl = this.host.querySelector('[data-history-map]') as HTMLElement;
+    const mapEl = this.q<HTMLElement>('[data-history-map]');
     if (!mapEl) return;
 
     if (!this.historyMap) {
@@ -346,9 +378,9 @@ export class HistoryPanel {
     if (!this.selection) return;
     const sel = this.selection;
 
-    const speedTime = this.host.querySelector('[data-chart-speed-time]') as HTMLCanvasElement;
-    const speedDist = this.host.querySelector('[data-chart-speed-dist]') as HTMLCanvasElement;
-    const spm = this.host.querySelector('[data-chart-spm]') as HTMLCanvasElement;
+    const speedTime = this.q<HTMLCanvasElement>('[data-chart-speed-time]');
+    const speedDist = this.q<HTMLCanvasElement>('[data-chart-speed-dist]');
+    const spm = this.q<HTMLCanvasElement>('[data-chart-spm]');
 
     if (speedTime) {
       drawMultiSeriesChart(speedTime, speedVsTimeSeries(this.tracks, sel), {

@@ -491,6 +491,20 @@ export function mountApp(root: HTMLElement): void {
     pollTimer = null;
   }
 
+  function ensureHistoryPanel(): HistoryPanel {
+    if (!historyPanel) {
+      historyPanel = new HistoryPanel(
+        () => loadSettings(),
+        (msg, err) => setStatus(msg, err),
+        () => {
+          tab = 'history';
+          render();
+        },
+      );
+    }
+    return historyPanel;
+  }
+
   function render() {
     if (tab === 'live') destroyMap();
     const caps = capsizeCount();
@@ -501,11 +515,11 @@ export function mountApp(root: HTMLElement): void {
             <div class="hub-topbar-brands">
               <img src="${asset('assets/crewsight/crewsight-logo-full-manager-color.png')}" alt="CrewSight Manager" class="hub-crewsight-logo hub-crewsight-logo--manager" width="200" height="200" />
             </div>
-            <p class="hub-tagline">Fleet monitor${IS_NATIVE ? ' · Native app' : ''} — background capsize alerts when monitoring</p>
           </div>
         </header>
         <div class="capsize-banner" data-capsize-banner role="alert" ${caps > 0 ? '' : 'hidden'}>${caps > 0 ? `${caps} CAPSIZE — check crew now` : ''}</div>
-        <div class="coach-monitor-bar ${monitoring ? 'monitoring' : ''}">
+        ${tab === 'live'
+          ? `<div class="coach-monitor-bar ${monitoring ? 'monitoring' : ''}">
           <div class="status-line ${monitoring ? 'on' : ''}">
             ${monitoring
               ? serviceRunning
@@ -516,7 +530,8 @@ export function mountApp(root: HTMLElement): void {
           ${monitoring
             ? `<button type="button" class="coach-btn coach-btn--danger" data-stop-monitor>Stop monitoring</button>`
             : `<button type="button" class="coach-btn coach-btn--primary" data-start-monitor>Start monitoring</button>`}
-        </div>
+        </div>`
+          : ''}
         <nav class="coach-tabs">
           <button type="button" class="coach-tab ${tab === 'live' ? 'active' : ''}" data-tab="live">Live</button>
           <button type="button" class="coach-tab ${tab === 'history' ? 'active' : ''}" data-tab="history">History</button>
@@ -535,9 +550,10 @@ export function mountApp(root: HTMLElement): void {
           <canvas class="live-speed-chart history-chart" data-live-speed-chart height="200"></canvas>
         </section>
         <section class="coach-panel coach-panel--history" data-panel="history" ${tab === 'history' ? '' : 'hidden'}>
-          <div data-history-root></div>
+          <div class="history-panel" data-history-track-root></div>
         </section>
         <section class="coach-panel" data-panel="settings" ${tab === 'settings' ? '' : 'hidden'}>
+          <h2 class="coach-section-title">Connection</h2>
           <label class="coach-field">API base URL
             <input type="url" id="apiBase" value="${esc(settings.apiBaseUrl)}" placeholder="${esc(DEFAULT_API_BASE_URL)}" />
           </label>
@@ -546,6 +562,8 @@ export function mountApp(root: HTMLElement): void {
           </label>
           <button type="button" class="coach-btn coach-btn--primary" data-save-settings>Save settings</button>
           <p class="poll-line">Same URL and token as the rower app / dashboard. Monitoring must be stopped to change URL safely.</p>
+          <h2 class="coach-section-title">History</h2>
+          <div class="history-setup" data-history-setup-root></div>
         </section>
       </div>`;
 
@@ -560,11 +578,8 @@ export function mountApp(root: HTMLElement): void {
     root.querySelectorAll('[data-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const next = (btn as HTMLElement).dataset.tab as Tab;
-        if (tab === 'history' && next !== 'history') {
-          historyPanel?.destroy();
-          historyPanel = null;
-        }
-        if (tab === 'live' && next !== 'live') destroyMap();
+        historyPanel?.prepareForRender(next);
+        if (next === 'live') destroyMap();
         tab = next;
         render();
         if (tab === 'live') {
@@ -583,15 +598,13 @@ export function mountApp(root: HTMLElement): void {
     });
 
     if (tab === 'history') {
-      const historyRoot = root.querySelector('[data-history-root]') as HTMLElement | null;
-      if (historyRoot) {
-        historyPanel = new HistoryPanel(
-          historyRoot,
-          () => loadSettings(),
-          (msg, err) => setStatus(msg, err),
-        );
-        historyPanel.mount();
-      }
+      const trackRoot = root.querySelector('[data-history-track-root]') as HTMLElement | null;
+      if (trackRoot) ensureHistoryPanel().mountTrack(trackRoot);
+    }
+
+    if (tab === 'settings') {
+      const setupRoot = root.querySelector('[data-history-setup-root]') as HTMLElement | null;
+      if (setupRoot) ensureHistoryPanel().mountSetup(setupRoot);
     }
 
     if (tab === 'live') {
