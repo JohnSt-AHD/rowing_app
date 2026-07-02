@@ -26,6 +26,11 @@
       "source": "/downloads/CrewSight.apk",
       "destination": "https://github.com/JohnSt-AHD/rowing_app/releases/download/android-apk-latest/CrewSight.apk",
       "permanent": false
+    },
+    {
+      "source": "/downloads/CrewSight-Manager.apk",
+      "destination": "https://github.com/JohnSt-AHD/rowing_app/releases/download/android-apk-manager-latest/CrewSight-Manager.apk",
+      "permanent": false
     }
   ],
   "rewrites": [

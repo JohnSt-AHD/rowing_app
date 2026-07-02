@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0a1628" />
-    <title>Install CrewSight · Android</title>
+    <title>Install CrewSight apps · Android</title>
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
     <link rel="stylesheet" href="/ahd-hub-theme.css" />
     <style>
@@ -28,13 +28,17 @@
       }
       .btn-dl {
         display: inline-block;
-        margin: 0.5rem 0;
+        margin: 0.5rem 0.75rem 0.5rem 0;
         padding: 0.75rem 1.25rem;
         background: var(--ahd-accent, #00e5ff);
         color: #0a1628 !important;
         text-decoration: none;
         border-radius: 8px;
         font-weight: 600;
+      }
+      .btn-dl--manager {
+        background: var(--ahd-teal, #0d9488);
+        color: #fff !important;
       }
       .install-warn {
         border-left: 3px solid var(--cs-gold, #fbbf24);
@@ -48,6 +52,17 @@
         gap: 0.5rem 1rem;
         margin-top: 1rem;
         font-size: 0.9rem;
+      }
+      .install-app-block {
+        scroll-margin-top: 1rem;
+      }
+      .install-app-block + .install-app-block {
+        margin-top: 0.25rem;
+      }
+      .install-app-lead {
+        margin: 0 0 0.75rem;
+        font-size: 0.95rem;
+        line-height: 1.5;
       }
     </style>
   </head>
@@ -63,18 +78,18 @@
             height="200"
           />
         </div>
-        <p class="hub-tagline">Android install guide</p>
+        <p class="hub-tagline">Android install guide — rower app and Manager</p>
       </div>
     </header>
 
     <div class="ahd-app-wrap ahd-app-wrap--narrow install-wrap">
-      <section class="hub-panel">
-        <h2 class="hub-section-title">Download APK</h2>
-        <p class="install-note">
-          v1.0.7+ · arm64 build (~10 MB). Background GPS needs location <strong>Always</strong> and notifications.
+      <section class="hub-panel install-app-block" id="crewsight">
+        <h2 class="hub-section-title">CrewSight (rower app)</h2>
+        <p class="install-app-lead">
+          On-water GPS recording — stroke rate, motion, heart rate, and capsize alerts while you row.
         </p>
         <p class="install-note">
-          Use <strong>Samsung Internet</strong> or <strong>Chrome</strong>. If download stalls, use USB (below).
+          v1.0.7+ · arm64 build (~10 MB). Background GPS needs location <strong>Always</strong> and notifications.
         </p>
         <p>
           <a
@@ -84,25 +99,50 @@
           >
         </p>
         <p class="install-note">
-          <a href="https://github.com/JohnSt-AHD/rowing_app/releases/tag/android-apk-latest"
-            >Releases page</a
-          >
+          <a href="https://github.com/JohnSt-AHD/rowing_app/releases/tag/android-apk-latest">Releases</a>
           ·
-          <a href="https://github.com/JohnSt-AHD/rowing_app/actions/workflows/android-apk.yml"
-            >Build status</a
+          <a href="https://github.com/JohnSt-AHD/rowing_app/actions/workflows/android-apk.yml">Build status</a>
+        </p>
+      </section>
+
+      <section class="hub-panel install-app-block" id="manager">
+        <h2 class="hub-section-title">CrewSight Manager</h2>
+        <p class="install-app-lead">
+          Coach / ops monitor — live fleet map, session history, and <strong>background capsize alerts</strong> while monitoring is on.
+          The <a href="/dashboard.html">web dashboard</a> is also available in a browser.
+        </p>
+        <p class="install-note">
+          arm64 build (~10 MB). Allow notifications for capsize alerts when the app is in the background.
+        </p>
+        <p>
+          <a
+            class="btn-dl btn-dl--manager"
+            href="https://github.com/JohnSt-AHD/rowing_app/releases/download/android-apk-manager-latest/CrewSight-Manager.apk"
+            ><strong>Download CrewSight-Manager.apk</strong></a
           >
-          (if the button 404s, wait ~5 min after a push, then refresh).
+        </p>
+        <p class="install-note">
+          <a href="https://github.com/JohnSt-AHD/rowing_app/releases/tag/android-apk-manager-latest">Releases</a>
+          ·
+          <a href="https://github.com/JohnSt-AHD/rowing_app/actions/workflows/android-apk-coach.yml">Build status</a>
         </p>
       </section>
 
       <section class="hub-panel">
         <h2 class="hub-section-title">Install steps</h2>
+        <p class="install-note">
+          Use <strong>Samsung Internet</strong> or <strong>Chrome</strong>. If a download stalls, use USB (below).
+        </p>
         <ol>
-          <li>Download the APK above.</li>
+          <li>Download the APK for the app you need (or both — they install separately).</li>
           <li>Open the file and tap <strong>Install</strong>.</li>
           <li>If blocked, allow installs from your browser in Android settings.</li>
-          <li>Open CrewSight and grant location (Always), motion, and notifications.</li>
-          <li>Enter your device ID and start a session when on the water.</li>
+          <li>
+            <strong>CrewSight:</strong> grant location (Always), motion, and notifications; enter device ID and start a session.
+          </li>
+          <li>
+            <strong>CrewSight Manager:</strong> set API URL and token if required; tap <strong>Start monitoring</strong> on the water.
+          </li>
         </ol>
         <div class="install-warn">
           For sideloading from a PC, copy the APK to the phone and open it with Files or My Files.
@@ -112,12 +152,13 @@
       <section class="hub-panel">
         <h2 class="hub-section-title">USB install (adb)</h2>
         <p class="install-note">Enable USB debugging, connect the phone, then run on your computer:</p>
-        <pre style="background: rgba(6, 20, 38, 0.65); border: 1px solid var(--ahd-border); padding: 0.75rem; border-radius: 8px; font-size: 0.75rem; overflow: auto;">adb install -r CrewSight.apk</pre>
+        <pre style="background: rgba(6, 20, 38, 0.65); border: 1px solid var(--ahd-border); padding: 0.75rem; border-radius: 8px; font-size: 0.75rem; overflow: auto;">adb install -r CrewSight.apk
+adb install -r CrewSight-Manager.apk</pre>
       </section>
 
       <p class="install-links">
-        <a href="/">CrewSight app</a>
-        <a href="/dashboard.html">CrewSight Manager</a>
+        <a href="/">CrewSight app (PWA)</a>
+        <a href="/dashboard.html">CrewSight Manager (web)</a>
         <a href="/test.html">Connection test</a>
       </p>
     </div>
