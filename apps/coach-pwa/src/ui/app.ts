@@ -5,10 +5,11 @@ import { HistoryPanel } from './history-panel';
 import { drawMultiSeriesChart } from '../lib/history-charts';
 import {
   clearLiveSpeedBuffers,
+  liveDeviceColor,
   liveSpeedVsTimeSeries,
   recordLiveSpeedSamples,
+  registerLiveDevice,
 } from '../lib/live-speed-buffer';
-import { colorForDevice } from '../lib/history-track';
 import {
   fetchDevices,
   fetchMapPositions,
@@ -32,7 +33,6 @@ import { loadSettings, saveSettings, DEFAULT_API_BASE_URL, type CoachSettings } 
 import {
   gpsFixState,
   gpsStatusLabel,
-  markerColorForState,
   resolveGpsDisplayAge,
   displayGpsAgeSec,
 } from '../lib/gps-age';
@@ -204,20 +204,17 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function markerIcon(p: MapPosition, device?: FleetDevice): L.DivIcon {
+    registerLiveDevice(p.deviceId);
     const gpsAge = resolveGpsDisplayAge(device, p);
     const cap = Boolean(p.capsize);
     const state = gpsFixState(gpsAge);
-    const color = markerColorForState(state, cap);
-    const className = cap
-      ? 'coach-marker capsize'
-      : state === 'amber'
-        ? 'coach-marker amber'
-        : state === 'lost'
-          ? 'coach-marker lost'
-          : 'coach-marker';
+    const accent = liveDeviceColor(p.deviceId);
+    const opacity = state === 'lost' ? 0.45 : state === 'amber' ? 0.75 : 1;
+    const capRing = cap ? 'box-shadow:0 0 0 2px #ef4444;' : '';
+    const className = cap ? 'coach-marker capsize' : 'coach-marker';
     return L.divIcon({
       className,
-      html: `<span style="background:${color};width:14px;height:14px;border-radius:50%;display:block;border:2px solid #fff"></span>`,
+      html: `<span style="background:${accent};opacity:${opacity};${capRing}width:14px;height:14px;border-radius:50%;display:block;border:2px solid #fff"></span>`,
       iconSize: [14, 14],
       iconAnchor: [7, 7],
     });
@@ -352,7 +349,6 @@ export function mountApp(root: HTMLElement): void {
   function activeLiveDevices(): LiveDeviceRow[] {
     const posById = new Map(positions.map((p) => [p.deviceId, p]));
     const rows: LiveDeviceRow[] = [];
-    let colorIdx = 0;
     for (const d of devices) {
       if (!d.online) continue;
       const p = posById.get(d.deviceId);
@@ -363,7 +359,7 @@ export function mountApp(root: HTMLElement): void {
         ...d,
         speedMps: resolveSpeedMps(p),
         displayName: deviceDisplayName(d),
-        colorIndex: colorIdx++,
+        colorIndex: registerLiveDevice(d.deviceId),
       });
     }
     rows.sort((a, b) => (b.speedMps ?? -1) - (a.speedMps ?? -1));
@@ -374,7 +370,7 @@ export function mountApp(root: HTMLElement): void {
     const cap = Boolean(d.rowing?.capsize);
     const gpsAge = d.gpsAgeSec ?? resolveGpsDisplayAge(d);
     const gpsLabel = gpsAge == null ? 'GPS —' : gpsStatusLabel(gpsAge);
-    const accent = colorForDevice(d.colorIndex);
+    const accent = liveDeviceColor(d.deviceId);
     return `<li>
       <details class="device-card ${cap ? 'capsize' : ''}" data-device-id="${esc(d.deviceId)}" ${expanded ? 'open' : ''}>
         <summary class="device-card__summary">

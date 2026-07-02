@@ -1,10 +1,16 @@
 import type { MapPosition } from './api';
 import { resolveSpeedMps } from './map-smooth';
 import { densifyTimeSeries, smoothSpeedTimeSeries } from './chart-smooth';
+import { colorForDevice, type ChartSeries } from './history-track';
 
 /** Interpolate smoothed live speed every N seconds for a dense chart line. */
 const LIVE_CHART_DENSIFY_SEC = 0.25;
-import { colorForDevice, type ChartSeries } from './history-track';
+/** Lighter smoothing for live speed — history charts keep stronger defaults. */
+const LIVE_SPEED_SMOOTH = {
+  tauSec: 4,
+  maxAccelMps2: 2.5,
+  glitchHoldAboveMps: 1.5,
+} as const;
 
 const WINDOW_MS = 5 * 60 * 1000;
 
@@ -19,6 +25,18 @@ type DeviceBuffer = {
 
 const buffers = new Map<string, DeviceBuffer>();
 const deviceOrder = new Map<string, number>();
+
+/** Stable palette index per device for map, chart, and device cards. */
+export function registerLiveDevice(deviceId: string): number {
+  if (!deviceOrder.has(deviceId)) {
+    deviceOrder.set(deviceId, deviceOrder.size);
+  }
+  return deviceOrder.get(deviceId)!;
+}
+
+export function liveDeviceColor(deviceId: string): string {
+  return colorForDevice(registerLiveDevice(deviceId));
+}
 
 function prune(buf: DeviceBuffer, now: number): void {
   const cutoff = now - WINDOW_MS;
@@ -41,9 +59,7 @@ export function recordLiveSpeedSamples(positions: MapPosition[]): void {
     if (!buf) {
       buf = { points: [] };
       buffers.set(p.deviceId, buf);
-      if (!deviceOrder.has(p.deviceId)) {
-        deviceOrder.set(p.deviceId, deviceOrder.size);
-      }
+      registerLiveDevice(p.deviceId);
     }
 
     const prev = buf.points[buf.points.length - 1];
@@ -72,15 +88,17 @@ export function liveSpeedVsTimeSeries(activeDeviceIds: string[]): ChartSeries[] 
   return ids.map((id, i) => {
     const pts = buffers.get(id)!.points;
     const t0 = pts[0].t;
-    const order = deviceOrder.get(id) ?? i;
     const smoothed = densifyTimeSeries(
-      smoothSpeedTimeSeries(pts.map((p) => ({ tMs: p.t, value: p.speedMps }))),
+      smoothSpeedTimeSeries(
+        pts.map((p) => ({ tMs: p.t, value: p.speedMps })),
+        LIVE_SPEED_SMOOTH,
+      ),
       LIVE_CHART_DENSIFY_SEC,
     );
     return {
       id,
       label: id,
-      color: colorForDevice(order),
+      color: liveDeviceColor(id),
       points: smoothed.map((p) => ({
         x: (p.tMs - t0) / 1000,
         y: p.value * 3.6,
