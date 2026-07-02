@@ -1233,10 +1233,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         liveMapActive = p.getBoolean("liveMapActive", false);
     }
 
-    /** User-configured GPS upload interval — geofence economy does not override this. */
+    /** GPS upload interval — geofence economy overrides user setting when active. */
     private long effectiveGpsIntervalMs() {
+        loadEconomyFromPrefs();
         loadSessionFlagsFromPrefs();
-        return gpsIntervalMs;
+        return economyActive ? economyGpsIntervalMs : gpsIntervalMs;
     }
 
     /** Fused/legacy update rate — collect fixes every 500ms for window averaging. */

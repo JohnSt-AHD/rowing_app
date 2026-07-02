@@ -224,10 +224,10 @@ export async function startRecorder(
     const prevSignature = lastEconomySignature;
     inBoatPark = match != null;
     activeBoatPark = match;
-    // Reporting interval always follows user settings (KRI window-average GPS model).
-    effectiveGpsIntervalMs = settings.gpsIntervalMs;
     if (match) {
-      effectiveUploadIntervalMs = Math.max(1000, match.economyIntervalSec * 1000);
+      const intervalMs = Math.max(1000, match.economyIntervalSec * 1000);
+      effectiveGpsIntervalMs = intervalMs;
+      effectiveUploadIntervalMs = intervalMs;
       capsizeAllowed = !match.disableCapsize;
       lastEconomySignature = [
         match.name,
@@ -235,6 +235,7 @@ export async function startRecorder(
         String(match.disableCapsize),
       ].join('|');
     } else {
+      effectiveGpsIntervalMs = settings.gpsIntervalMs;
       effectiveUploadIntervalMs = batchIntervalMs;
       capsizeAllowed = true;
       lastEconomySignature = '';
@@ -246,14 +247,14 @@ export async function startRecorder(
       onLog(
         modeChanged
           ? inBoatPark
-            ? `${match!.name}: boat park (slower uploads${capsizeAllowed ? '' : ', capsize off'}).`
+            ? `${match!.name}: boat park — every ${Math.round(effectiveGpsIntervalMs / 1000)}s${capsizeAllowed ? '' : ', capsize off'}.`
             : 'On water — full recording restored.'
-          : `${match!.name} config updated: uploads every ${Math.round(effectiveUploadIntervalMs / 1000)}s${capsizeAllowed ? '' : ', capsize off'}.`,
+          : `${match!.name} config updated: every ${Math.round(effectiveGpsIntervalMs / 1000)}s${capsizeAllowed ? '' : ', capsize off'}.`,
       );
       if (nativeCapsizeMonitorOn) {
         void setNativeEconomyMode({
           active: inBoatPark,
-          gpsIntervalMs: settings.gpsIntervalMs,
+          gpsIntervalMs: effectiveGpsIntervalMs,
           uploadIntervalMs: effectiveUploadIntervalMs,
           enableCapsize: capsizeAllowed,
         });
