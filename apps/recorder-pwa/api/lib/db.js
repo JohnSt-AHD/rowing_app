@@ -248,6 +248,45 @@ async function initSchema() {
   schemaReady = true;
 }
 
+function orgDisplayName(slug) {
+  if (slug === 'default') return 'Default';
+  return String(slug)
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Upsert org rows from ORG_TOKENS / INGEST_TOKEN env. Returns true if any env config was applied. */
+async function upsertOrgsFromEnv(sql) {
+  const { hashToken } = require('./org-auth');
+  const fromJson = parseOrgTokensEnv();
+  if (fromJson && Object.keys(fromJson).length) {
+    for (const [slug, token] of Object.entries(fromJson)) {
+      const plain = String(token ?? '').trim();
+      if (!plain) continue;
+      await sql`
+        INSERT INTO rnz_orgs (slug, name, token_hash)
+        VALUES (${String(slug)}, ${orgDisplayName(slug)}, ${hashToken(plain)})
+        ON CONFLICT (slug) DO UPDATE SET
+          token_hash = EXCLUDED.token_hash,
+          name = EXCLUDED.name
+      `;
+    }
+    return true;
+  }
+  const legacy = String(process.env.INGEST_TOKEN || '').trim();
+  if (legacy) {
+    await sql`
+      INSERT INTO rnz_orgs (slug, name, token_hash)
+      VALUES ('default', 'Default', ${hashToken(legacy)})
+      ON CONFLICT (slug) DO UPDATE SET
+        token_hash = EXCLUDED.token_hash,
+        name = EXCLUDED.name
+    `;
+    return true;
+  }
+  return false;
+}
+
 async function ensureOrgsBootstrapped() {
   if (orgBootstrapDone) return;
   if (!hasDb()) {
@@ -263,38 +302,17 @@ async function ensureOrgsBootstrapped() {
 
   const { hashToken } = require('./org-auth');
 
+  const syncedFromEnv = await upsertOrgsFromEnv(sql);
+
   const countRows = await sql`SELECT COUNT(*)::int AS n FROM rnz_orgs`;
   let orgCount = Number(countRows.rows[0]?.n) || 0;
 
-  if (orgCount === 0) {
-    const fromJson = parseOrgTokensEnv();
-    if (fromJson && Object.keys(fromJson).length) {
-      for (const [slug, token] of Object.entries(fromJson)) {
-        const plain = String(token ?? '').trim();
-        if (!plain) continue;
-        const name =
-          slug === 'default'
-            ? 'Default'
-            : String(slug)
-                .replace(/-/g, ' ')
-                .replace(/\b\w/g, (c) => c.toUpperCase());
-        await sql`
-          INSERT INTO rnz_orgs (slug, name, token_hash)
-          VALUES (${String(slug)}, ${name}, ${hashToken(plain)})
-          ON CONFLICT (slug) DO UPDATE SET
-            token_hash = EXCLUDED.token_hash,
-            name = EXCLUDED.name
-        `;
-      }
-    } else {
-      const legacy = String(process.env.INGEST_TOKEN || '').trim();
-      const tokenHash = legacy ? hashToken(legacy) : hashToken('__open__');
-      await sql`
-        INSERT INTO rnz_orgs (slug, name, token_hash)
-        VALUES ('default', 'Default', ${tokenHash})
-        ON CONFLICT (slug) DO NOTHING
-      `;
-    }
+  if (orgCount === 0 && !syncedFromEnv) {
+    await sql`
+      INSERT INTO rnz_orgs (slug, name, token_hash)
+      VALUES ('default', 'Default', ${hashToken('__open__')})
+      ON CONFLICT (slug) DO NOTHING
+    `;
     orgCount = Number(
       (await sql`SELECT COUNT(*)::int AS n FROM rnz_orgs`).rows[0]?.n,
     );
@@ -367,11 +385,14 @@ async function isOrgAuthRequired() {
   if (!hasDb()) {
     return Boolean(process.env.INGEST_TOKEN || process.env.ORG_TOKENS);
   }
+  if (parseOrgTokensEnv() || String(process.env.INGEST_TOKEN || '').trim()) {
+    return true;
+  }
   await ensureOrgsBootstrapped();
   const sql = await getSql();
   const rows = await sql`SELECT COUNT(*)::int AS n FROM rnz_orgs`;
   const n = Number(rows.rows[0]?.n) || 0;
-  if (n === 0) return Boolean(process.env.INGEST_TOKEN);
+  if (n === 0) return false;
   const open = await sql`
     SELECT 1 FROM rnz_orgs
     WHERE slug = 'default' AND token_hash = ${require('./org-auth').hashToken('__open__')}
