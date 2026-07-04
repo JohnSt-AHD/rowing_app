@@ -1,4 +1,5 @@
 const store = require('./lib/ingest-store');
+const { requireOrg } = require('./lib/require-org');
 
 /**
  * GET /api/geofences — list boat park / economy zones (recorder + dashboard)
@@ -14,10 +15,13 @@ module.exports = async function handler(req, res) {
   }
 
   if (req.method === 'GET') {
+    const org = await requireOrg(req, res);
+    if (!org) return;
     try {
-      const geofences = await store.listGeofences();
+      const geofences = await store.listGeofences(org.id);
       return res.status(200).json({
         ok: true,
+        org: org.slug,
         persisted: store.hasDb(),
         geofences,
       });
@@ -26,14 +30,13 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  if (!store.checkAuth(req)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
+  const org = await requireOrg(req, res);
+  if (!org) return;
 
   if (req.method === 'POST') {
     try {
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body ?? {};
-      const geofence = await store.createGeofence(body);
+      const geofence = await store.createGeofence(org.id, body);
       if (!geofence) {
         return res.status(503).json({
           ok: false,
@@ -49,7 +52,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'DELETE') {
     try {
       const id = req.query?.id;
-      const deleted = await store.deleteGeofence(id);
+      const deleted = await store.deleteGeofence(org.id, id);
       if (!deleted) {
         return res.status(404).json({ ok: false, error: 'Geofence not found' });
       }

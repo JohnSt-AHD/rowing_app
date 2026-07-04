@@ -4,6 +4,78 @@
  */
 
 let schemaReady = false;
+let orgBootstrapDone = false;
+
+/** @type {Map<string, { id: number, slug: string, name: string }> | null} */
+let memoryOrgByHash = null;
+
+function parseOrgTokensEnv() {
+  const raw = process.env.ORG_TOKENS;
+  if (!raw || !String(raw).trim()) return null;
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function buildMemoryOrgRegistry() {
+  const { hashToken } = require('./org-auth');
+  /** @type {Map<string, { id: number, slug: string, name: string }>} */
+  const byHash = new Map();
+  let nextId = 1;
+  const fromJson = parseOrgTokensEnv();
+  if (fromJson) {
+    for (const [slug, token] of Object.entries(fromJson)) {
+      const plain = String(token ?? '').trim();
+      if (!plain) continue;
+      const id = slug === 'default' ? 1 : ++nextId;
+      const entry = {
+        id: slug === 'default' ? 1 : id,
+        slug: String(slug),
+        name: String(slug).replace(/-/g, ' '),
+      };
+      byHash.set(hashToken(plain), entry);
+      if (slug === 'default') nextId = Math.max(nextId, 1);
+    }
+  }
+  const legacy = String(process.env.INGEST_TOKEN || '').trim();
+  if (legacy && !byHash.size) {
+    byHash.set(hashToken(legacy), { id: 1, slug: 'default', name: 'Default' });
+  }
+  if (!byHash.size) {
+    byHash.set('__open__', { id: 1, slug: 'default', name: 'Default' });
+  }
+  return byHash;
+}
+
+function getMemoryOrgRegistry() {
+  if (!memoryOrgByHash) memoryOrgByHash = buildMemoryOrgRegistry();
+  return memoryOrgByHash;
+}
+
+function resolveMemoryOrgFromToken(token) {
+  const { hashToken, tokensEqual } = require('./org-auth');
+  const plain = String(token ?? '').trim();
+  const registry = getMemoryOrgRegistry();
+  if (plain) {
+    const hit = registry.get(hashToken(plain));
+    if (hit) return hit;
+    const legacy = String(process.env.INGEST_TOKEN || '').trim();
+    if (legacy && tokensEqual(plain, legacy)) {
+      return registry.get(hashToken(legacy)) || { id: 1, slug: 'default', name: 'Default' };
+    }
+  }
+  const authRequired = Boolean(
+    process.env.INGEST_TOKEN || process.env.ORG_TOKENS,
+  );
+  if (!authRequired) {
+    return registry.get('__open__') || { id: 1, slug: 'default', name: 'Default' };
+  }
+  return null;
+}
 
 function hasDb() {
   return Boolean(
@@ -137,6 +209,22 @@ async function initSchema() {
       WHERE cleared_at IS NULL
   `;
 
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_orgs (
+      id SERIAL PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
+  await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
+  await sql`ALTER TABLE rnz_samples ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
+  await sql`ALTER TABLE rnz_regatta_messages ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
+  await sql`ALTER TABLE rnz_idempotency ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
+
   if (!globalThis.__rnzRegistryGpsBackfill) {
     globalThis.__rnzRegistryGpsBackfill = true;
     await sql`
@@ -160,17 +248,183 @@ async function initSchema() {
   schemaReady = true;
 }
 
+async function ensureOrgsBootstrapped() {
+  if (orgBootstrapDone) return;
+  if (!hasDb()) {
+    orgBootstrapDone = true;
+    return;
+  }
+  await initSchema();
+  const sql = await getSql();
+  if (!sql) {
+    orgBootstrapDone = true;
+    return;
+  }
+
+  const { hashToken } = require('./org-auth');
+
+  const countRows = await sql`SELECT COUNT(*)::int AS n FROM rnz_orgs`;
+  let orgCount = Number(countRows.rows[0]?.n) || 0;
+
+  if (orgCount === 0) {
+    const fromJson = parseOrgTokensEnv();
+    if (fromJson && Object.keys(fromJson).length) {
+      for (const [slug, token] of Object.entries(fromJson)) {
+        const plain = String(token ?? '').trim();
+        if (!plain) continue;
+        const name =
+          slug === 'default'
+            ? 'Default'
+            : String(slug)
+                .replace(/-/g, ' ')
+                .replace(/\b\w/g, (c) => c.toUpperCase());
+        await sql`
+          INSERT INTO rnz_orgs (slug, name, token_hash)
+          VALUES (${String(slug)}, ${name}, ${hashToken(plain)})
+          ON CONFLICT (slug) DO UPDATE SET
+            token_hash = EXCLUDED.token_hash,
+            name = EXCLUDED.name
+        `;
+      }
+    } else {
+      const legacy = String(process.env.INGEST_TOKEN || '').trim();
+      const tokenHash = legacy ? hashToken(legacy) : hashToken('__open__');
+      await sql`
+        INSERT INTO rnz_orgs (slug, name, token_hash)
+        VALUES ('default', 'Default', ${tokenHash})
+        ON CONFLICT (slug) DO NOTHING
+      `;
+    }
+    orgCount = Number(
+      (await sql`SELECT COUNT(*)::int AS n FROM rnz_orgs`).rows[0]?.n,
+    );
+  }
+
+  const defaultRows = await sql`
+    SELECT id FROM rnz_orgs WHERE slug = 'default' ORDER BY id ASC LIMIT 1
+  `;
+  let defaultOrgId = defaultRows.rows[0]?.id;
+  if (!defaultOrgId) {
+    const first = await sql`SELECT id FROM rnz_orgs ORDER BY id ASC LIMIT 1`;
+    defaultOrgId = first.rows[0]?.id;
+  }
+
+  if (defaultOrgId) {
+    await sql`UPDATE rnz_devices SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
+    await sql`UPDATE rnz_sessions SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
+    await sql`UPDATE rnz_samples SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
+    await sql`UPDATE rnz_geofences SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
+    await sql`UPDATE rnz_regatta_messages SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
+    await sql`UPDATE rnz_idempotency SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
+  }
+
+  await sql`ALTER TABLE rnz_devices ALTER COLUMN org_id SET NOT NULL`.catch(() => {});
+  await sql`ALTER TABLE rnz_sessions ALTER COLUMN org_id SET NOT NULL`.catch(() => {});
+  await sql`ALTER TABLE rnz_samples ALTER COLUMN org_id SET NOT NULL`.catch(() => {});
+
+  await sql`ALTER TABLE rnz_devices DROP CONSTRAINT IF EXISTS rnz_devices_unique_id_key`;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_rnz_devices_org_unique
+      ON rnz_devices (org_id, unique_id)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_samples_org_time
+      ON rnz_samples (org_id, unique_id, t_ms DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_geofences_org
+      ON rnz_geofences (org_id, name)
+  `;
+
+  orgBootstrapDone = true;
+}
+
+async function findOrgByTokenHash(tokenHash) {
+  if (!hasDb()) return null;
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const rows = await sql`
+    SELECT id, slug, name FROM rnz_orgs WHERE token_hash = ${String(tokenHash)} LIMIT 1
+  `;
+  return rows.rows[0] || null;
+}
+
+async function getDefaultOrg() {
+  if (!hasDb()) {
+    return resolveMemoryOrgFromToken('') || { id: 1, slug: 'default', name: 'Default' };
+  }
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const rows = await sql`
+    SELECT id, slug, name FROM rnz_orgs WHERE slug = 'default' ORDER BY id ASC LIMIT 1
+  `;
+  if (rows.rows[0]) return rows.rows[0];
+  const any = await sql`SELECT id, slug, name FROM rnz_orgs ORDER BY id ASC LIMIT 1`;
+  return any.rows[0] || null;
+}
+
+async function isOrgAuthRequired() {
+  if (!hasDb()) {
+    return Boolean(process.env.INGEST_TOKEN || process.env.ORG_TOKENS);
+  }
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const rows = await sql`SELECT COUNT(*)::int AS n FROM rnz_orgs`;
+  const n = Number(rows.rows[0]?.n) || 0;
+  if (n === 0) return Boolean(process.env.INGEST_TOKEN);
+  const open = await sql`
+    SELECT 1 FROM rnz_orgs
+    WHERE slug = 'default' AND token_hash = ${require('./org-auth').hashToken('__open__')}
+    LIMIT 1
+  `;
+  if (open.rows.length) return false;
+  return true;
+}
+
+/**
+ * @param {string} slug
+ * @param {string} name
+ * @param {string} plainToken
+ */
+async function createOrg(slug, name, plainToken) {
+  if (!hasDb()) throw new Error('Database required to create orgs');
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const { hashToken } = require('./org-auth');
+  const s = String(slug).trim().toLowerCase();
+  const n = String(name).trim() || s;
+  const token = String(plainToken).trim();
+  if (!s || !token) throw new Error('slug and token required');
+  const rows = await sql`
+    INSERT INTO rnz_orgs (slug, name, token_hash)
+    VALUES (${s}, ${n}, ${hashToken(token)})
+    ON CONFLICT (slug) DO UPDATE SET
+      name = EXCLUDED.name,
+      token_hash = EXCLUDED.token_hash
+    RETURNING id, slug, name
+  `;
+  return rows.rows[0];
+}
+
+async function listOrgs() {
+  if (!hasDb()) return [];
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const rows = await sql`SELECT id, slug, name, created_at FROM rnz_orgs ORDER BY name ASC`;
+  return rows.rows;
+}
+
 /**
  * @returns {Promise<{ id: number, unique_id: string, athlete_id: string|null, name: string }>}
  */
-async function ensureDevice(uniqueId, athleteId) {
+async function ensureDevice(orgId, uniqueId, athleteId) {
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const name = String(uniqueId);
   const rows = await sql`
-    INSERT INTO rnz_devices (unique_id, athlete_id, name, last_seen_at)
-    VALUES (${uniqueId}, ${athleteId || null}, ${name}, NOW())
-    ON CONFLICT (unique_id) DO UPDATE SET
+    INSERT INTO rnz_devices (org_id, unique_id, athlete_id, name, last_seen_at)
+    VALUES (${orgId}, ${uniqueId}, ${athleteId || null}, ${name}, NOW())
+    ON CONFLICT (org_id, unique_id) DO UPDATE SET
       last_seen_at = NOW(),
       athlete_id = COALESCE(EXCLUDED.athlete_id, rnz_devices.athlete_id)
     RETURNING id, unique_id, athlete_id, name
@@ -178,11 +432,11 @@ async function ensureDevice(uniqueId, athleteId) {
   return rows.rows[0];
 }
 
-async function upsertSession(sessionId, deviceRef, uniqueId, athleteId) {
+async function upsertSession(orgId, sessionId, deviceRef, uniqueId, athleteId) {
   const sql = await getSql();
   await sql`
-    INSERT INTO rnz_sessions (session_id, device_ref, unique_id, athlete_id, started_at, updated_at)
-    VALUES (${sessionId}, ${deviceRef}, ${uniqueId}, ${athleteId || null}, NOW(), NOW())
+    INSERT INTO rnz_sessions (org_id, session_id, device_ref, unique_id, athlete_id, started_at, updated_at)
+    VALUES (${orgId}, ${sessionId}, ${deviceRef}, ${uniqueId}, ${athleteId || null}, NOW(), NOW())
     ON CONFLICT (session_id) DO UPDATE SET
       updated_at = NOW(),
       athlete_id = COALESCE(EXCLUDED.athlete_id, rnz_sessions.athlete_id)
@@ -206,7 +460,7 @@ function derivedFromRow(row) {
 /**
  * @param {Array<{ t: number, gps?: object, motion?: object, hr?: object, derived?: object }>} samples
  */
-async function insertSamples(sessionId, deviceRef, uniqueId, samples) {
+async function insertSamples(orgId, sessionId, deviceRef, uniqueId, samples) {
   const sql = await getSql();
   const packed = samples.map((s) => {
     const d = s.derived || {};
@@ -235,12 +489,12 @@ async function insertSamples(sessionId, deviceRef, uniqueId, samples) {
   });
   await sql`
     INSERT INTO rnz_samples (
-      session_id, device_ref, unique_id, t_ms,
+      org_id, session_id, device_ref, unique_id, t_ms,
       latitude, longitude, accuracy, speed, course, compass_deg, altitude,
       hr, ax, ay, az, stroke_rate, capsize, tilt_deg, battery_pct, heartbeat
     )
     SELECT
-      ${sessionId}::text, ${deviceRef}::int, ${uniqueId}::text,
+      ${orgId}::int, ${sessionId}::text, ${deviceRef}::int, ${uniqueId}::text,
       x.t_ms, x.latitude, x.longitude, x.accuracy, x.speed, x.course, x.compass_deg, x.altitude,
       x.hr, x.ax, x.ay, x.az, x.stroke_rate, x.capsize, x.tilt_deg, x.battery_pct, x.heartbeat
     FROM jsonb_to_recordset(${JSON.stringify(packed)}::jsonb) AS x(
@@ -268,7 +522,7 @@ async function insertSamples(sessionId, deviceRef, uniqueId, samples) {
 /**
  * @param {Array<{ t: number, gps?: object }>} samples
  */
-async function updateDeviceLatestGps(uniqueId, samples) {
+async function updateDeviceLatestGps(orgId, uniqueId, samples) {
   let best = null;
   for (const s of samples) {
     const lat = s.gps?.lat;
@@ -297,34 +551,37 @@ async function updateDeviceLatestGps(uniqueId, samples) {
         last_lon = ${best.lon},
         last_gps_accuracy = ${best.acc},
         last_gps_ingest_at = NOW()
-    WHERE unique_id = ${String(uniqueId)}
+    WHERE org_id = ${orgId}
+      AND unique_id = ${String(uniqueId)}
       AND (last_gps_t_ms IS NULL OR last_gps_t_ms <= ${best.t})
   `;
 }
 
-async function persistBatch(sessionId, deviceId, athleteId, samples) {
+async function persistBatch(orgId, sessionId, deviceId, athleteId, samples) {
   if (!hasDb() || !samples.length) return false;
-  await initSchema();
-  const dev = await ensureDevice(deviceId, athleteId);
-  await upsertSession(sessionId, dev.id, deviceId, athleteId);
-  await insertSamples(sessionId, dev.id, deviceId, samples);
-  await updateDeviceLatestGps(deviceId, samples);
+  await ensureOrgsBootstrapped();
+  const dev = await ensureDevice(orgId, deviceId, athleteId);
+  await upsertSession(orgId, sessionId, dev.id, deviceId, athleteId);
+  await insertSamples(orgId, sessionId, dev.id, deviceId, samples);
+  await updateDeviceLatestGps(orgId, deviceId, samples);
   return true;
 }
 
-async function resolveDevice(deviceIdParam, uniqueIdParam) {
+async function resolveDevice(orgId, deviceIdParam, uniqueIdParam) {
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   if (uniqueIdParam) {
     const rows = await sql`
-      SELECT id, unique_id, athlete_id, name FROM rnz_devices WHERE unique_id = ${uniqueIdParam} LIMIT 1
+      SELECT id, unique_id, athlete_id, name FROM rnz_devices
+      WHERE org_id = ${orgId} AND unique_id = ${uniqueIdParam} LIMIT 1
     `;
     return rows.rows[0] || null;
   }
   const n = Number(deviceIdParam);
   if (Number.isFinite(n)) {
     const rows = await sql`
-      SELECT id, unique_id, athlete_id, name FROM rnz_devices WHERE id = ${n} LIMIT 1
+      SELECT id, unique_id, athlete_id, name FROM rnz_devices
+      WHERE org_id = ${orgId} AND id = ${n} LIMIT 1
     `;
     return rows.rows[0] || null;
   }
@@ -383,7 +640,7 @@ function rowToTraccarPosition(row) {
   };
 }
 
-async function getRoutePositions(deviceRef, fromIso, toIso) {
+async function getRoutePositions(orgId, deviceRef, fromIso, toIso) {
   const sql = await getSql();
   const fromMs = new Date(fromIso).getTime();
   const toMs = new Date(toIso).getTime();
@@ -391,7 +648,8 @@ async function getRoutePositions(deviceRef, fromIso, toIso) {
     SELECT id, device_ref, unique_id, t_ms, latitude, longitude, accuracy, speed, course, compass_deg, altitude, hr, ax, ay, az,
       stroke_rate, capsize, tilt_deg
     FROM rnz_samples
-    WHERE device_ref = ${deviceRef}
+    WHERE org_id = ${orgId}
+      AND device_ref = ${deviceRef}
       AND t_ms >= ${fromMs}
       AND t_ms <= ${toMs}
       AND latitude IS NOT NULL
@@ -402,7 +660,7 @@ async function getRoutePositions(deviceRef, fromIso, toIso) {
   return rows.rows.map(rowToTraccarPosition);
 }
 
-async function getLatestTraccarPositions(onlineMs = 30000) {
+async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
   const sql = await getSql();
   const cutoff = Date.now() - onlineMs;
   const rows = await sql`
@@ -410,8 +668,9 @@ async function getLatestTraccarPositions(onlineMs = 30000) {
       s.id, s.device_ref, s.unique_id, s.t_ms, s.latitude, s.longitude, s.accuracy, s.speed, s.course, s.compass_deg, s.altitude, s.hr, s.ax, s.ay, s.az,
       d.last_seen_at
     FROM rnz_samples s
-    JOIN rnz_devices d ON d.id = s.device_ref
-    WHERE s.latitude IS NOT NULL AND s.longitude IS NOT NULL
+    JOIN rnz_devices d ON d.id = s.device_ref AND d.org_id = s.org_id
+    WHERE s.org_id = ${orgId}
+      AND s.latitude IS NOT NULL AND s.longitude IS NOT NULL
     ORDER BY s.device_ref, s.t_ms DESC
   `;
   return rows.rows.map(rowToTraccarPosition);
@@ -421,9 +680,9 @@ async function getLatestTraccarPositions(onlineMs = 30000) {
  * Recent samples grouped by device (for dashboard when Postgres is enabled).
  * @returns {Promise<Map<string, { deviceId: string, athleteId: string|null, sessionId: string, samples: object[], lastSeenMs: number, firstSeenMs: number }>>}
  */
-async function fetchRecentSamplesByDevice(windowMs) {
+async function fetchRecentSamplesByDevice(orgId, windowMs) {
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const cutoff = Date.now() - windowMs;
   const rows = await sql`
     SELECT s.unique_id, s.session_id, s.t_ms,
@@ -432,8 +691,9 @@ async function fetchRecentSamplesByDevice(windowMs) {
       s.battery_pct, s.heartbeat,
       d.athlete_id
     FROM rnz_samples s
-    LEFT JOIN rnz_devices d ON d.unique_id = s.unique_id
-    WHERE s.t_ms >= ${cutoff}
+    LEFT JOIN rnz_devices d ON d.org_id = s.org_id AND d.unique_id = s.unique_id
+    WHERE s.org_id = ${orgId}
+      AND s.t_ms >= ${cutoff}
     ORDER BY s.unique_id, s.t_ms ASC
     LIMIT 80000
   `;
@@ -492,11 +752,12 @@ async function fetchRecentSamplesByDevice(windowMs) {
  * Server ingest times per device (telemetry + last GPS batch).
  * @returns {Promise<Map<string, { lastSeenMs: number, lastGpsIngestMs: number|null }>>}
  */
-async function getDeviceRegistryTimes() {
+async function getDeviceRegistryTimes(orgId) {
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const rows = await sql`
     SELECT unique_id, last_seen_at, last_gps_ingest_at FROM rnz_devices
+    WHERE org_id = ${orgId}
   `;
   const byDevice = new Map();
   for (const row of rows.rows) {
@@ -514,8 +775,8 @@ async function getDeviceRegistryTimes() {
  * Server ingest time per device (updated on each persistBatch).
  * @returns {Promise<Map<string, number>>}
  */
-async function getDeviceIngestTimes() {
-  const registry = await getDeviceRegistryTimes();
+async function getDeviceIngestTimes(orgId) {
+  const registry = await getDeviceRegistryTimes(orgId);
   return new Map(
     [...registry.entries()].map(([id, row]) => [id, row.lastSeenMs]),
   );
@@ -524,16 +785,17 @@ async function getDeviceIngestTimes() {
 /**
  * Latest GPS fix per device from registry (one row read — works across serverless instances).
  */
-async function getRegistryMapPositions(onlineMs, staleMs) {
+async function getRegistryMapPositions(orgId, onlineMs, staleMs) {
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const now = Date.now();
   const staleCutoff = now - staleMs;
   const rows = await sql`
     SELECT unique_id, athlete_id, last_seen_at,
       last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
     FROM rnz_devices
-    WHERE last_gps_t_ms IS NOT NULL
+    WHERE org_id = ${orgId}
+      AND last_gps_t_ms IS NOT NULL
       AND last_lat IS NOT NULL
       AND last_lon IS NOT NULL
       AND last_gps_t_ms >= ${staleCutoff}
@@ -562,9 +824,9 @@ async function getRegistryMapPositions(onlineMs, staleMs) {
 /**
  * Latest GPS fix per device for dashboard map (within stale window).
  */
-async function getMapPositions(onlineMs, staleMs) {
+async function getMapPositions(orgId, onlineMs, staleMs) {
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const now = Date.now();
   const staleCutoff = now - staleMs;
   const rows = await sql`
@@ -572,8 +834,9 @@ async function getMapPositions(onlineMs, staleMs) {
       s.unique_id, s.latitude, s.longitude, s.accuracy, s.speed, s.course, s.t_ms, s.hr,
       d.last_seen_at, d.athlete_id
     FROM rnz_samples s
-    JOIN rnz_devices d ON d.unique_id = s.unique_id
-    WHERE s.latitude IS NOT NULL AND s.longitude IS NOT NULL
+    JOIN rnz_devices d ON d.org_id = s.org_id AND d.unique_id = s.unique_id
+    WHERE s.org_id = ${orgId}
+      AND s.latitude IS NOT NULL AND s.longitude IS NOT NULL
       AND s.t_ms >= ${staleCutoff}
     ORDER BY s.unique_id, s.t_ms DESC
   `;
@@ -601,13 +864,14 @@ async function getMapPositions(onlineMs, staleMs) {
 }
 
 /** @returns {Promise<Map<string, { t: number, lat: number, lon: number, acc: number|null }>>} */
-async function getRegistryGpsByDevice() {
+async function getRegistryGpsByDevice(orgId) {
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const rows = await sql`
     SELECT unique_id, last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
     FROM rnz_devices
-    WHERE last_gps_t_ms IS NOT NULL
+    WHERE org_id = ${orgId}
+      AND last_gps_t_ms IS NOT NULL
       AND last_lat IS NOT NULL
       AND last_lon IS NOT NULL
   `;
@@ -624,11 +888,12 @@ async function getRegistryGpsByDevice() {
   return byDevice;
 }
 
-async function listRegistryDevices() {
+async function listRegistryDevices(orgId) {
   const sql = await getSql();
   const rows = await sql`
     SELECT id, unique_id, athlete_id, name, first_seen_at, last_seen_at
     FROM rnz_devices
+    WHERE org_id = ${orgId}
     ORDER BY last_seen_at DESC
   `;
   return rows.rows.map((d) => ({
@@ -646,16 +911,17 @@ async function listRegistryDevices() {
 }
 
 /** Devices with sample time range (for dashboard history — not limited to live poll). */
-async function listHistoryDevicesDetailed() {
+async function listHistoryDevicesDetailed(orgId) {
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const rows = await sql`
     SELECT d.unique_id, d.name, d.last_seen_at,
       MIN(s.t_ms)::bigint AS first_sample_ms,
       MAX(s.t_ms)::bigint AS last_sample_ms,
       COUNT(s.id)::int AS sample_count
     FROM rnz_devices d
-    INNER JOIN rnz_samples s ON s.unique_id = d.unique_id
+    INNER JOIN rnz_samples s ON s.org_id = d.org_id AND s.unique_id = d.unique_id
+    WHERE d.org_id = ${orgId}
     GROUP BY d.id, d.unique_id, d.name, d.last_seen_at
     ORDER BY MAX(s.t_ms) DESC
   `;
@@ -669,27 +935,28 @@ async function listHistoryDevicesDetailed() {
   }));
 }
 
-async function getTraccarSnapshot(onlineMs = 120000) {
-  const devices = await listRegistryDevices();
-  const positions = await getLatestTraccarPositions(onlineMs);
+async function getTraccarSnapshot(orgId, onlineMs = 120000) {
+  const devices = await listRegistryDevices(orgId);
+  const positions = await getLatestTraccarPositions(orgId, onlineMs);
   return { devices, positions, geofences: [], groups: [] };
 }
 
-async function listSessions(uniqueId, limit = 100) {
+async function listSessions(orgId, uniqueId, limit = 100) {
   const sql = await getSql();
   const rows = uniqueId
     ? await sql`
         SELECT session_id, unique_id, athlete_id, started_at, ended_at, updated_at,
-          (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = rnz_sessions.session_id) AS sample_count
+          (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = rnz_sessions.session_id AND org_id = ${orgId}) AS sample_count
         FROM rnz_sessions
-        WHERE unique_id = ${uniqueId}
+        WHERE org_id = ${orgId} AND unique_id = ${uniqueId}
         ORDER BY started_at DESC
         LIMIT ${limit}
       `
     : await sql`
         SELECT session_id, unique_id, athlete_id, started_at, ended_at, updated_at,
-          (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = rnz_sessions.session_id) AS sample_count
+          (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = rnz_sessions.session_id AND org_id = ${orgId}) AS sample_count
         FROM rnz_sessions
+        WHERE org_id = ${orgId}
         ORDER BY started_at DESC
         LIMIT ${limit}
       `;
@@ -763,10 +1030,10 @@ function buildDashboardHistoryFromRows(rows, meta = {}) {
   };
 }
 
-async function getDashboardHistory(uniqueId, fromIso, toIso) {
+async function getDashboardHistory(orgId, uniqueId, fromIso, toIso) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const fromMs = new Date(fromIso).getTime();
   const toMs = new Date(toIso).getTime();
   if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
@@ -774,7 +1041,8 @@ async function getDashboardHistory(uniqueId, fromIso, toIso) {
   const rows = await sql`
     SELECT t_ms, latitude, longitude, speed, hr, stroke_rate, capsize, tilt_deg
     FROM rnz_samples
-    WHERE unique_id = ${String(uniqueId)}
+    WHERE org_id = ${orgId}
+      AND unique_id = ${String(uniqueId)}
       AND t_ms >= ${fromMs}
       AND t_ms <= ${toMs}
     ORDER BY t_ms ASC
@@ -788,14 +1056,14 @@ async function getDashboardHistory(uniqueId, fromIso, toIso) {
   });
 }
 
-async function getDashboardHistoryBySession(sessionId) {
+async function getDashboardHistoryBySession(orgId, sessionId) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const meta = await sql`
     SELECT session_id, unique_id, athlete_id, started_at, ended_at
     FROM rnz_sessions
-    WHERE session_id = ${String(sessionId)}
+    WHERE org_id = ${orgId} AND session_id = ${String(sessionId)}
     LIMIT 1
   `;
   if (!meta.rows[0]) return null;
@@ -803,7 +1071,7 @@ async function getDashboardHistoryBySession(sessionId) {
   const samples = await sql`
     SELECT t_ms, latitude, longitude, speed, hr, stroke_rate, capsize, tilt_deg
     FROM rnz_samples
-    WHERE session_id = ${String(sessionId)}
+    WHERE org_id = ${orgId} AND session_id = ${String(sessionId)}
     ORDER BY t_ms ASC
     LIMIT 50000
   `;
@@ -823,17 +1091,17 @@ async function getDashboardHistoryBySession(sessionId) {
   });
 }
 
-async function getSessionFromDb(sessionId) {
+async function getSessionFromDb(orgId, sessionId) {
   const sql = await getSql();
   const meta = await sql`
-    SELECT * FROM rnz_sessions WHERE session_id = ${sessionId} LIMIT 1
+    SELECT * FROM rnz_sessions WHERE org_id = ${orgId} AND session_id = ${sessionId} LIMIT 1
   `;
   if (!meta.rows[0]) return null;
   const samples = await sql`
     SELECT t_ms AS t, latitude, longitude, accuracy, speed, course, compass_deg, altitude, hr, ax, ay, az,
       stroke_rate, capsize, tilt_deg, battery_pct, heartbeat
     FROM rnz_samples
-    WHERE session_id = ${sessionId}
+    WHERE org_id = ${orgId} AND session_id = ${sessionId}
     ORDER BY t_ms ASC
     LIMIT 50000
   `;
@@ -870,10 +1138,10 @@ async function getSessionFromDb(sessionId) {
   };
 }
 
-async function getStorageStats() {
+async function getStorageStats(orgId) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const fromEnv =
     process.env.POSTGRES_STORAGE_LIMIT_MB ?? process.env.STORAGE_LIMIT_MB;
   const parsed =
@@ -882,11 +1150,11 @@ async function getStorageStats() {
     Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 512;
   const result = await sql`
     SELECT
-      (SELECT COUNT(*)::int FROM rnz_devices) AS device_count,
-      (SELECT COUNT(*)::int FROM rnz_sessions) AS session_count,
-      (SELECT COUNT(*)::int FROM rnz_samples) AS sample_count,
-      (SELECT MIN(t_ms)::bigint FROM rnz_samples) AS oldest_sample_ms,
-      (SELECT MAX(t_ms)::bigint FROM rnz_samples) AS newest_sample_ms,
+      (SELECT COUNT(*)::int FROM rnz_devices WHERE org_id = ${orgId}) AS device_count,
+      (SELECT COUNT(*)::int FROM rnz_sessions WHERE org_id = ${orgId}) AS session_count,
+      (SELECT COUNT(*)::int FROM rnz_samples WHERE org_id = ${orgId}) AS sample_count,
+      (SELECT MIN(t_ms)::bigint FROM rnz_samples WHERE org_id = ${orgId}) AS oldest_sample_ms,
+      (SELECT MAX(t_ms)::bigint FROM rnz_samples WHERE org_id = ${orgId}) AS newest_sample_ms,
       pg_database_size(current_database())::bigint AS database_size_bytes,
       pg_total_relation_size('rnz_samples')::bigint AS samples_table_bytes
   `;
@@ -916,16 +1184,16 @@ async function getStorageStats() {
   };
 }
 
-async function deleteSession(sessionId) {
+async function deleteSession(orgId, sessionId) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const sid = String(sessionId);
   const delSamples = await sql`
-    DELETE FROM rnz_samples WHERE session_id = ${sid}
+    DELETE FROM rnz_samples WHERE org_id = ${orgId} AND session_id = ${sid}
   `;
   const delSession = await sql`
-    DELETE FROM rnz_sessions WHERE session_id = ${sid}
+    DELETE FROM rnz_sessions WHERE org_id = ${orgId} AND session_id = ${sid}
   `;
   return {
     samplesDeleted: delSamples.rowCount ?? 0,
@@ -933,19 +1201,19 @@ async function deleteSession(sessionId) {
   };
 }
 
-async function deleteDeviceData(uniqueId) {
+async function deleteDeviceData(orgId, uniqueId) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const uid = String(uniqueId);
   const delSamples = await sql`
-    DELETE FROM rnz_samples WHERE unique_id = ${uid}
+    DELETE FROM rnz_samples WHERE org_id = ${orgId} AND unique_id = ${uid}
   `;
   const delSessions = await sql`
-    DELETE FROM rnz_sessions WHERE unique_id = ${uid}
+    DELETE FROM rnz_sessions WHERE org_id = ${orgId} AND unique_id = ${uid}
   `;
   const delDevice = await sql`
-    DELETE FROM rnz_devices WHERE unique_id = ${uid}
+    DELETE FROM rnz_devices WHERE org_id = ${orgId} AND unique_id = ${uid}
   `;
   return {
     samplesDeleted: delSamples.rowCount ?? 0,
@@ -954,22 +1222,24 @@ async function deleteDeviceData(uniqueId) {
   };
 }
 
-async function deleteSamplesInRange(uniqueId, fromMs, toMs) {
+async function deleteSamplesInRange(orgId, uniqueId, fromMs, toMs) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const uid = String(uniqueId);
   const delSamples = await sql`
     DELETE FROM rnz_samples
-    WHERE unique_id = ${uid}
+    WHERE org_id = ${orgId}
+      AND unique_id = ${uid}
       AND t_ms >= ${fromMs}
       AND t_ms <= ${toMs}
   `;
   const delEmptySessions = await sql`
     DELETE FROM rnz_sessions s
-    WHERE s.unique_id = ${uid}
+    WHERE s.org_id = ${orgId}
+      AND s.unique_id = ${uid}
       AND NOT EXISTS (
-        SELECT 1 FROM rnz_samples x WHERE x.session_id = s.session_id
+        SELECT 1 FROM rnz_samples x WHERE x.org_id = ${orgId} AND x.session_id = s.session_id
       )
   `;
   return {
@@ -978,28 +1248,33 @@ async function deleteSamplesInRange(uniqueId, fromMs, toMs) {
   };
 }
 
-async function deleteAllStoredData() {
+async function deleteAllStoredData(orgId) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
-  const delSamples = await sql`DELETE FROM rnz_samples`;
-  const delSessions = await sql`DELETE FROM rnz_sessions`;
-  const delDevices = await sql`DELETE FROM rnz_devices`;
+  await ensureOrgsBootstrapped();
+  const delSamples = await sql`DELETE FROM rnz_samples WHERE org_id = ${orgId}`;
+  const delSessions = await sql`DELETE FROM rnz_sessions WHERE org_id = ${orgId}`;
+  const delDevices = await sql`DELETE FROM rnz_devices WHERE org_id = ${orgId}`;
+  const delGeofences = await sql`DELETE FROM rnz_geofences WHERE org_id = ${orgId}`;
+  const delMessages = await sql`DELETE FROM rnz_regatta_messages WHERE org_id = ${orgId}`;
   return {
     samplesDeleted: delSamples.rowCount ?? 0,
     sessionsDeleted: delSessions.rowCount ?? 0,
     devicesDeleted: delDevices.rowCount ?? 0,
+    geofencesDeleted: delGeofences.rowCount ?? 0,
+    messagesDeleted: delMessages.rowCount ?? 0,
   };
 }
 
-async function getIdempotency(key, ttlMs = 10 * 60 * 1000) {
+async function getIdempotency(orgId, key, ttlMs = 10 * 60 * 1000) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
+  const scopedKey = `${orgId}:${String(key)}`;
   const rows = await sql`
     SELECT response, created_at
     FROM rnz_idempotency
-    WHERE key = ${String(key)}
+    WHERE org_id = ${orgId} AND key = ${scopedKey}
     LIMIT 1
   `;
   const row = rows.rows[0];
@@ -1009,13 +1284,14 @@ async function getIdempotency(key, ttlMs = 10 * 60 * 1000) {
   return row.response || null;
 }
 
-async function setIdempotency(key, response) {
+async function setIdempotency(orgId, key, response) {
   if (!hasDb()) return;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
+  const scopedKey = `${orgId}:${String(key)}`;
   await sql`
-    INSERT INTO rnz_idempotency (key, created_at, response)
-    VALUES (${String(key)}, NOW(), ${JSON.stringify(response)}::jsonb)
+    INSERT INTO rnz_idempotency (org_id, key, created_at, response)
+    VALUES (${orgId}, ${scopedKey}, NOW(), ${JSON.stringify(response)}::jsonb)
     ON CONFLICT (key) DO UPDATE SET
       created_at = NOW(),
       response = EXCLUDED.response
@@ -1034,24 +1310,25 @@ const {
   economyIntervalSecFromInput,
 } = require('./geofence');
 
-async function listGeofences() {
+async function listGeofences(orgId) {
   if (!hasDb()) return [];
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const rows = await sql`
     SELECT id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
            economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
            created_at, updated_at
     FROM rnz_geofences
+    WHERE org_id = ${orgId}
     ORDER BY name ASC
   `;
   return rows.rows.map(normalizeGeofence);
 }
 
-async function createGeofence(body) {
+async function createGeofence(orgId, body) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const name = String(body.name ?? '').trim();
   if (!name) throw new Error('name is required');
   const kind = String(body.kind ?? 'boat_park').trim() || 'boat_park';
@@ -1094,11 +1371,11 @@ async function createGeofence(body) {
     shapeType === 'polygon'
       ? await sql`
     INSERT INTO rnz_geofences (
-      name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
+      org_id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
       economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize
     )
     VALUES (
-      ${name}, ${kind}, ${shapeType}, ${centerLat}, ${centerLon}, ${radiusM},
+      ${orgId}, ${name}, ${kind}, ${shapeType}, ${centerLat}, ${centerLon}, ${radiusM},
       ${JSON.stringify(polygonRing)}::jsonb, ${enabled},
       ${economyGps}, ${economyUpload}, ${disableCapsize}
     )
@@ -1108,11 +1385,11 @@ async function createGeofence(body) {
   `
       : await sql`
     INSERT INTO rnz_geofences (
-      name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
+      org_id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
       economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize
     )
     VALUES (
-      ${name}, ${kind}, ${shapeType}, ${centerLat}, ${centerLon}, ${radiusM}, NULL, ${enabled},
+      ${orgId}, ${name}, ${kind}, ${shapeType}, ${centerLat}, ${centerLon}, ${radiusM}, NULL, ${enabled},
       ${economyGps}, ${economyUpload}, ${disableCapsize}
     )
     RETURNING id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
@@ -1122,51 +1399,51 @@ async function createGeofence(body) {
   return normalizeGeofence(rows.rows[0]);
 }
 
-async function deleteGeofence(id) {
+async function deleteGeofence(orgId, id) {
   if (!hasDb()) return false;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const n = Number(id);
   if (!Number.isFinite(n)) return false;
-  const del = await sql`DELETE FROM rnz_geofences WHERE id = ${n}`;
+  const del = await sql`DELETE FROM rnz_geofences WHERE org_id = ${orgId} AND id = ${n}`;
   return (del.rowCount ?? 0) > 0;
 }
 
 const { normalizeRegattaMessage } = require('./regatta-message');
 
-async function getActiveRegattaMessage(deviceId) {
+async function getActiveRegattaMessage(orgId, deviceId) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const id = String(deviceId ?? '').trim();
   if (!id) return null;
   const rows = await sql`
     SELECT id, device_id, text, created_at
     FROM rnz_regatta_messages
-    WHERE device_id = ${id} AND cleared_at IS NULL
+    WHERE org_id = ${orgId} AND device_id = ${id} AND cleared_at IS NULL
     ORDER BY created_at DESC
     LIMIT 1
   `;
   return normalizeRegattaMessage(rows.rows[0]);
 }
 
-async function listActiveRegattaMessages() {
+async function listActiveRegattaMessages(orgId) {
   if (!hasDb()) return [];
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const rows = await sql`
     SELECT DISTINCT ON (device_id) id, device_id, text, created_at
     FROM rnz_regatta_messages
-    WHERE cleared_at IS NULL
+    WHERE org_id = ${orgId} AND cleared_at IS NULL
     ORDER BY device_id ASC, created_at DESC
   `;
   return rows.rows.map(normalizeRegattaMessage).filter(Boolean);
 }
 
-async function setRegattaMessage(deviceId, text) {
+async function setRegattaMessage(orgId, deviceId, text) {
   if (!hasDb()) return null;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const id = String(deviceId ?? '').trim();
   const msg = String(text ?? '').trim();
   if (!id || !msg) return null;
@@ -1174,44 +1451,44 @@ async function setRegattaMessage(deviceId, text) {
   await sql`
     UPDATE rnz_regatta_messages
     SET cleared_at = NOW()
-    WHERE device_id = ${id} AND cleared_at IS NULL
+    WHERE org_id = ${orgId} AND device_id = ${id} AND cleared_at IS NULL
   `;
 
   const ins = await sql`
-    INSERT INTO rnz_regatta_messages (device_id, text)
-    VALUES (${id}, ${msg})
+    INSERT INTO rnz_regatta_messages (org_id, device_id, text)
+    VALUES (${orgId}, ${id}, ${msg})
     RETURNING id, device_id, text, created_at
   `;
   return normalizeRegattaMessage(ins.rows[0]);
 }
 
-async function broadcastRegattaMessage(text, deviceIds = null) {
+async function broadcastRegattaMessage(orgId, text, deviceIds = null) {
   if (!hasDb()) return [];
   let ids = Array.isArray(deviceIds)
     ? [...new Set(deviceIds.map((id) => String(id ?? '').trim()).filter(Boolean))]
     : [];
   if (!ids.length) {
-    const devices = await listRegistryDevices();
+    const devices = await listRegistryDevices(orgId);
     ids = devices.map((d) => String(d.uniqueId ?? '').trim()).filter(Boolean);
   }
   const messages = [];
   for (const deviceId of ids) {
-    const message = await setRegattaMessage(deviceId, text);
+    const message = await setRegattaMessage(orgId, deviceId, text);
     if (message) messages.push(message);
   }
   return messages;
 }
 
-async function clearRegattaMessage(deviceId) {
+async function clearRegattaMessage(orgId, deviceId) {
   if (!hasDb()) return false;
   const sql = await getSql();
-  await initSchema();
+  await ensureOrgsBootstrapped();
   const id = String(deviceId ?? '').trim();
   if (!id) return false;
   const upd = await sql`
     UPDATE rnz_regatta_messages
     SET cleared_at = NOW()
-    WHERE device_id = ${id} AND cleared_at IS NULL
+    WHERE org_id = ${orgId} AND device_id = ${id} AND cleared_at IS NULL
   `;
   return (upd.rowCount ?? 0) > 0;
 }
@@ -1219,6 +1496,13 @@ async function clearRegattaMessage(deviceId) {
 module.exports = {
   hasDb,
   initSchema,
+  ensureOrgsBootstrapped,
+  findOrgByTokenHash,
+  getDefaultOrg,
+  isOrgAuthRequired,
+  createOrg,
+  listOrgs,
+  resolveMemoryOrgFromToken,
   persistBatch,
   fetchRecentSamplesByDevice,
   getDeviceIngestTimes,

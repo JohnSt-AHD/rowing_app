@@ -1,5 +1,14 @@
 const db = require('./db');
 const { analyzeMotionWindow } = require('./motion-analysis');
+const { resolveOrg: resolveOrgFromRequest } = require('./org-auth');
+
+function orgSessionKey(orgId, sessionId) {
+  return `${orgId}:${sessionId}`;
+}
+
+function orgDeviceKey(orgId, deviceId) {
+  return `${orgId}:${deviceId}`;
+}
 
 const MAX_SAMPLES_PER_REQUEST = 500;
 const MAX_SESSIONS = 200;
@@ -112,6 +121,7 @@ function setCapsizeClear(deviceId) {
 /**
  * @typedef {{ t: number, gps?: object, motion?: object, hr?: object, derived?: object }} Sample
  * @typedef {{
+ *   orgId: number,
  *   deviceId: string,
  *   athleteId?: string,
  *   samples: Sample[],
@@ -349,7 +359,7 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
 }
 
 /** Replay recent GPS samples so map polls warm the filter (serverless-safe). */
-function warmGpsTracksFromSamplesByDevice(byDevice, opts = {}) {
+function warmGpsTracksFromSamplesByDevice(orgId, byDevice, opts = {}) {
   if (!byDevice) return;
   const trackOpts = {
     maxTrackSpeedMps: opts.maxTrackSpeedMps ?? MAX_TRACK_SPEED_MPS,
@@ -360,10 +370,11 @@ function warmGpsTracksFromSamplesByDevice(byDevice, opts = {}) {
       : [...byDevice.values()].map((entry) => [entry.deviceId, entry]);
   for (const [deviceId, entry] of entries) {
     if (!deviceId || !entry) continue;
+    const trackKey = orgDeviceKey(orgId, deviceId);
     for (const s of entry.samples || []) {
       if (!s?.gps) continue;
       const fix = gpsFromSample(s, { forTrack: true });
-      if (fix) updateGpsTrack(deviceId, fix, trackOpts);
+      if (fix) updateGpsTrack(trackKey, fix, trackOpts);
     }
   }
 }
@@ -373,12 +384,15 @@ function warmGpsTracksFromSamplesByDevice(byDevice, opts = {}) {
  * Overlay uses last fix + bounded velocity extrapolation to now (when moving).
  * @param {object[]} rawPositions
  * @param {'rowing' | 'car'} [predictMode]
+ * @param {number} [orgId]
  */
-function attachSmoothMapCoords(rawPositions, predictMode = 'rowing') {
+function attachSmoothMapCoords(rawPositions, predictMode = 'rowing', orgId = null) {
   const limits = predictLimitsForMode(parsePredictMode(predictMode));
   const now = Date.now();
   return rawPositions.map((p) => {
-    const track = gpsTracks.get(String(p.deviceId));
+    const trackKey =
+      orgId != null ? orgDeviceKey(orgId, p.deviceId) : String(p.deviceId);
+    const track = gpsTracks.get(trackKey);
     const rawLat = p.latitude;
     const rawLon = p.longitude;
     if (rawLat == null || rawLon == null) {
@@ -694,17 +708,17 @@ function sensorStats(samples, windowMs, deviceId) {
  * @param {Sample[]} samples
  * @param {string} [idempotencyKey]
  */
-async function recordBatch(sessionId, deviceId, athleteId, samples, idempotencyKey) {
+async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idempotencyKey) {
   metrics.requests++;
   const dedupeKey = idempotencyKey ? String(idempotencyKey) : '';
   const now = Date.now();
   pruneIdempotency(now);
   if (dedupeKey && db.hasDb()) {
     try {
-      const dbCached = await db.getIdempotency(dedupeKey, IDEMPOTENCY_TTL_MS);
+      const dbCached = await db.getIdempotency(orgId, dedupeKey, IDEMPOTENCY_TTL_MS);
       if (dbCached) {
         metrics.duplicates++;
-        recentIdempotency.set(dedupeKey, { t: now, result: dbCached });
+        recentIdempotency.set(`${orgId}:${dedupeKey}`, { t: now, result: dbCached });
         return { ...dbCached, duplicate: true };
       }
     } catch (err) {
@@ -712,24 +726,27 @@ async function recordBatch(sessionId, deviceId, athleteId, samples, idempotencyK
     }
   }
   if (dedupeKey) {
-    const cached = recentIdempotency.get(dedupeKey);
+    const memKey = `${orgId}:${dedupeKey}`;
+    const cached = recentIdempotency.get(memKey);
     if (cached && now - cached.t <= IDEMPOTENCY_TTL_MS) {
       metrics.duplicates++;
       return { ...cached.result, duplicate: true };
     }
   }
   if (!samples.length) return { received: 0 };
-  const clean = sanitizeAndTrackSamples(deviceId, samples);
+  const scopedDevice = orgDeviceKey(orgId, deviceId);
+  const clean = sanitizeAndTrackSamples(scopedDevice, samples);
   if (!clean.samples.length) {
     metrics.droppedSamples += clean.dropped || 0;
     return { received: 0, dropped: clean.dropped };
   }
   metrics.droppedSamples += clean.dropped || 0;
 
-  const key = String(sessionId);
+  const key = orgSessionKey(orgId, sessionId);
   let row = sessions.get(key);
   if (!row) {
     row = {
+      orgId,
       deviceId: String(deviceId),
       athleteId: athleteId ? String(athleteId) : undefined,
       samples: [],
@@ -739,11 +756,12 @@ async function recordBatch(sessionId, deviceId, athleteId, samples, idempotencyK
     sessions.set(key, row);
   }
 
+  row.orgId = orgId;
   row.deviceId = String(deviceId);
   if (athleteId) row.athleteId = String(athleteId);
   row.samples.push(...clean.samples);
   row.updatedAt = now;
-  noteDeviceTelemetry(deviceId, clean.samples);
+  noteDeviceTelemetry(scopedDevice, clean.samples);
   trimSampleRing(row);
   trimSessions();
 
@@ -752,6 +770,7 @@ async function recordBatch(sessionId, deviceId, athleteId, samples, idempotencyK
   try {
     if (db.hasDb()) {
       persisted = await db.persistBatch(
+        orgId,
         sessionId,
         deviceId,
         athleteId,
@@ -777,10 +796,11 @@ async function recordBatch(sessionId, deviceId, athleteId, samples, idempotencyK
     persistError,
   };
   if (dedupeKey) {
-    recentIdempotency.set(dedupeKey, { t: now, result });
+    const memKey = `${orgId}:${dedupeKey}`;
+    recentIdempotency.set(memKey, { t: now, result });
     if (db.hasDb()) {
       try {
-        await db.setIdempotency(dedupeKey, result);
+        await db.setIdempotency(orgId, dedupeKey, result);
       } catch (err) {
         console.error('[ingest-store] DB idempotency write failed:', err);
       }
@@ -790,18 +810,19 @@ async function recordBatch(sessionId, deviceId, athleteId, samples, idempotencyK
 }
 
 /**
+ * @param {number} orgId
  * @param {string} sessionId
  */
-async function getSession(sessionId) {
+async function getSession(orgId, sessionId) {
   if (db.hasDb()) {
     try {
-      const fromDb = await db.getSessionFromDb(sessionId);
+      const fromDb = await db.getSessionFromDb(orgId, sessionId);
       if (fromDb) return fromDb;
     } catch (err) {
       console.error('[ingest-store] DB getSession failed:', err);
     }
   }
-  const row = sessions.get(String(sessionId));
+  const row = sessions.get(orgSessionKey(orgId, String(sessionId)));
   if (!row) return undefined;
   return { sessionId, ...row };
 }
@@ -842,15 +863,15 @@ function enrichMapPositionsDisplayAge(positions, now, registryTimes) {
   );
 }
 
-function buildDeviceEntry(entry, windowMs, onlineMs, now, registryTimes) {
-  const stats = sensorStats(entry.samples, windowMs, entry.deviceId);
+function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) {
+  const stats = sensorStats(entry.samples, windowMs, orgDeviceKey(orgId, entry.deviceId));
   const sampleLastSeenMs = entry.lastSeenMs ?? entry.updatedAt ?? now;
   const lastIngestMs = registryTimes?.lastSeenMs ?? 0;
   const lastSeenMs = Math.max(sampleLastSeenMs, lastIngestMs);
   const online = now - lastSeenMs <= onlineMs;
-  const hbMem = lastHeartbeatByDevice.get(entry.deviceId);
+  const hbMem = lastHeartbeatByDevice.get(orgDeviceKey(orgId, entry.deviceId));
   const batFromSamples = latestBatteryFromSamples(entry.samples || []);
-  const batMem = lastBatteryByDevice.get(entry.deviceId);
+  const batMem = lastBatteryByDevice.get(orgDeviceKey(orgId, entry.deviceId));
   const bat =
     batFromSamples && batMem
       ? batFromSamples.t >= batMem.t
@@ -899,16 +920,19 @@ function buildDeviceEntry(entry, windowMs, onlineMs, now, registryTimes) {
 }
 
 /**
- * @param {{ windowMs?: number, onlineMs?: number }} [opts]
+ * @param {{ orgId: number, windowMs?: number, onlineMs?: number }} [opts]
  */
 function listDevicesFromMemory(opts = {}) {
+  const orgId = opts.orgId;
   const windowMs = opts.windowMs ?? 60000;
   const onlineMs = opts.onlineMs ?? 30000;
   const now = Date.now();
   const byDevice = new Map();
 
   for (const [sessionId, row] of sessions) {
+    if (row.orgId !== orgId) continue;
     const built = buildDeviceEntry(
+      orgId,
       {
         deviceId: row.deviceId,
         athleteId: row.athleteId,
@@ -931,16 +955,17 @@ function listDevicesFromMemory(opts = {}) {
 }
 
 /**
+ * @param {number} orgId
  * @param {{ windowMs?: number, onlineMs?: number }} [opts]
  */
-async function listDevices(opts = {}) {
+async function listDevices(orgId, opts = {}) {
   const windowMs = opts.windowMs ?? 60000;
   const onlineMs = opts.onlineMs ?? 30000;
   const now = Date.now();
   const hasPostgres = db.hasDb();
 
   /** @type {Map<string, object>} */
-  const byDevice = listDevicesFromMemory(opts);
+  const byDevice = listDevicesFromMemory({ orgId, windowMs, onlineMs });
 
   let storage = hasPostgres ? 'postgres' : 'memory';
   let warning = hasPostgres
@@ -951,12 +976,13 @@ async function listDevices(opts = {}) {
     try {
       const fetchMs = Math.max(windowMs, 30 * 60 * 1000);
       const [fromDb, registryGps, registryTimes] = await Promise.all([
-        db.fetchRecentSamplesByDevice(fetchMs),
-        db.getRegistryGpsByDevice(),
-        db.getDeviceRegistryTimes(),
+        db.fetchRecentSamplesByDevice(orgId, fetchMs),
+        db.getRegistryGpsByDevice(orgId),
+        db.getDeviceRegistryTimes(orgId),
       ]);
       for (const entry of fromDb.values()) {
         const built = buildDeviceEntry(
+          orgId,
           entry,
           windowMs,
           onlineMs,
@@ -977,6 +1003,7 @@ async function listDevices(opts = {}) {
         if (byDevice.has(deviceId)) continue;
         const patched = applyRegistryGpsToDevice(
           buildDeviceEntry(
+            orgId,
             {
               deviceId,
               athleteId: null,
@@ -1099,12 +1126,13 @@ async function listDevices(opts = {}) {
   };
 }
 
-function getPositionsSnapshot(onlineMs = 30000) {
+function getPositionsSnapshot(orgId, onlineMs = 30000) {
   const now = Date.now();
   /** @type {Map<string, object>} */
   const byDevice = new Map();
 
   for (const [sessionId, row] of sessions) {
+    if (row.orgId !== orgId) continue;
     let lastGps = null;
     let lastHr = null;
     let lastMotion = null;
@@ -1219,9 +1247,10 @@ function buildMapPositionFromFix(opts) {
   return buildRawMapPositionFromFix(opts);
 }
 
-function getRawMemoryMapPositions(onlineMs, now) {
+function getRawMemoryMapPositions(orgId, onlineMs, now) {
   const out = [];
   for (const row of sessions.values()) {
+    if (row.orgId !== orgId) continue;
     let lastGps = null;
     for (let i = row.samples.length - 1; i >= 0; i--) {
       const s = row.samples[i];
@@ -1321,15 +1350,15 @@ function attachRowingToMapPositions(positions, rowingByDevice) {
  * @param {Map<string, { samples: Sample[] }>} byDevice
  * @param {number} windowMs
  */
-function attachTelemetryToMapPositions(positions, byDevice, windowMs) {
+function attachTelemetryToMapPositions(orgId, positions, byDevice, windowMs) {
   const now = Date.now();
   for (const p of positions) {
     const entry = byDevice.get(p.deviceId);
     if (!entry) continue;
-    const stats = sensorStats(entry.samples || [], windowMs, p.deviceId);
-    const hbMem = lastHeartbeatByDevice.get(p.deviceId);
+    const stats = sensorStats(entry.samples || [], windowMs, orgDeviceKey(orgId, p.deviceId));
+    const hbMem = lastHeartbeatByDevice.get(orgDeviceKey(orgId, p.deviceId));
     const batFromSamples = latestBatteryFromSamples(entry.samples || []);
-    const batMem = lastBatteryByDevice.get(p.deviceId);
+    const batMem = lastBatteryByDevice.get(orgDeviceKey(orgId, p.deviceId));
     const bat =
       batFromSamples && batMem
         ? batFromSamples.t >= batMem.t
@@ -1351,11 +1380,11 @@ function attachTelemetryToMapPositions(positions, byDevice, windowMs) {
  * @param {Map<string, { samples: Sample[] }>} byDevice
  * @param {number} windowMs
  */
-function rowingMetricsByDevice(byDevice, windowMs) {
+function rowingMetricsByDevice(orgId, byDevice, windowMs) {
   /** @type {Map<string, object>} */
   const out = new Map();
   for (const [deviceId, entry] of byDevice) {
-    const stats = sensorStats(entry.samples || [], windowMs, deviceId);
+    const stats = sensorStats(entry.samples || [], windowMs, orgDeviceKey(orgId, deviceId));
     out.set(deviceId, stats.rowing);
   }
   return out;
@@ -1365,30 +1394,31 @@ function rowingMetricsByDevice(byDevice, windowMs) {
  * Dismiss capsize alert on the monitor (per device or all currently alerting).
  * @param {string} [deviceId]
  */
-async function clearCapsizeAlert(deviceId) {
+async function clearCapsizeAlert(orgId, deviceId) {
   const now = Date.now();
   if (deviceId) {
-    setCapsizeClear(deviceId);
+    setCapsizeClear(orgDeviceKey(orgId, deviceId));
     return { cleared: [String(deviceId)], clearedAt: now };
   }
-  const snapshot = await listDevices({
+  const snapshot = await listDevices(orgId, {
     windowMs: 120000,
     onlineMs: 24 * 60 * 60 * 1000,
   });
   const capsized = (snapshot.devices || [])
     .filter((d) => d.rowing?.capsize)
     .map((d) => d.deviceId);
-  for (const id of capsized) setCapsizeClear(id);
+  for (const id of capsized) setCapsizeClear(orgDeviceKey(orgId, id));
   return { cleared: capsized, clearedAt: now };
 }
 
 /** Recent motion samples per device (in-memory ingest). */
-function samplesByDeviceForWindow(windowMs) {
+function samplesByDeviceForWindow(orgId, windowMs) {
   const now = Date.now();
   const cutoff = now - windowMs;
   /** @type {Map<string, { samples: Sample[] }>} */
   const byDevice = new Map();
   for (const row of sessions.values()) {
+    if (row.orgId !== orgId) continue;
     const samples = row.samples.filter((s) => s.t >= cutoff);
     if (!samples.length) continue;
     const prev = byDevice.get(row.deviceId);
@@ -1399,7 +1429,7 @@ function samplesByDeviceForWindow(windowMs) {
   return byDevice;
 }
 
-async function getMapPositions(onlineMs, staleMs, opts = {}) {
+async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   metrics.mapPolls++;
   const predictMode = parsePredictMode(opts.predictMode);
   const limits = predictLimitsForMode(predictMode);
@@ -1410,10 +1440,10 @@ async function getMapPositions(onlineMs, staleMs, opts = {}) {
 
   if (db.hasDb()) {
     try {
-      const registryTimes = await db.getDeviceRegistryTimes();
-      const registryPositions = await db.getRegistryMapPositions(onlineMs, staleMs);
-      const dbPositions = await db.getMapPositions(onlineMs, staleMs);
-      const byDevice = await db.fetchRecentSamplesByDevice(telemetryWindowMs);
+      const registryTimes = await db.getDeviceRegistryTimes(orgId);
+      const registryPositions = await db.getRegistryMapPositions(orgId, onlineMs, staleMs);
+      const dbPositions = await db.getMapPositions(orgId, onlineMs, staleMs);
+      const byDevice = await db.fetchRecentSamplesByDevice(orgId, telemetryWindowMs);
 
       const fromRecentRaw = [];
       for (const entry of byDevice.values()) {
@@ -1434,31 +1464,31 @@ async function getMapPositions(onlineMs, staleMs, opts = {}) {
       const rawMerged = mergeMapPositionsByFixMs([
         dbPositions,
         fromRecentRaw,
-        getRawMemoryMapPositions(onlineMs, now),
+        getRawMemoryMapPositions(orgId, onlineMs, now),
         registryPositions,
       ]);
-      warmGpsTracksFromSamplesByDevice(byDevice, trackOpts);
-      const positions = attachSmoothMapCoords(rawMerged, predictMode);
+      warmGpsTracksFromSamplesByDevice(orgId, byDevice, trackOpts);
+      const positions = attachSmoothMapCoords(rawMerged, predictMode, orgId);
 
       attachRowingToMapPositions(
         positions,
-        rowingMetricsByDevice(byDevice, rowingWindowMs),
+        rowingMetricsByDevice(orgId, byDevice, rowingWindowMs),
       );
-      attachTelemetryToMapPositions(positions, byDevice, rowingWindowMs);
+      attachTelemetryToMapPositions(orgId, positions, byDevice, rowingWindowMs);
       return enrichMapPositionsDisplayAge(positions, now, registryTimes);
     } catch (err) {
       console.error('[ingest-store] getMapPositions DB failed:', err);
     }
   }
 
-  const telemetryByDevice = samplesByDeviceForWindow(telemetryWindowMs);
-  const rowingByDevice = rowingMetricsByDevice(telemetryByDevice, rowingWindowMs);
+  const telemetryByDevice = samplesByDeviceForWindow(orgId, telemetryWindowMs);
+  const rowingByDevice = rowingMetricsByDevice(orgId, telemetryByDevice, rowingWindowMs);
 
   const rawMerged = mergeMapPositionsByFixMs([
-    getRawMemoryMapPositions(onlineMs, now),
+    getRawMemoryMapPositions(orgId, onlineMs, now),
   ]);
-  warmGpsTracksFromSamplesByDevice(telemetryByDevice, trackOpts);
-  const mapped = attachSmoothMapCoords(rawMerged, predictMode).map((p) => {
+  warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
+  const mapped = attachSmoothMapCoords(rawMerged, predictMode, orgId).map((p) => {
     const rowing = rowingByDevice.get(p.deviceId) || {};
     return {
       ...p,
@@ -1469,7 +1499,7 @@ async function getMapPositions(onlineMs, staleMs, opts = {}) {
     };
   });
   return enrichMapPositionsDisplayAge(
-    attachTelemetryToMapPositions(mapped, telemetryByDevice, rowingWindowMs),
+    attachTelemetryToMapPositions(orgId, mapped, telemetryByDevice, rowingWindowMs),
     now,
     null,
   );
@@ -1492,15 +1522,15 @@ function getMetrics() {
   };
 }
 
-async function getTraccarSnapshot(onlineMs = 120000) {
+async function getTraccarSnapshot(orgId, onlineMs = 120000) {
   if (db.hasDb()) {
     try {
-      return await db.getTraccarSnapshot(onlineMs);
+      return await db.getTraccarSnapshot(orgId, onlineMs);
     } catch (err) {
       console.error('[ingest-store] DB snapshot failed:', err);
     }
   }
-  const mem = getPositionsSnapshot(onlineMs);
+  const mem = getPositionsSnapshot(orgId, onlineMs);
   const devices = mem.positions.map((p, i) => ({
     id: i + 1,
     name: p.uniqueId,
@@ -1525,123 +1555,137 @@ async function getTraccarSnapshot(onlineMs = 120000) {
   return { devices, positions, geofences: [], groups: [] };
 }
 
-async function getRouteHistory(deviceIdParam, uniqueIdParam, fromIso, toIso) {
+async function getRouteHistory(orgId, deviceIdParam, uniqueIdParam, fromIso, toIso) {
   if (db.hasDb()) {
-    const dev = await db.resolveDevice(deviceIdParam, uniqueIdParam);
+    const dev = await db.resolveDevice(orgId, deviceIdParam, uniqueIdParam);
     if (!dev) return [];
-    return db.getRoutePositions(dev.id, fromIso, toIso);
+    return db.getRoutePositions(orgId, dev.id, fromIso, toIso);
   }
   return [];
 }
 
-async function listSessionsHistory(uniqueId) {
+async function listSessionsHistory(orgId, uniqueId) {
   if (!db.hasDb()) return [];
   try {
-    return await db.listSessions(uniqueId, 80);
+    return await db.listSessions(orgId, uniqueId, 80);
   } catch (err) {
     console.error('[ingest-store] listSessions failed:', err);
     return [];
   }
 }
 
-async function listHistoryDevices() {
+async function listHistoryDevices(orgId) {
   if (!db.hasDb()) return [];
   try {
-    return await db.listHistoryDevicesDetailed();
+    return await db.listHistoryDevicesDetailed(orgId);
   } catch (err) {
     console.error('[ingest-store] listHistoryDevices failed:', err);
     return [];
   }
 }
 
-async function getDashboardHistory(uniqueId, fromIso, toIso) {
+async function getDashboardHistory(orgId, uniqueId, fromIso, toIso) {
   if (!db.hasDb()) return null;
   try {
-    return await db.getDashboardHistory(uniqueId, fromIso, toIso);
+    return await db.getDashboardHistory(orgId, uniqueId, fromIso, toIso);
   } catch (err) {
     console.error('[ingest-store] getDashboardHistory failed:', err);
     return null;
   }
 }
 
-async function getDashboardHistoryBySession(sessionId) {
+async function getDashboardHistoryBySession(orgId, sessionId) {
   if (!db.hasDb()) return null;
   try {
-    return await db.getDashboardHistoryBySession(sessionId);
+    return await db.getDashboardHistoryBySession(orgId, sessionId);
   } catch (err) {
     console.error('[ingest-store] getDashboardHistoryBySession failed:', err);
     return null;
   }
 }
 
-function purgeMemorySession(sessionId) {
-  sessions.delete(String(sessionId));
+function purgeMemorySession(orgId, sessionId) {
+  sessions.delete(orgSessionKey(orgId, String(sessionId)));
 }
 
-function purgeMemoryDevice(deviceId) {
+function purgeMemoryDevice(orgId, deviceId) {
   const id = String(deviceId);
   for (const [key, row] of sessions.entries()) {
-    if (row.deviceId === id) sessions.delete(key);
+    if (row.orgId === orgId && row.deviceId === id) sessions.delete(key);
   }
 }
 
-function purgeAllMemory() {
-  sessions.clear();
-  capsizeClearAt.clear();
+function purgeOrgMemory(orgId) {
+  for (const [key, row] of sessions.entries()) {
+    if (row.orgId === orgId) sessions.delete(key);
+  }
+  const prefix = `${orgId}:`;
+  for (const key of [...capsizeClearAt.keys()]) {
+    if (key.startsWith(prefix)) capsizeClearAt.delete(key);
+  }
+  for (const key of [...gpsTracks.keys()]) {
+    if (key.startsWith(prefix)) gpsTracks.delete(key);
+  }
+  for (const key of [...lastHeartbeatByDevice.keys()]) {
+    if (key.startsWith(prefix)) lastHeartbeatByDevice.delete(key);
+  }
+  for (const key of [...lastBatteryByDevice.keys()]) {
+    if (key.startsWith(prefix)) lastBatteryByDevice.delete(key);
+  }
 }
 
-async function getStorageStats() {
+async function getStorageStats(orgId) {
   if (!db.hasDb()) return null;
   try {
-    return await db.getStorageStats();
+    return await db.getStorageStats(orgId);
   } catch (err) {
     console.error('[ingest-store] getStorageStats failed:', err);
     return null;
   }
 }
 
-async function deleteStoredSession(sessionId) {
+async function deleteStoredSession(orgId, sessionId) {
   if (!db.hasDb()) return null;
-  const result = await db.deleteSession(sessionId);
-  purgeMemorySession(sessionId);
+  const result = await db.deleteSession(orgId, sessionId);
+  purgeMemorySession(orgId, sessionId);
   return result;
 }
 
-async function deleteStoredDevice(uniqueId) {
+async function deleteStoredDevice(orgId, uniqueId) {
   if (!db.hasDb()) return null;
-  const result = await db.deleteDeviceData(uniqueId);
-  purgeMemoryDevice(uniqueId);
-  capsizeClearAt.delete(String(uniqueId));
+  const result = await db.deleteDeviceData(orgId, uniqueId);
+  purgeMemoryDevice(orgId, uniqueId);
+  capsizeClearAt.delete(orgDeviceKey(orgId, uniqueId));
   return result;
 }
 
-async function deleteStoredRange(uniqueId, fromIso, toIso) {
+async function deleteStoredRange(orgId, uniqueId, fromIso, toIso) {
   if (!db.hasDb()) return null;
   const fromMs = new Date(fromIso).getTime();
   const toMs = new Date(toIso).getTime();
   if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
     throw new Error('Invalid from/to dates');
   }
-  return db.deleteSamplesInRange(uniqueId, fromMs, toMs);
+  return db.deleteSamplesInRange(orgId, uniqueId, fromMs, toMs);
 }
 
-async function deleteAllStoredData() {
+async function deleteAllStoredData(orgId) {
   if (!db.hasDb()) return null;
-  const result = await db.deleteAllStoredData();
-  purgeAllMemory();
+  const result = await db.deleteAllStoredData(orgId);
+  purgeOrgMemory(orgId);
   return result;
 }
 
 function getDataSecurityInfo() {
-  const tokenRequired = Boolean(process.env.INGEST_TOKEN);
+  const tokenRequired = Boolean(process.env.INGEST_TOKEN || process.env.ORG_TOKENS);
   return {
     provider: 'Vercel Postgres (Neon)',
     transport: 'HTTPS (TLS) between phones, dashboard, and API',
     atRest:
       'Encrypted at rest by the cloud provider (Neon/Vercel managed Postgres)',
     accessControl: tokenRequired
-      ? 'Writes and deletes require INGEST_TOKEN (Bearer) — same token as phones and this dashboard'
-      : 'WARNING: INGEST_TOKEN is not set on Vercel — anyone who knows the API URL can upload or delete data',
+      ? 'Each rowing club has its own ingest token — fleet data is scoped by org'
+      : 'WARNING: No org tokens configured — anyone who knows the API URL can upload or delete data',
     dashboardAccess:
       'This page stores your token in browser localStorage on this computer only',
     retention:
@@ -1650,22 +1694,23 @@ function getDataSecurityInfo() {
     liveCache:
       'The monitor also keeps short-lived in-memory samples for live maps; deletes clear matching live cache',
     recommendations: [
-      'Set a long random INGEST_TOKEN in Vercel project settings',
-      'Only share the token with trusted coaches and admins',
+      'Set ORG_TOKENS or INGEST_TOKEN in Vercel project settings',
+      'Give each club its own token — they only see their fleet',
       'Use device-specific deletes when possible instead of delete all',
       'Review Neon/Vercel project access (who can open the database console)',
     ],
     tokenRequired,
+    multiTenant: true,
   };
 }
 
-function checkAuth(req) {
-  const expected = process.env.INGEST_TOKEN || '';
-  if (!expected) return true;
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  const q = req.query?.token;
-  return token === expected || q === expected;
+async function resolveOrg(req) {
+  return resolveOrgFromRequest(req);
+}
+
+async function checkAuth(req) {
+  const org = await resolveOrg(req);
+  return Boolean(org);
 }
 
 function cors(res) {
@@ -1697,14 +1742,18 @@ module.exports = {
   getDataSecurityInfo,
   getMetrics,
   checkAuth,
+  resolveOrg,
   cors,
   hasDb: db.hasDb,
-  listGeofences: () => db.listGeofences(),
-  createGeofence: (body) => db.createGeofence(body),
-  deleteGeofence: (id) => db.deleteGeofence(id),
-  getActiveRegattaMessage: (deviceId) => db.getActiveRegattaMessage(deviceId),
-  listActiveRegattaMessages: () => db.listActiveRegattaMessages(),
-  setRegattaMessage: (deviceId, text) => db.setRegattaMessage(deviceId, text),
-  broadcastRegattaMessage: (text, deviceIds) => db.broadcastRegattaMessage(text, deviceIds),
-  clearRegattaMessage: (deviceId) => db.clearRegattaMessage(deviceId),
+  listGeofences: (orgId) => db.listGeofences(orgId),
+  createGeofence: (orgId, body) => db.createGeofence(orgId, body),
+  deleteGeofence: (orgId, id) => db.deleteGeofence(orgId, id),
+  getActiveRegattaMessage: (orgId, deviceId) => db.getActiveRegattaMessage(orgId, deviceId),
+  listActiveRegattaMessages: (orgId) => db.listActiveRegattaMessages(orgId),
+  setRegattaMessage: (orgId, deviceId, text) => db.setRegattaMessage(orgId, deviceId, text),
+  broadcastRegattaMessage: (orgId, text, deviceIds) =>
+    db.broadcastRegattaMessage(orgId, text, deviceIds),
+  clearRegattaMessage: (orgId, deviceId) => db.clearRegattaMessage(orgId, deviceId),
+  createOrg: (slug, name, token) => db.createOrg(slug, name, token),
+  listOrgs: () => db.listOrgs(),
 };

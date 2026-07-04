@@ -1,4 +1,5 @@
 const store = require('./lib/ingest-store');
+const { requireOrg } = require('./lib/require-org');
 
 /** Traccar-compatible snapshot for traccar-overlay live maps. */
 module.exports = async function handler(req, res) {
@@ -12,19 +13,19 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  if (!store.checkAuth(req)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
+  const org = await requireOrg(req, res);
+  if (!org) return;
 
   const onlineSec = Math.min(
     600,
     Math.max(30, Number(req.query?.onlineSec) || 120),
   );
 
-  const data = await store.getTraccarSnapshot(onlineSec * 1000);
+  const data = await store.getTraccarSnapshot(org.id, onlineSec * 1000);
   return res.status(200).json({
     ...data,
     ok: true,
+    org: org.slug,
     source: 'rnz-ingest',
     persisted: store.hasDb(),
   });

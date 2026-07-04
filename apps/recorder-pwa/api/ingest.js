@@ -1,4 +1,5 @@
 const store = require('./lib/ingest-store');
+const { requireOrg } = require('./lib/require-org');
 
 module.exports = async function handler(req, res) {
   store.cors(res);
@@ -7,16 +8,15 @@ module.exports = async function handler(req, res) {
     return res.status(204).end();
   }
 
-  if (!store.checkAuth(req)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
+  const org = await requireOrg(req, res);
+  if (!org) return;
 
   if (req.method === 'GET') {
     const sessionId = req.query?.sessionId;
     if (!sessionId) {
       return res.status(400).json({ ok: false, error: 'sessionId required' });
     }
-    const row = await store.getSession(sessionId);
+    const row = await store.getSession(org.id, sessionId);
     if (!row) return res.status(404).json({ ok: false, error: 'Not found' });
     return res.status(200).json({ ok: true, ...row });
   }
@@ -53,6 +53,7 @@ module.exports = async function handler(req, res) {
   }
 
   const result = await store.recordBatch(
+    org.id,
     sessionId,
     deviceId,
     body.athleteId,

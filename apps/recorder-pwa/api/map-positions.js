@@ -1,4 +1,5 @@
 const store = require('./lib/ingest-store');
+const { requireOrg } = require('./lib/require-org');
 
 /** Latest GPS positions for dashboard map (online + stale offline). */
 module.exports = async function handler(req, res) {
@@ -12,9 +13,8 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  if (!store.checkAuth(req)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
+  const org = await requireOrg(req, res);
+  if (!org) return;
 
   const onlineSec = Math.min(
     600,
@@ -28,6 +28,7 @@ module.exports = async function handler(req, res) {
   const predictMode = store.parsePredictMode(req.query?.predictMode);
 
   const positions = await store.getMapPositions(
+    org.id,
     onlineSec * 1000,
     staleSec * 1000,
     { predictMode },
@@ -35,6 +36,7 @@ module.exports = async function handler(req, res) {
 
   return res.status(200).json({
     ok: true,
+    org: org.slug,
     polledAt: Date.now(),
     predictMode,
     onlineThresholdSec: onlineSec,

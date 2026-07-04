@@ -1,4 +1,5 @@
 const store = require('./lib/ingest-store');
+const { requireOrg } = require('./lib/require-org');
 
 module.exports = async function handler(req, res) {
   store.cors(res);
@@ -11,9 +12,8 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  if (!store.checkAuth(req)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
+  const org = await requireOrg(req, res);
+  if (!org) return;
 
   let body = req.body;
   if (typeof body === 'string') {
@@ -29,6 +29,6 @@ module.exports = async function handler(req, res) {
       ? String(body?.deviceId || req.query?.deviceId)
       : undefined;
 
-  const result = await store.clearCapsizeAlert(deviceId);
+  const result = await store.clearCapsizeAlert(org.id, deviceId);
   return res.status(200).json({ ok: true, ...result });
 };
