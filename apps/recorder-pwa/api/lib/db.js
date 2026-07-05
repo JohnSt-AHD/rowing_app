@@ -1421,6 +1421,41 @@ async function createGeofence(orgId, body) {
   return normalizeGeofence(rows.rows[0]);
 }
 
+async function updateGeofenceSettings(orgId, id, body = {}) {
+  if (!hasDb()) return null;
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const n = Number(id);
+  if (!Number.isFinite(n)) throw new Error('Invalid geofence id');
+
+  const hasInterval =
+    body.economyIntervalSec != null ||
+    body.economyGpsIntervalSec != null ||
+    body.economyUploadIntervalSec != null;
+  const economyInterval = hasInterval ? economyIntervalSecFromInput(body) : null;
+  const disableCapsize =
+    body.disableCapsize === true
+      ? true
+      : body.disableCapsize === false
+        ? false
+        : null;
+
+  const rows = await sql`
+    UPDATE rnz_geofences
+    SET
+      economy_gps_interval_sec = COALESCE(${economyInterval}, economy_gps_interval_sec),
+      economy_upload_interval_sec = COALESCE(${economyInterval}, economy_upload_interval_sec),
+      disable_capsize = COALESCE(${disableCapsize}, disable_capsize),
+      updated_at = NOW()
+    WHERE org_id = ${orgId} AND id = ${n}
+    RETURNING id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
+              economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
+              created_at, updated_at
+  `;
+  if (!rows.rows.length) return null;
+  return normalizeGeofence(rows.rows[0]);
+}
+
 async function deleteGeofence(orgId, id) {
   if (!hasDb()) return false;
   const sql = await getSql();
@@ -1550,6 +1585,7 @@ module.exports = {
   setIdempotency,
   listGeofences,
   createGeofence,
+  updateGeofenceSettings,
   deleteGeofence,
   getActiveRegattaMessage,
   listActiveRegattaMessages,

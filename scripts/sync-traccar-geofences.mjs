@@ -13,6 +13,7 @@
  *   ROWING_TOKEN  — ingest token for org (default rnz)
  *   ECONOMY_SEC   — interval for non-RNZ zones (default 3)
  *   RNZ_ECONOMY_SEC — interval for Rowing NZ zone (default 30)
+ *   COURSE_ECONOMY_SEC — interval for course zones (default 1)
  */
 import { parseArgs } from 'node:util';
 
@@ -20,16 +21,19 @@ const { values } = parseArgs({
   options: {
     'dry-run': { type: 'boolean', default: false },
     replace: { type: 'boolean', default: false },
+    'update-settings': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
   },
 });
 
 if (values.help) {
-  console.log(`Usage: node scripts/sync-traccar-geofences.mjs [--dry-run] [--replace]
+  console.log(`Usage: node scripts/sync-traccar-geofences.mjs [--dry-run] [--replace] [--update-settings]
 
 Imports polygon/circle geofences from Traccar (via overlay snapshot) into CrewSight.
-Skips LINESTRING zones. Sets economy reporting to ${process.env.ECONOMY_SEC || 3}s
-for all zones except Rowing NZ (${process.env.RNZ_ECONOMY_SEC || 30}s).`);
+Skips LINESTRING zones. Capsize on for all zones except Rowing NZ.
+Intervals: course ${process.env.COURSE_ECONOMY_SEC || 1}s, other non-RNZ ${process.env.ECONOMY_SEC || 3}s, Rowing NZ ${process.env.RNZ_ECONOMY_SEC || 30}s.
+
+--update-settings  Patch economy/capsize on existing CrewSight geofences by name (no geometry changes).`);
   process.exit(0);
 }
 
@@ -38,6 +42,7 @@ const ROWING = (process.env.ROWING_API || 'https://rowing-app-recorder-pwa.verce
 const TOKEN = String(process.env.ROWING_TOKEN || 'rnz').trim();
 const ECONOMY_SEC = Number(process.env.ECONOMY_SEC || 3);
 const RNZ_ECONOMY_SEC = Number(process.env.RNZ_ECONOMY_SEC || 30);
+const COURSE_ECONOMY_SEC = Number(process.env.COURSE_ECONOMY_SEC || 1);
 
 function isRnzBoundaryName(name) {
   const n = String(name || '').toLowerCase();
@@ -48,6 +53,21 @@ function isRnzBoundaryName(name) {
     n.includes('rowing new zealand') ||
     n.includes('rowinghub')
   );
+}
+
+function isCourseGeofenceName(name) {
+  const n = String(name || '').toLowerCase();
+  return n.includes('course');
+}
+
+function geofenceSettingsForName(name) {
+  if (isRnzBoundaryName(name)) {
+    return { economyIntervalSec: RNZ_ECONOMY_SEC, disableCapsize: true };
+  }
+  if (isCourseGeofenceName(name)) {
+    return { economyIntervalSec: COURSE_ECONOMY_SEC, disableCapsize: false };
+  }
+  return { economyIntervalSec: ECONOMY_SEC, disableCapsize: false };
 }
 
 /** @returns {{ shapeType: 'circle'|'polygon', centerLat?: number, centerLon?: number, radiusM?: number, polygonCoords?: number[][] } | null} */
@@ -87,13 +107,12 @@ function parseTraccarArea(areaStr) {
 function toCrewSightBody(traccarGeo) {
   const parsed = parseTraccarArea(traccarGeo.area);
   if (!parsed) return null;
-  const economyIntervalSec = isRnzBoundaryName(traccarGeo.name) ? RNZ_ECONOMY_SEC : ECONOMY_SEC;
+  const settings = geofenceSettingsForName(traccarGeo.name);
   const body = {
     name: String(traccarGeo.name || `Traccar ${traccarGeo.id}`).trim(),
     kind: 'boat_park',
     enabled: true,
-    economyIntervalSec,
-    disableCapsize: true,
+    ...settings,
     shapeType: parsed.shapeType,
   };
   if (parsed.shapeType === 'polygon') {
@@ -147,10 +166,55 @@ async function createCrewSightGeofence(body) {
   return data.geofence;
 }
 
+async function patchCrewSightGeofence(id, body) {
+  const url = `${ROWING}/api/geofences?id=${encodeURIComponent(String(id))}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${TOKEN}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`PATCH ${id}: ${data.error || res.status}`);
+  return data.geofence;
+}
+
+async function updateExistingSettings() {
+  const existing = await listCrewSightGeofences();
+  console.log(`Updating settings on ${existing.length} CrewSight geofence(s)…\n`);
+  for (const g of existing) {
+    const settings = geofenceSettingsForName(g.name);
+    console.log(
+      `  ${g.name}: every ${settings.economyIntervalSec}s · capsize ${settings.disableCapsize ? 'off' : 'on'}`,
+    );
+    if (values['dry-run']) continue;
+    await patchCrewSightGeofence(g.id, settings);
+  }
+  if (values['dry-run']) {
+    console.log('\nDry run — no changes written.');
+    return;
+  }
+  console.log('\nDone.');
+}
+
 async function main() {
+  if (values['update-settings']) {
+    console.log(`Target: ${ROWING}/api/geofences (token ${TOKEN ? '***' : 'missing'})`);
+    console.log(
+      `Intervals: course ${COURSE_ECONOMY_SEC}s · other ${ECONOMY_SEC}s · Rowing NZ ${RNZ_ECONOMY_SEC}s\n`,
+    );
+    await updateExistingSettings();
+    return;
+  }
+
   console.log(`Source: ${OVERLAY}/api/traccar?action=snapshot&source=rowing`);
   console.log(`Target: ${ROWING}/api/geofences (token ${TOKEN ? '***' : 'missing'})`);
-  console.log(`Intervals: ${ECONOMY_SEC}s zones, Rowing NZ ${RNZ_ECONOMY_SEC}s\n`);
+  console.log(
+    `Intervals: course ${COURSE_ECONOMY_SEC}s · other ${ECONOMY_SEC}s · Rowing NZ ${RNZ_ECONOMY_SEC}s\n`,
+  );
 
   const snap = await fetchJson(`${OVERLAY}/api/traccar?action=snapshot&source=rowing`);
   const traccarGeos = Array.isArray(snap.geofences) ? snap.geofences : [];
@@ -178,7 +242,7 @@ async function main() {
       b.shapeType === 'polygon'
         ? `polygon ${b.polygonCoords.length} pts`
         : `circle r=${Math.round(b.radiusM)}m`;
-    console.log(`  - ${b.name} · ${shape} · ${b.economyIntervalSec}s`);
+    console.log(`  - ${b.name} · ${shape} · ${b.economyIntervalSec}s · capsize ${b.disableCapsize ? 'off' : 'on'}`);
   }
 
   if (values['dry-run']) {

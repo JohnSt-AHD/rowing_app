@@ -1779,6 +1779,7 @@ module.exports = {
   hasDb: db.hasDb,
   listGeofences: (orgId) => db.listGeofences(orgId),
   createGeofence: (orgId, body) => db.createGeofence(orgId, body),
+  updateGeofenceSettings: (orgId, id, body) => db.updateGeofenceSettings(orgId, id, body),
   deleteGeofence: (orgId, id) => db.deleteGeofence(orgId, id),
   getActiveRegattaMessage: (orgId, deviceId) => db.getActiveRegattaMessage(orgId, deviceId),
   listActiveRegattaMessages: (orgId) => db.listActiveRegattaMessages(orgId),

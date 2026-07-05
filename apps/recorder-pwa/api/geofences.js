@@ -4,13 +4,14 @@ const { requireOrg } = require('./lib/require-org');
 /**
  * GET /api/geofences — list boat park / economy zones (recorder + dashboard)
  * POST /api/geofences — create geofence (dashboard, auth required)
+ * PATCH /api/geofences?id= — update economy/capsize settings
  * DELETE /api/geofences?id= — remove geofence
  */
 module.exports = async function handler(req, res) {
   store.cors(res);
 
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     return res.status(204).end();
   }
 
@@ -44,6 +45,23 @@ module.exports = async function handler(req, res) {
         });
       }
       return res.status(201).json({ ok: true, geofence });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: String(e.message || e) });
+    }
+  }
+
+  if (req.method === 'PATCH') {
+    try {
+      const id = req.query?.id;
+      if (id == null || id === '') {
+        return res.status(400).json({ ok: false, error: 'id query parameter is required' });
+      }
+      const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body ?? {};
+      const geofence = await store.updateGeofenceSettings(org.id, id, body);
+      if (!geofence) {
+        return res.status(404).json({ ok: false, error: 'Geofence not found' });
+      }
+      return res.status(200).json({ ok: true, geofence });
     } catch (e) {
       return res.status(400).json({ ok: false, error: String(e.message || e) });
     }
