@@ -1522,37 +1522,69 @@ function getMetrics() {
   };
 }
 
-async function getTraccarSnapshot(orgId, onlineMs = 120000) {
+/** Attach live capsize state to Traccar-shaped snapshot positions (RowSafe / overlay). */
+async function enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs) {
+  if (!snapshot?.positions?.length) return snapshot;
+  const rowingWindowMs = Math.min(Math.max(onlineMs, 60000), 120000);
+  let byDevice;
   if (db.hasDb()) {
     try {
-      return await db.getTraccarSnapshot(orgId, onlineMs);
+      byDevice = await db.fetchRecentSamplesByDevice(orgId, rowingWindowMs);
+    } catch (err) {
+      console.error('[ingest-store] snapshot capsize enrich failed:', err);
+      return snapshot;
+    }
+  } else {
+    byDevice = samplesByDeviceForWindow(orgId, rowingWindowMs);
+  }
+  const rowingByDevice = rowingMetricsByDevice(orgId, byDevice, rowingWindowMs);
+  const deviceById = new Map((snapshot.devices || []).map((d) => [d.id, d]));
+  for (const p of snapshot.positions) {
+    const dev = deviceById.get(p.deviceId);
+    const uid = String(dev?.uniqueId || dev?.name || p.deviceName || '');
+    const rowing = rowingByDevice.get(uid);
+    if (!rowing?.capsize) continue;
+    p.attributes = { ...(p.attributes || {}), capsize: true, alarm: 'capsize' };
+    if (rowing.tiltDeg != null) p.attributes.tiltDeg = rowing.tiltDeg;
+  }
+  return snapshot;
+}
+
+async function getTraccarSnapshot(orgId, onlineMs = 120000) {
+  let snapshot;
+  if (db.hasDb()) {
+    try {
+      snapshot = await db.getTraccarSnapshot(orgId, onlineMs);
     } catch (err) {
       console.error('[ingest-store] DB snapshot failed:', err);
     }
   }
-  const mem = getPositionsSnapshot(orgId, onlineMs);
-  const devices = mem.positions.map((p, i) => ({
-    id: i + 1,
-    name: p.uniqueId,
-    uniqueId: p.uniqueId,
-    status: p.online ? 'online' : 'offline',
-  }));
-  const positions = mem.positions.map((p, i) => ({
-    id: i + 1,
-    deviceId: i + 1,
-    latitude: p.latitude,
-    longitude: p.longitude,
-    altitude: p.altitude || 0,
-    speed: p.speed || 0,
-    course: p.course || 0,
-    accuracy: p.accuracy || 0,
-    fixTime: p.fixTime,
-    deviceTime: p.deviceTime,
-    serverTime: p.fixTime,
-    attributes: p.attributes || {},
-    deviceName: p.uniqueId,
-  }));
-  return { devices, positions, geofences: [], groups: [] };
+  if (!snapshot) {
+    const mem = getPositionsSnapshot(orgId, onlineMs);
+    const devices = mem.positions.map((p, i) => ({
+      id: i + 1,
+      name: p.uniqueId,
+      uniqueId: p.uniqueId,
+      status: p.online ? 'online' : 'offline',
+    }));
+    const positions = mem.positions.map((p, i) => ({
+      id: i + 1,
+      deviceId: i + 1,
+      latitude: p.latitude,
+      longitude: p.longitude,
+      altitude: p.altitude || 0,
+      speed: p.speed || 0,
+      course: p.course || 0,
+      accuracy: p.accuracy || 0,
+      fixTime: p.fixTime,
+      deviceTime: p.deviceTime,
+      serverTime: p.fixTime,
+      attributes: p.attributes || {},
+      deviceName: p.uniqueId,
+    }));
+    snapshot = { devices, positions, geofences: [], groups: [] };
+  }
+  return enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs);
 }
 
 async function getRouteHistory(orgId, deviceIdParam, uniqueIdParam, fromIso, toIso) {

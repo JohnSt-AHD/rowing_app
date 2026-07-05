@@ -687,6 +687,7 @@ async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
   const rows = await sql`
     SELECT DISTINCT ON (s.device_ref)
       s.id, s.device_ref, s.unique_id, s.t_ms, s.latitude, s.longitude, s.accuracy, s.speed, s.course, s.compass_deg, s.altitude, s.hr, s.ax, s.ay, s.az,
+      s.stroke_rate, s.capsize, s.tilt_deg,
       d.last_seen_at
     FROM rnz_samples s
     JOIN rnz_devices d ON d.id = s.device_ref AND d.org_id = s.org_id
