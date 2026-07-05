@@ -20,6 +20,8 @@ const MAP_INTERPOLATE_MAX_SEC = 8;
 const MAP_INTERPOLATE_MIN_SPEED_MPS = 0.25;
 const MAP_INTERPOLATE_TICK_MS = 100;
 const EARTH_RADIUS_M = 6371000;
+/** Extra map dot — glides between poll snapshots over each refresh interval. */
+const MAP_COMPARE_DEVICE_ID = 'H6';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -34,6 +36,11 @@ let lastMapDurationMs = null;
 /** @type {Map<string, object>} */
 const deviceTrackState = new Map();
 let mapInterpTimer = null;
+/** @type {L.Marker | null} */
+let h6CompareMarker = null;
+/** @type {{ fromLat:number, fromLon:number, toLat:number, toLon:number, startMs:number, durationMs:number } | null} */
+let h6CompareInterp = null;
+let h6CompareTickTimer = null;
 /** @type {object[]} */
 let latestMapPositions = [];
 
@@ -134,6 +141,7 @@ function applyMapPositionMode() {
     }
     stopMapInterpolation();
     deviceTrackState.clear();
+    resetH6CompareTrack();
     if (latestMapPositions.length) updateMap(latestMapPositions);
   }
   savePrefs();
@@ -320,6 +328,126 @@ function startMapInterpolation() {
 function stopMapInterpolation() {
   if (mapInterpTimer) clearInterval(mapInterpTimer);
   mapInterpTimer = null;
+}
+
+function normalizeDeviceId(deviceId) {
+  return String(deviceId || '')
+    .trim()
+    .toUpperCase();
+}
+
+function isCompareDevice(deviceId) {
+  return normalizeDeviceId(deviceId) === MAP_COMPARE_DEVICE_ID;
+}
+
+/** Position snapshot at poll time — same anchor the main dot uses before client extrapolation. */
+function pollSnapshotLatLon(p) {
+  if (isMapSmoothed()) return mapAnchorLatLon(p);
+  return { lat: p.latitude, lon: p.longitude };
+}
+
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+}
+
+function lerpScalar(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function h6CompareMarkerIcon() {
+  return L.divIcon({
+    className: 'map-marker-wrap map-marker-wrap--compare',
+    html: '<span class="map-marker map-marker--compare" aria-hidden="true"></span>',
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+}
+
+function ensureH6CompareMarker() {
+  if (!map || !markersLayer) return null;
+  if (!h6CompareMarker) {
+    h6CompareMarker = L.marker(MAP_CENTER, {
+      icon: h6CompareMarkerIcon(),
+      zIndexOffset: 500,
+    }).bindPopup(
+      '<strong>H6 · refresh lerp (test)</strong><br><span class="map-popup-compare">Purple dot eases between poll positions over each refresh interval. Compare with the green/amber main H6 dot.</span>',
+    );
+    markersLayer.addLayer(h6CompareMarker);
+  }
+  return h6CompareMarker;
+}
+
+function removeH6CompareMarker() {
+  if (h6CompareMarker && markersLayer) {
+    markersLayer.removeLayer(h6CompareMarker);
+    h6CompareMarker = null;
+  }
+  h6CompareInterp = null;
+  stopH6CompareTick();
+}
+
+function currentCompareInterpLatLon() {
+  if (!h6CompareInterp) return null;
+  const { fromLat, fromLon, toLat, toLon, startMs, durationMs } = h6CompareInterp;
+  const t = Math.min(1, (Date.now() - startMs) / durationMs);
+  const ease = easeInOutCubic(t);
+  return {
+    lat: lerpScalar(fromLat, toLat, ease),
+    lon: lerpScalar(fromLon, toLon, ease),
+  };
+}
+
+function startH6CompareTarget(p) {
+  const snap = pollSnapshotLatLon(p);
+  if (snap.lat == null || snap.lon == null) return;
+  const marker = ensureH6CompareMarker();
+  if (!marker) return;
+
+  const durationMs = Math.max(250, currentPollMs());
+  const now = Date.now();
+  let fromLat = snap.lat;
+  let fromLon = snap.lon;
+  const current = currentCompareInterpLatLon();
+  if (current) {
+    fromLat = current.lat;
+    fromLon = current.lon;
+  } else {
+    const ll = marker.getLatLng();
+    fromLat = ll.lat;
+    fromLon = ll.lng;
+  }
+
+  h6CompareInterp = {
+    fromLat,
+    fromLon,
+    toLat: snap.lat,
+    toLon: snap.lon,
+    startMs: now,
+    durationMs,
+  };
+  startH6CompareTick();
+  tickH6CompareInterp();
+}
+
+function tickH6CompareInterp() {
+  if (!h6CompareInterp || !h6CompareMarker) return;
+  const pos = currentCompareInterpLatLon();
+  if (!pos) return;
+  h6CompareMarker.setLatLng(L.latLng(pos.lat, pos.lon));
+}
+
+function startH6CompareTick() {
+  if (h6CompareTickTimer) return;
+  h6CompareTickTimer = setInterval(tickH6CompareInterp, MAP_INTERPOLATE_TICK_MS);
+}
+
+function stopH6CompareTick() {
+  if (h6CompareTickTimer) clearInterval(h6CompareTickTimer);
+  h6CompareTickTimer = null;
+}
+
+function resetH6CompareTrack() {
+  removeH6CompareMarker();
 }
 
 function staleSec() {
@@ -714,6 +842,9 @@ function popupHtml(p) {
   const smoothNote = isMapSmoothed()
     ? '<br><span class="map-popup-note">Smoothed position (display only)</span>'
     : '';
+  const compareNote = isCompareDevice(p.deviceId)
+    ? '<br><span class="map-popup-compare">Purple dot = H6 refresh-rate lerp test</span>'
+    : '';
   const hr = p.hr != null ? `<br>HR: ${p.hr} bpm` : '';
   const spm =
     p.strokeRate != null && p.strokeRate > 0
@@ -731,7 +862,7 @@ function popupHtml(p) {
     p.batteryPct != null
       ? `<br>Battery: <strong>${fmtBatteryPct(p.batteryPct)}</strong>${p.batteryAgeSec != null ? ` · ${fmtAgoSec(p.batteryAgeSec)}` : ''}`
       : '';
-  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${p.lastSeenAgoSec}s ago${smoothNote}${hb}${bat}${hr}${spm}${tilt}${cap}</div>`;
+  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${p.lastSeenAgoSec}s ago${smoothNote}${compareNote}${hb}${bat}${hr}${spm}${tilt}${cap}</div>`;
 }
 
 function updateMap(positions) {
@@ -742,6 +873,7 @@ function updateMap(positions) {
   if (isSmoothLiveMapEnabled()) syncDeviceTrackState(positions);
 
   const seen = new Set();
+  let h6Seen = false;
   const latlngs = [];
 
   for (const p of positions) {
@@ -764,7 +896,16 @@ function updateMap(positions) {
       markersLayer.addLayer(marker);
       deviceMarkers.set(p.deviceId, marker);
     }
+
+    if (isCompareDevice(p.deviceId)) {
+      h6Seen = true;
+      startH6CompareTarget(p);
+      const comparePos = currentCompareInterpLatLon();
+      if (comparePos) latlngs.push([comparePos.lat, comparePos.lon]);
+    }
   }
+
+  if (!h6Seen) resetH6CompareTrack();
 
   for (const [id, marker] of deviceMarkers) {
     if (!seen.has(id)) {
@@ -1248,6 +1389,7 @@ function startPolling() {
 }
 
 function init() {
+  const urlToken = new URLSearchParams(window.location.search).get('token');
   const savedToken = localStorage.getItem(LS_TOKEN);
   const savedPoll = localStorage.getItem(LS_POLL);
   const savedStale = localStorage.getItem(LS_STALE);
@@ -1255,7 +1397,14 @@ function init() {
     localStorage.getItem(LS_MAP_POSITION) ||
     (localStorage.getItem(LS_LIVE_MAP) === '1' ? 'smoothed' : null);
   const savedPredictMode = localStorage.getItem(LS_PREDICT_MODE);
-  if (savedToken && $('#token')) $('#token').value = savedToken;
+  if ($('#token')) {
+    if (urlToken) {
+      $('#token').value = urlToken;
+      localStorage.setItem(LS_TOKEN, urlToken);
+    } else if (savedToken) {
+      $('#token').value = savedToken;
+    }
+  }
   if (savedPredictMode && $('#predictMode')) $('#predictMode').value = savedPredictMode;
   if (savedMapPosition && $('#mapPositionMode')) {
     $('#mapPositionMode').value = savedMapPosition;
