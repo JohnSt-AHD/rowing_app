@@ -89,6 +89,7 @@
               <span class="map-legend-item map-legend-item--lost">● Stale</span>
               <span class="map-legend-item map-legend-item--capsize">● Capsize</span>
               <span class="map-legend-item map-legend-item--interpolate" id="mapLegendInterpolate" hidden>↝ Smoothed display</span>
+              <span class="map-legend-item map-legend-item--compare">◆ H6 lerp test (poll interval)</span>
             </p>
             <div id="fleetMap" class="fleet-map" role="application" aria-label="Device locations map"></div>
             <p class="poll-line map-status" id="mapStatus">Loading map…</p>
@@ -163,6 +164,10 @@
             session starts.
           </p>
           <div id="geofenceList" class="geofence-list" aria-live="polite"></div>
+          <div class="geofence-form__actions">
+            <button type="button" class="hub-btn hub-btn--ghost" id="geofenceEditToggle">Edit zones on map</button>
+            <button type="button" class="hub-btn hub-btn--ghost" id="geofenceRefreshBtn">Refresh zones</button>
+          </div>
           <form id="geofenceForm" class="geofence-form">
             <div class="ahd-inline-fields">
               <label class="ahd-field">
@@ -223,10 +228,85 @@
             </div>
             <div class="geofence-form__actions geofence-form__actions--submit">
               <button type="submit" class="hub-btn hub-btn--primary">Add zone</button>
-              <button type="button" class="hub-btn hub-btn--ghost" id="geofenceRefreshBtn">Refresh</button>
             </div>
           </form>
           <p class="poll-line" id="geofenceStatus">Loading geofences…</p>
+
+          <hr class="hub-divider" />
+
+          <h3 class="hub-subsection-title">Timing lines</h3>
+          <p class="geofence-intro">
+            Draw start, finish, and split lines across the course. When devices cross a line, split
+            times appear below. Generate a full split course (e.g. 500 m splits over 2 km) from one
+            start line, or add individual lines.
+          </p>
+          <div id="timingLineList" class="timing-line-list" aria-live="polite"></div>
+          <div class="geofence-form__actions">
+            <button type="button" class="hub-btn" id="timingDrawLineBtn">Draw line on map</button>
+            <button type="button" class="hub-btn hub-btn--ghost" id="timingEditLinesBtn">Edit lines on map</button>
+            <button type="button" class="hub-btn hub-btn--ghost" id="timingResetBtn">Reset times</button>
+            <button type="button" class="hub-btn hub-btn--ghost" id="timingRefreshBtn">Refresh lines</button>
+          </div>
+          <p class="geofence-draw-status poll-line" id="timingDrawStatus">No line drawn yet.</p>
+
+          <form id="timingLineForm" class="geofence-form timing-line-form">
+            <div class="ahd-inline-fields">
+              <label class="ahd-field">
+                Line name
+                <input type="text" id="timingLineName" placeholder="Finish" />
+              </label>
+              <label class="ahd-field">
+                Type
+                <select id="timingLineType">
+                  <option value="start">Start</option>
+                  <option value="split" selected>Split</option>
+                  <option value="finish">Finish</option>
+                </select>
+              </label>
+              <label class="ahd-field">
+                Distance (m)
+                <input type="number" id="timingLineDistance" min="0" step="50" placeholder="5000" />
+              </label>
+            </div>
+            <button type="submit" class="hub-btn hub-btn--primary">Add line</button>
+          </form>
+
+          <form id="timingSplitForm" class="geofence-form timing-split-form">
+            <p class="geofence-draw-help">
+              Draw the <strong>start line</strong> on the map, then generate evenly spaced splits.
+            </p>
+            <div class="ahd-inline-fields">
+              <label class="ahd-field">
+                Course name
+                <input type="text" id="timingCourseName" value="2 km piece" />
+              </label>
+              <label class="ahd-field">
+                Split every (m)
+                <input type="number" id="timingSplitInterval" min="50" step="50" value="500" />
+              </label>
+              <label class="ahd-field">
+                Total distance (m)
+                <input type="number" id="timingTotalDistance" min="100" step="50" value="2000" />
+              </label>
+              <label class="ahd-field">
+                Course side
+                <select id="timingCourseDirection">
+                  <option value="right" selected>Right of start line</option>
+                  <option value="left">Left of start line</option>
+                </select>
+              </label>
+            </div>
+            <button type="submit" class="hub-btn hub-btn--primary">Generate split course</button>
+          </form>
+
+          <div class="timing-live-toolbar">
+            <label class="ahd-field geofence-form__check">
+              <input type="checkbox" id="timingMonitorToggle" checked />
+              Live split timing
+            </label>
+          </div>
+          <div id="timingLiveTable" class="timing-live-table-wrap" aria-live="polite"></div>
+          <p class="poll-line" id="timingLineStatus">Loading timing lines…</p>
         </div>
       </section>
 
@@ -569,6 +649,7 @@
     <script src="/dashboard-data-manage.js"></script>
     <script src="/dashboard-monitor-charts.js"></script>
     <script src="/dashboard-geofences.js"></script>
+    <script src="/dashboard-timing-lines.js"></script>
     <script src="/dashboard-regatta.js"></script>
     <script src="/dashboard-sections.js"></script>
     <script src="/dashboard.js"></script>

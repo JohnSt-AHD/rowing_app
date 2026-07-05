@@ -787,6 +787,9 @@ function initMap() {
   if (typeof window.dashboardInitGeofences === 'function') {
     window.dashboardInitGeofences();
   }
+  if (typeof window.dashboardInitTimingLines === 'function') {
+    window.dashboardInitTimingLines();
+  }
   if (typeof window.dashboardInitSections === 'function') {
     window.dashboardInitSections();
   }
@@ -1313,6 +1316,9 @@ async function poll() {
       mapResult.status === 'fulfilled' ? mapResult.value.positions : [],
     );
     updateMap(mapPositions);
+    if (typeof window.dashboardOnMapPositions === 'function') {
+      window.dashboardOnMapPositions(mapPositions, data.polledAt || Date.now());
+    }
 
     const warnEl = $('#storageWarning');
     if (warnEl) {

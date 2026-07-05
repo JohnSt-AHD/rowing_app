@@ -11,6 +11,8 @@
   let polygonDraft = [];
   let polygonReady = false;
   let geofences = [];
+  let editGeofenceMode = false;
+  let geofenceEditLayer = null;
 
   const GEOFENCE_STYLE = {
     color: '#f59e0b',
@@ -74,6 +76,7 @@
       geofenceLayer = L.layerGroup().addTo(map);
     }
     geofenceLayer.clearLayers();
+    geofenceEditLayer?.clearLayers();
     for (const g of geofences) {
       if (!g.enabled) continue;
       let layer;
@@ -90,7 +93,112 @@
       }
       layer.bindPopup(popupHtml(g));
       geofenceLayer.addLayer(layer);
+      if (editGeofenceMode) attachGeofenceEditHandles(g);
     }
+  }
+
+  async function saveGeofenceGeometry(id, payload) {
+    setStatus('Saving geofence…');
+    const res = await fetch(`${apiBase()}/api/geofences?id=${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      setStatus(data.error || 'Save failed', true);
+      return;
+    }
+    await loadGeofences();
+  }
+
+  function attachGeofenceEditHandles(g) {
+    const map = getMap();
+    if (!map) return;
+    if (!geofenceEditLayer) geofenceEditLayer = L.layerGroup().addTo(map);
+
+    const handleIcon = L.divIcon({
+      className: 'geofence-edit-handle',
+      iconSize: [12, 12],
+      iconAnchor: [6, 6],
+    });
+
+    if (g.shapeType === 'polygon' && g.polygonCoords?.length >= 3) {
+      g.polygonCoords.forEach((pt, idx) => {
+        L.marker([pt[0], pt[1]], { draggable: true, icon: handleIcon })
+          .on('dragend', (e) => {
+            const { lat, lng } = e.target.getLatLng();
+            const next = g.polygonCoords.map((p, i) =>
+              i === idx ? [lat, lng] : [p[0], p[1]],
+            );
+            void saveGeofenceGeometry(g.id, { polygonCoords: next });
+          })
+          .addTo(geofenceEditLayer);
+      });
+      return;
+    }
+
+    L.marker([g.centerLat, g.centerLon], { draggable: true, icon: handleIcon })
+      .on('dragend', (e) => {
+        const { lat, lng } = e.target.getLatLng();
+        void saveGeofenceGeometry(g.id, { centerLat: lat, centerLon: lng });
+      })
+      .addTo(geofenceEditLayer);
+
+    const edge = destinationPoint(g.centerLat, g.centerLon, g.radiusM, 90);
+    L.marker(edge, { draggable: true, icon: handleIcon })
+      .on('dragend', (e) => {
+        const { lat, lng } = e.target.getLatLng();
+        const r = haversineM(g.centerLat, g.centerLon, lat, lng);
+        void saveGeofenceGeometry(g.id, {
+          centerLat: g.centerLat,
+          centerLon: g.centerLon,
+          radiusM: Math.max(20, Math.round(r)),
+        });
+      })
+      .addTo(geofenceEditLayer);
+  }
+
+  function haversineM(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const toRad = (d) => (d * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  function destinationPoint(lat, lon, distM, bearingDeg) {
+    const R = 6371000;
+    const toRad = (d) => (d * Math.PI) / 180;
+    const toDeg = (r) => (r * 180) / Math.PI;
+    const δ = distM / R;
+    const θ = toRad(bearingDeg);
+    const φ1 = toRad(lat);
+    const λ1 = toRad(lon);
+    const φ2 = Math.asin(
+      Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ),
+    );
+    const λ2 =
+      λ1 +
+      Math.atan2(
+        Math.sin(θ) * Math.sin(δ) * Math.cos(φ1),
+        Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2),
+      );
+    return [toDeg(φ2), toDeg(λ2)];
+  }
+
+  function setEditGeofenceMode(on) {
+    editGeofenceMode = on;
+    const btn = $('#geofenceEditToggle');
+    if (btn) {
+      btn.textContent = on ? 'Editing zones (drag points)' : 'Edit zones on map';
+      btn.classList.toggle('hub-btn--primary', on);
+    }
+    if (!on) geofenceEditLayer?.clearLayers();
+    drawGeofences();
   }
 
   function ensureDraftLayer() {
@@ -390,6 +498,7 @@
     $('#geofenceRefreshBtn')?.addEventListener('click', () =>
       void loadGeofences().catch((e) => setStatus(String(e.message || e), true)),
     );
+    $('#geofenceEditToggle')?.addEventListener('click', () => setEditGeofenceMode(!editGeofenceMode));
 
     const map = getMap();
     if (map) map.on('click', onMapClick);

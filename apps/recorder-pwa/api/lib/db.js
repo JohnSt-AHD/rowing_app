@@ -224,6 +224,29 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
   await sql`ALTER TABLE rnz_regatta_messages ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
   await sql`ALTER TABLE rnz_idempotency ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_timing_lines (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      line_type TEXT NOT NULL DEFAULT 'split',
+      lat1 DOUBLE PRECISION NOT NULL,
+      lon1 DOUBLE PRECISION NOT NULL,
+      lat2 DOUBLE PRECISION NOT NULL,
+      lon2 DOUBLE PRECISION NOT NULL,
+      distance_m DOUBLE PRECISION,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      course_group TEXT,
+      course_bearing_deg DOUBLE PRECISION,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`ALTER TABLE rnz_timing_lines ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_timing_lines_org
+      ON rnz_timing_lines (org_id, sort_order ASC, distance_m ASC NULLS LAST)
+  `;
 
   if (!globalThis.__rnzRegistryGpsBackfill) {
     globalThis.__rnzRegistryGpsBackfill = true;
@@ -1278,12 +1301,14 @@ async function deleteAllStoredData(orgId) {
   const delSessions = await sql`DELETE FROM rnz_sessions WHERE org_id = ${orgId}`;
   const delDevices = await sql`DELETE FROM rnz_devices WHERE org_id = ${orgId}`;
   const delGeofences = await sql`DELETE FROM rnz_geofences WHERE org_id = ${orgId}`;
+  const delTimingLines = await sql`DELETE FROM rnz_timing_lines WHERE org_id = ${orgId}`;
   const delMessages = await sql`DELETE FROM rnz_regatta_messages WHERE org_id = ${orgId}`;
   return {
     samplesDeleted: delSamples.rowCount ?? 0,
     sessionsDeleted: delSessions.rowCount ?? 0,
     devicesDeleted: delDevices.rowCount ?? 0,
     geofencesDeleted: delGeofences.rowCount ?? 0,
+    timingLinesDeleted: delTimingLines.rowCount ?? 0,
     messagesDeleted: delMessages.rowCount ?? 0,
   };
 }
@@ -1439,10 +1464,59 @@ async function updateGeofenceSettings(orgId, id, body = {}) {
       : body.disableCapsize === false
         ? false
         : null;
+  const name = body.name != null ? String(body.name).trim() : null;
+
+  let centerLat = null;
+  let centerLon = null;
+  let radiusM = null;
+  let polygonRing = null;
+  let shapeType = null;
+
+  if (body.polygonCoords != null) {
+    const ring = normalizePolygonInput(body.polygonCoords);
+    if (ring.length < 3) throw new Error('polygonCoords requires at least 3 points');
+    const centroid = polygonCentroid(ring);
+    centerLat = centroid.lat;
+    centerLon = centroid.lon;
+    radiusM = polygonBoundingRadiusM(ring);
+    polygonRing = ring;
+    shapeType = 'polygon';
+  } else if (
+    body.centerLat != null ||
+    body.centerLon != null ||
+    body.radiusM != null
+  ) {
+    const cur = await sql`
+      SELECT center_lat, center_lon, radius_m FROM rnz_geofences
+      WHERE org_id = ${orgId} AND id = ${n} LIMIT 1
+    `;
+    if (!cur.rows[0]) return null;
+    centerLat = Number(body.centerLat ?? cur.rows[0].center_lat);
+    centerLon = Number(body.centerLon ?? cur.rows[0].center_lon);
+    radiusM = Number(body.radiusM ?? cur.rows[0].radius_m);
+    if (!Number.isFinite(centerLat) || !Number.isFinite(centerLon)) {
+      throw new Error('centerLat and centerLon are required');
+    }
+    if (!Number.isFinite(radiusM) || radiusM <= 0) {
+      throw new Error('radiusM must be a positive number');
+    }
+    shapeType = 'circle';
+    polygonRing = null;
+  }
 
   const rows = await sql`
     UPDATE rnz_geofences
     SET
+      name = COALESCE(${name || null}, name),
+      shape_type = COALESCE(${shapeType}, shape_type),
+      center_lat = COALESCE(${centerLat}, center_lat),
+      center_lon = COALESCE(${centerLon}, center_lon),
+      radius_m = COALESCE(${radiusM}, radius_m),
+      polygon_coords = CASE
+        WHEN ${polygonRing != null} THEN ${JSON.stringify(polygonRing)}::jsonb
+        WHEN ${shapeType === 'circle'} THEN NULL
+        ELSE polygon_coords
+      END,
       economy_gps_interval_sec = COALESCE(${economyInterval}, economy_gps_interval_sec),
       economy_upload_interval_sec = COALESCE(${economyInterval}, economy_upload_interval_sec),
       disable_capsize = COALESCE(${disableCapsize}, disable_capsize),
@@ -1464,6 +1538,198 @@ async function deleteGeofence(orgId, id) {
   if (!Number.isFinite(n)) return false;
   const del = await sql`DELETE FROM rnz_geofences WHERE org_id = ${orgId} AND id = ${n}`;
   return (del.rowCount ?? 0) > 0;
+}
+
+const {
+  normalizeTimingLine,
+  validateEndpoints,
+  normalizeLineType,
+  generateSplitLines,
+} = require('./timing-line');
+
+async function listTimingLines(orgId) {
+  if (!hasDb()) return [];
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const rows = await sql`
+    SELECT id, name, line_type, lat1, lon1, lat2, lon2, distance_m, sort_order,
+           course_group, course_bearing_deg, enabled, created_at, updated_at
+    FROM rnz_timing_lines
+    WHERE org_id = ${orgId}
+    ORDER BY course_group ASC NULLS LAST, sort_order ASC, distance_m ASC NULLS LAST, name ASC
+  `;
+  return rows.rows.map(normalizeTimingLine);
+}
+
+async function createTimingLine(orgId, body) {
+  if (!hasDb()) return null;
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const name = String(body.name ?? '').trim();
+  if (!name) throw new Error('name is required');
+  const { lat1, lon1, lat2, lon2 } = validateEndpoints(
+    body.lat1,
+    body.lon1,
+    body.lat2,
+    body.lon2,
+  );
+  const lineType = normalizeLineType(body.lineType ?? body.line_type);
+  const distanceM =
+    body.distanceM != null || body.distance_m != null
+      ? Number(body.distanceM ?? body.distance_m)
+      : null;
+  const sortOrder = Number(body.sortOrder ?? body.sort_order ?? 0);
+  const courseGroup =
+    body.courseGroup != null || body.course_group != null
+      ? String(body.courseGroup ?? body.course_group).trim() || null
+      : null;
+  const courseBearingDeg =
+    body.courseBearingDeg != null || body.course_bearing_deg != null
+      ? Number(body.courseBearingDeg ?? body.course_bearing_deg)
+      : null;
+  const enabled = body.enabled !== false;
+
+  const rows = await sql`
+    INSERT INTO rnz_timing_lines (
+      org_id, name, line_type, lat1, lon1, lat2, lon2, distance_m, sort_order,
+      course_group, course_bearing_deg, enabled
+    )
+    VALUES (
+      ${orgId}, ${name}, ${lineType}, ${lat1}, ${lon1}, ${lat2}, ${lon2},
+      ${Number.isFinite(distanceM) ? distanceM : null}, ${sortOrder},
+      ${courseGroup}, ${Number.isFinite(courseBearingDeg) ? courseBearingDeg : null}, ${enabled}
+    )
+    RETURNING id, name, line_type, lat1, lon1, lat2, lon2, distance_m, sort_order,
+              course_group, course_bearing_deg, enabled, created_at, updated_at
+  `;
+  return normalizeTimingLine(rows.rows[0]);
+}
+
+async function generateTimingSplitCourse(orgId, body) {
+  if (!hasDb()) return [];
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const { lat1, lon1, lat2, lon2 } = validateEndpoints(
+    body.lat1 ?? body.startLat1,
+    body.lon1 ?? body.startLon1,
+    body.lat2 ?? body.startLat2,
+    body.lon2 ?? body.startLon2,
+  );
+  const courseGroup = String(body.courseGroup ?? body.courseName ?? 'Course').trim() || 'Course';
+  let courseBearingDeg = Number(body.courseBearingDeg ?? body.course_bearing_deg);
+  if (!Number.isFinite(courseBearingDeg)) {
+    const { courseBearingFromLine } = require('./timing-line');
+    const dir = body.courseDirection === 'left' ? 'left' : 'right';
+    courseBearingDeg = courseBearingFromLine(lat1, lon1, lat2, lon2, dir);
+  }
+  const specs = generateSplitLines({
+    startLat1: lat1,
+    startLon1: lon1,
+    startLat2: lat2,
+    startLon2: lon2,
+    courseBearingDeg,
+    splitIntervalM: body.splitIntervalM ?? body.splitInterval ?? 500,
+    totalDistanceM: body.totalDistanceM ?? body.totalDistance ?? 2000,
+    courseGroup,
+  });
+
+  await sql`DELETE FROM rnz_timing_lines WHERE org_id = ${orgId} AND course_group = ${courseGroup}`;
+
+  const created = [];
+  for (const spec of specs) {
+    const row = await createTimingLine(orgId, spec);
+    if (row) created.push(row);
+  }
+  return created;
+}
+
+async function updateTimingLine(orgId, id, body = {}) {
+  if (!hasDb()) return null;
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const n = Number(id);
+  if (!Number.isFinite(n)) throw new Error('Invalid timing line id');
+
+  let lat1 = null;
+  let lon1 = null;
+  let lat2 = null;
+  let lon2 = null;
+  if (
+    body.lat1 != null ||
+    body.lon1 != null ||
+    body.lat2 != null ||
+    body.lon2 != null
+  ) {
+    const cur = await sql`
+      SELECT lat1, lon1, lat2, lon2 FROM rnz_timing_lines
+      WHERE org_id = ${orgId} AND id = ${n} LIMIT 1
+    `;
+    if (!cur.rows[0]) return null;
+    const pts = validateEndpoints(
+      body.lat1 ?? cur.rows[0].lat1,
+      body.lon1 ?? cur.rows[0].lon1,
+      body.lat2 ?? cur.rows[0].lat2,
+      body.lon2 ?? cur.rows[0].lon2,
+    );
+    lat1 = pts.lat1;
+    lon1 = pts.lon1;
+    lat2 = pts.lat2;
+    lon2 = pts.lon2;
+  }
+
+  const name = body.name != null ? String(body.name).trim() : null;
+  const lineType = body.lineType != null ? normalizeLineType(body.lineType) : null;
+  const distanceM =
+    body.distanceM != null || body.distance_m != null
+      ? Number(body.distanceM ?? body.distance_m)
+      : null;
+  const sortOrder =
+    body.sortOrder != null || body.sort_order != null
+      ? Number(body.sortOrder ?? body.sort_order)
+      : null;
+  const enabled =
+    body.enabled === true ? true : body.enabled === false ? false : null;
+
+  const rows = await sql`
+    UPDATE rnz_timing_lines
+    SET
+      name = COALESCE(${name || null}, name),
+      line_type = COALESCE(${lineType}, line_type),
+      lat1 = COALESCE(${lat1}, lat1),
+      lon1 = COALESCE(${lon1}, lon1),
+      lat2 = COALESCE(${lat2}, lat2),
+      lon2 = COALESCE(${lon2}, lon2),
+      distance_m = COALESCE(${Number.isFinite(distanceM) ? distanceM : null}, distance_m),
+      sort_order = COALESCE(${Number.isFinite(sortOrder) ? sortOrder : null}, sort_order),
+      enabled = COALESCE(${enabled}, enabled),
+      updated_at = NOW()
+    WHERE org_id = ${orgId} AND id = ${n}
+    RETURNING id, name, line_type, lat1, lon1, lat2, lon2, distance_m, sort_order,
+              course_group, course_bearing_deg, enabled, created_at, updated_at
+  `;
+  if (!rows.rows.length) return null;
+  return normalizeTimingLine(rows.rows[0]);
+}
+
+async function deleteTimingLine(orgId, id) {
+  if (!hasDb()) return false;
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const n = Number(id);
+  if (!Number.isFinite(n)) return false;
+  const del = await sql`DELETE FROM rnz_timing_lines WHERE org_id = ${orgId} AND id = ${n}`;
+  return (del.rowCount ?? 0) > 0;
+}
+
+async function deleteTimingCourseGroup(orgId, courseGroup) {
+  if (!hasDb()) return 0;
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const del = await sql`
+    DELETE FROM rnz_timing_lines
+    WHERE org_id = ${orgId} AND course_group = ${String(courseGroup)}
+  `;
+  return del.rowCount ?? 0;
 }
 
 const { normalizeRegattaMessage } = require('./regatta-message');
@@ -1587,6 +1853,12 @@ module.exports = {
   createGeofence,
   updateGeofenceSettings,
   deleteGeofence,
+  listTimingLines,
+  createTimingLine,
+  generateTimingSplitCourse,
+  updateTimingLine,
+  deleteTimingLine,
+  deleteTimingCourseGroup,
   getActiveRegattaMessage,
   listActiveRegattaMessages,
   setRegattaMessage,
