@@ -534,6 +534,19 @@
     void loadTimingLines().catch((e) => setStatus(String(e.message || e), true));
   };
 
+  window.dashboardGetTimingLines = function () {
+    return lines.slice();
+  };
+
+  window.dashboardGetTimingCourseGroups = function () {
+    const groups = new Set();
+    for (const line of lines) {
+      if (line.enabled === false) continue;
+      groups.add(line.courseGroup || 'Other');
+    }
+    return [...groups].sort();
+  };
+
   window.dashboardOnMapPositions = function (positions, nowMs) {
     detectCrossings(positions || [], nowMs || Date.now());
   };

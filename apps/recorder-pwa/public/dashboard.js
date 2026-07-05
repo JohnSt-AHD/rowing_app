@@ -790,6 +790,9 @@ function initMap() {
   if (typeof window.dashboardInitTimingLines === 'function') {
     window.dashboardInitTimingLines();
   }
+  if (typeof window.dashboardInitCourseView === 'function') {
+    window.dashboardInitCourseView();
+  }
   if (typeof window.dashboardInitSections === 'function') {
     window.dashboardInitSections();
   }
@@ -971,6 +974,7 @@ function mergeMapWithDeviceGps(devices, positions) {
       fixAgeSec: devAge,
       fixMs: Date.now() - devAge * 1000,
       accuracy: gps.acc ?? prev?.accuracy ?? null,
+      speed: gps.spd ?? prev?.speed ?? null,
       lastSeenAgoSec: d.lastSeenAgoSec ?? prev?.lastSeenAgoSec ?? devAge,
       online: d.online ?? prev?.online ?? false,
       hr: prev?.hr ?? d.hr?.last?.bpm ?? null,
@@ -1319,6 +1323,13 @@ async function poll() {
     if (typeof window.dashboardOnMapPositions === 'function') {
       window.dashboardOnMapPositions(mapPositions, data.polledAt || Date.now());
     }
+    if (typeof window.dashboardOnPollUpdate === 'function') {
+      window.dashboardOnPollUpdate({
+        positions: mapPositions,
+        devices: data.devices,
+        polledAt: data.polledAt || Date.now(),
+      });
+    }
 
     const warnEl = $('#storageWarning');
     if (warnEl) {
@@ -1505,5 +1516,6 @@ function init() {
 }
 
 window.dashboardRefreshNow = poll;
+window.dashboardGetLatestPositions = () => latestMapPositions;
 
 init();

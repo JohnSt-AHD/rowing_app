@@ -70,6 +70,7 @@
           </button>
           <div class="dashboard-section__tools">
             <button type="button" class="hub-btn hub-btn--ghost" id="mapFollowBtn" aria-pressed="false">Follow fleet</button>
+            <button type="button" class="hub-btn hub-btn--ghost" id="courseViewBtn">Course view</button>
             <button type="button" class="hub-btn hub-btn--ghost" id="refreshBtn">Refresh now</button>
             <button type="button" class="hub-btn hub-btn--ghost" id="mapFullscreenBtn">Fullscreen map</button>
           </div>
@@ -640,6 +641,52 @@
       <a href="/test.html">Connection test</a>
     </footer>
 
+    <div id="courseViewOverlay" class="course-view" hidden aria-hidden="true">
+      <div class="course-view__backdrop" id="courseViewBackdrop"></div>
+      <div class="course-view__panel" role="dialog" aria-modal="true" aria-labelledby="courseViewTitle">
+        <header class="course-view__header">
+          <div class="course-view__brands">
+            <img
+              src="/assets/crewsight/crewsight-logo-icon-only-color.png"
+              alt=""
+              class="course-view__logo"
+              width="40"
+              height="40"
+            />
+            <div>
+              <h2 id="courseViewTitle" class="course-view__title">Course timing</h2>
+              <p class="course-view__subtitle">Speed vs distance · live splits · course map</p>
+            </div>
+          </div>
+          <div class="course-view__header-actions">
+            <label class="course-view__course-select-label">
+              Course
+              <select id="courseViewSelect" class="course-view__select" aria-label="Select timing course"></select>
+            </label>
+            <button type="button" class="hub-btn hub-btn--ghost" id="courseViewResetBtn">Reset</button>
+            <button type="button" class="hub-btn hub-btn--primary" id="courseViewCloseBtn">Close</button>
+          </div>
+        </header>
+        <div class="course-view__body">
+          <div class="course-view__main">
+            <div class="course-view__chart-card">
+              <h3 class="course-view__card-title">Speed vs distance</h3>
+              <canvas id="courseViewChart" class="course-view__chart" height="320" aria-label="Speed versus distance chart"></canvas>
+            </div>
+            <div class="course-view__map-card">
+              <h3 class="course-view__card-title">Course map</h3>
+              <div id="courseViewMap" class="course-view__map" role="application" aria-label="Course map with live devices"></div>
+            </div>
+          </div>
+          <div class="course-view__table-card">
+            <h3 class="course-view__card-title">Live splits &amp; rating</h3>
+            <div id="courseViewTable" class="course-view__table-wrap" aria-live="polite"></div>
+          </div>
+        </div>
+        <p class="poll-line course-view__status" id="courseViewStatus">Select a course with start and finish lines.</p>
+      </div>
+    </div>
+
     <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
       integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
@@ -650,6 +697,7 @@
     <script src="/dashboard-monitor-charts.js"></script>
     <script src="/dashboard-geofences.js"></script>
     <script src="/dashboard-timing-lines.js"></script>
+    <script src="/dashboard-course-view.js"></script>
     <script src="/dashboard-regatta.js"></script>
     <script src="/dashboard-sections.js"></script>
     <script src="/dashboard.js"></script>
