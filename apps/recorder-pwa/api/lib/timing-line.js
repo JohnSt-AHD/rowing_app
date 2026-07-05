@@ -104,29 +104,57 @@ function parallelLineAtDistance(lat1, lon1, lat2, lon2, courseBearingDeg, offset
 }
 
 /**
- * Generate split line specs from a start line + course bearing.
- * @returns {Array<{ name: string, lineType: string, distanceM: number, lat1, lon1, lat2, lon2, sortOrder }>}
+ * Equal split distances between start (0) and finish (total).
+ * e.g. 2000 m with 3 splits → 500, 1000, 1500 m.
  */
-function generateSplitLines({
+function computeSplitDistances(totalDistanceM, splitCount) {
+  const total = Number(totalDistanceM);
+  const n = Math.max(0, Math.floor(Number(splitCount) || 0));
+  if (!Number.isFinite(total) || total <= 0) {
+    throw new Error('totalDistanceM must be a positive number');
+  }
+  if (n === 0) return [];
+  const step = total / (n + 1);
+  const out = [];
+  for (let i = 1; i <= n; i++) out.push(Math.round(step * i));
+  return out;
+}
+
+/**
+ * Generate parallel course lines from a start line + course bearing.
+ * Use splitCount for equal splits, or splitIntervalM (legacy) for fixed spacing.
+ */
+function generateCourseLines({
   startLat1,
   startLon1,
   startLat2,
   startLon2,
   courseBearingDeg,
-  splitIntervalM,
   totalDistanceM,
   courseGroup,
+  splitCount,
+  splitIntervalM,
 }) {
-  const interval = Number(splitIntervalM);
   const total = Number(totalDistanceM);
-  if (!Number.isFinite(interval) || interval < 50) {
-    throw new Error('splitIntervalM must be at least 50 metres');
-  }
-  if (!Number.isFinite(total) || total < interval) {
-    throw new Error('totalDistanceM must be at least one split interval');
+  if (!Number.isFinite(total) || total < 100) {
+    throw new Error('totalDistanceM must be at least 100 metres');
   }
   const brg = Number(courseBearingDeg);
   if (!Number.isFinite(brg)) throw new Error('courseBearingDeg is required');
+
+  let splitDistances = [];
+  if (splitCount != null && splitCount !== '' && Number.isFinite(Number(splitCount))) {
+    splitDistances = computeSplitDistances(total, Number(splitCount));
+  } else {
+    const interval = Number(splitIntervalM);
+    if (!Number.isFinite(interval) || interval < 50) {
+      throw new Error('splitCount or splitIntervalM (≥50 m) is required');
+    }
+    if (total < interval) {
+      throw new Error('totalDistanceM must be at least one split interval');
+    }
+    for (let d = interval; d < total; d += interval) splitDistances.push(Math.round(d));
+  }
 
   const lines = [];
   lines.push({
@@ -143,7 +171,7 @@ function generateSplitLines({
   });
 
   let order = 1;
-  for (let d = interval; d < total; d += interval) {
+  for (const d of splitDistances) {
     const pts = parallelLineAtDistance(startLat1, startLon1, startLat2, startLon2, brg, d);
     lines.push({
       name: `${Math.round(d)} m`,
@@ -176,6 +204,11 @@ function generateSplitLines({
   return lines;
 }
 
+/** @deprecated use generateCourseLines */
+function generateSplitLines(opts) {
+  return generateCourseLines(opts);
+}
+
 function ccw(a, b, c) {
   return (c.lat - a.lat) * (b.lon - a.lon) > (b.lat - a.lat) * (c.lon - a.lon);
 }
@@ -194,6 +227,8 @@ module.exports = {
   courseBearingFromLine,
   lineMidpoint,
   parallelLineAtDistance,
+  computeSplitDistances,
+  generateCourseLines,
   generateSplitLines,
   segmentsCross,
   distanceM,

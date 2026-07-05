@@ -1,6 +1,20 @@
 const store = require('./lib/ingest-store');
 const { requireOrg } = require('./lib/require-org');
 
+function courseGroupFromLines(lines) {
+  if (!Array.isArray(lines) || !lines.length) return null;
+  const group = lines[0].courseGroup || null;
+  const finish = lines.find((l) => l.lineType === 'finish');
+  const splits = lines.filter((l) => l.lineType === 'split');
+  return {
+    courseGroup: group,
+    totalDistanceM: finish?.distanceM ?? null,
+    splitCount: splits.length,
+    splitDistancesM: splits.map((l) => l.distanceM).filter(Number.isFinite),
+    lineCount: lines.length,
+  };
+}
+
 /**
  * GET /api/timing-lines — list course timing lines
  * POST /api/timing-lines — create line or generate split course
@@ -35,9 +49,9 @@ module.exports = async function handler(req, res) {
   if (req.method === 'POST') {
     try {
       const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body ?? {};
-      if (body.generateSplits) {
+      if (body.generateSplits || body.generateCourse) {
         const lines = await store.generateTimingSplitCourse(org.id, body);
-        return res.status(201).json({ ok: true, lines });
+        return res.status(201).json({ ok: true, lines, course: courseGroupFromLines(lines) });
       }
       const line = await store.createTimingLine(org.id, body);
       if (!line) {

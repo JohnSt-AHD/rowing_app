@@ -12,6 +12,10 @@
   let editLinesMode = false;
   let lineDraft = [];
   let courseDirectionClick = false;
+  let previewLayer = null;
+  let monitorCourseGroup = localStorage.getItem('rnz_timing_monitor_course') || '';
+
+  const EARTH_R = 6371000;
 
   /** @type {Map<string, { lat: number, lon: number, t: number }>} */
   const lastPosByDevice = new Map();
@@ -44,6 +48,119 @@
 
   function getMap() {
     return window.dashboardFleetMap || null;
+  }
+
+  function toRad(d) {
+    return (d * Math.PI) / 180;
+  }
+
+  function bearingDeg(lat1, lon1, lat2, lon2) {
+    const φ1 = toRad(lat1);
+    const φ2 = toRad(lat2);
+    const Δλ = toRad(lon2 - lon1);
+    const y = Math.sin(Δλ) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+    return (Math.atan2(y, x) * 180) / Math.PI;
+  }
+
+  function destinationLatLon(lat, lon, brg, distM) {
+    if (!Number.isFinite(distM) || distM <= 0) return [lat, lon];
+    const δ = distM / EARTH_R;
+    const θ = toRad(brg);
+    const φ1 = toRad(lat);
+    const λ1 = toRad(lon);
+    const φ2 = Math.asin(
+      Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ),
+    );
+    const λ2 =
+      λ1 +
+      Math.atan2(
+        Math.sin(θ) * Math.sin(δ) * Math.cos(φ1),
+        Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2),
+      );
+    return [(φ2 * 180) / Math.PI, (λ2 * 180) / Math.PI];
+  }
+
+  function parallelLineAtDistance(lat1, lon1, lat2, lon2, courseBearingDeg, offsetM) {
+    const [a1, b1] = destinationLatLon(lat1, lon1, courseBearingDeg, offsetM);
+    const [a2, b2] = destinationLatLon(lat2, lon2, courseBearingDeg, offsetM);
+    return { lat1: a1, lon1: b1, lat2: a2, lon2: b2 };
+  }
+
+  function courseBearingFromLine(lat1, lon1, lat2, lon2, direction) {
+    const lineBrg = bearingDeg(lat1, lon1, lat2, lon2);
+    return direction === 'left' ? (lineBrg + 270) % 360 : (lineBrg + 90) % 360;
+  }
+
+  function computeSplitDistances(totalDistanceM, splitCount) {
+    const total = Number(totalDistanceM);
+    const n = Math.max(0, Math.floor(Number(splitCount) || 0));
+    if (!Number.isFinite(total) || total <= 0) return [];
+    if (n === 0) return [];
+    const step = total / (n + 1);
+    const out = [];
+    for (let i = 1; i <= n; i++) out.push(Math.round(step * i));
+    return out;
+  }
+
+  function updateSplitPreview() {
+    const el = $('#timingSplitPreview');
+    if (!el) return;
+    const total = Number($('#timingTotalDistance')?.value) || 2000;
+    const splitCount = Number($('#timingSplitCount')?.value) || 0;
+    const splits = computeSplitDistances(total, splitCount);
+    if (!splitCount) {
+      el.textContent = `Start and finish only · finish at ${Math.round(total)} m (parallel lines).`;
+    } else {
+      el.textContent = `Splits at ${splits.map((d) => `${d} m`).join(', ')} · finish at ${Math.round(total)} m (all parallel).`;
+    }
+    updateCoursePreviewLayer();
+  }
+
+  function updateCoursePreviewLayer() {
+    const map = getMap();
+    if (!map || typeof L === 'undefined' || lineDraft.length < 2) {
+      previewLayer?.clearLayers();
+      return;
+    }
+    if (!previewLayer) previewLayer = L.layerGroup().addTo(map);
+    previewLayer.clearLayers();
+
+    const lat1 = lineDraft[0].lat;
+    const lon1 = lineDraft[0].lon;
+    const lat2 = lineDraft[1].lat;
+    const lon2 = lineDraft[1].lon;
+    const dir = $('#timingCourseDirection')?.value || 'right';
+    const brg = courseBearingFromLine(lat1, lon1, lat2, lon2, dir);
+    const total = Number($('#timingTotalDistance')?.value) || 2000;
+    const splitCount = Number($('#timingSplitCount')?.value) || 0;
+    const splits = computeSplitDistances(total, splitCount);
+
+    const drawLine = (pts, style) => {
+      L.polyline(
+        [
+          [pts.lat1, pts.lon1],
+          [pts.lat2, pts.lon2],
+        ],
+        style,
+      ).addTo(previewLayer);
+    };
+
+    drawLine({ lat1, lon1, lat2, lon2 }, { color: '#22c55e', weight: 2, dashArray: '6 4', opacity: 0.85 });
+    for (const d of splits) {
+      drawLine(parallelLineAtDistance(lat1, lon1, lat2, lon2, brg, d), {
+        color: '#3b82f6',
+        weight: 2,
+        dashArray: '8 6',
+        opacity: 0.7,
+      });
+    }
+    drawLine(parallelLineAtDistance(lat1, lon1, lat2, lon2, brg, total), {
+      color: '#ef4444',
+      weight: 2,
+      dashArray: '6 4',
+      opacity: 0.85,
+    });
   }
 
   function setStatus(msg, isError) {
@@ -166,7 +283,7 @@
     }
     const btn = $('#timingDrawLineBtn');
     if (btn) {
-      btn.textContent = on ? 'Click map: point 1 & 2…' : 'Draw line on map';
+      btn.textContent = on ? 'Click map: start line…' : 'Draw start line';
       btn.classList.toggle('hub-btn--primary', on);
     }
     const map = getMap();
@@ -174,18 +291,19 @@
     const status = $('#timingDrawStatus');
     if (status) {
       status.textContent = on
-        ? `Line draw: ${lineDraft.length}/2 point(s) on map.`
+        ? `Start line: ${lineDraft.length}/2 point(s) on map.`
         : lineDraft.length >= 2
-          ? 'Line ready — enter name/type and Add line.'
-          : 'No line drawn yet.';
+          ? 'Start line ready — set distance and click Create course.'
+          : 'Draw the start line (two clicks on the map).';
     }
+    updateCoursePreviewLayer();
   }
 
   function setEditLinesMode(on) {
     editLinesMode = on;
     const btn = $('#timingEditLinesBtn');
     if (btn) {
-      btn.textContent = on ? 'Editing lines (drag endpoints)' : 'Edit lines on map';
+      btn.textContent = on ? 'Editing course (drag endpoints)' : 'Edit course on map';
       btn.classList.toggle('hub-btn--primary', on);
     }
     if (!on) timingEditLayer?.clearLayers();
@@ -198,16 +316,52 @@
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
     lines = data.lines || [];
     renderLineList();
+    populateMonitorCourseSelect();
     drawTimingLines();
     renderTimingTable();
-    if (data.persisted) setStatus(`${lines.length} timing line(s) loaded.`);
+    if (data.persisted) setStatus(`${lines.length} line(s) across timing courses loaded.`);
+  }
+
+  function courseSummary(groupLines) {
+    const finish = groupLines.find((l) => l.lineType === 'finish');
+    const splits = groupLines.filter((l) => l.lineType === 'split');
+    const total = finish?.distanceM;
+    const splitList = splits
+      .map((l) => l.distanceM)
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    if (Number.isFinite(total)) {
+      if (splitList.length) {
+        return `${Math.round(total)} m · ${splitList.length} split(s) at ${splitList.map((d) => `${Math.round(d)}m`).join(', ')}`;
+      }
+      return `${Math.round(total)} m · start + finish`;
+    }
+    return `${groupLines.length} parallel lines`;
+  }
+
+  function populateMonitorCourseSelect() {
+    const sel = $('#timingMonitorCourse');
+    if (!sel) return;
+    const groups = typeof window.dashboardGetTimingCourseGroups === 'function'
+      ? window.dashboardGetTimingCourseGroups()
+      : [];
+    sel.innerHTML =
+      '<option value="">All courses</option>' +
+      groups.map((g) => `<option value="${esc(g)}"${g === monitorCourseGroup ? ' selected' : ''}>${esc(g)}</option>`).join('');
+  }
+
+  function linesForMonitor() {
+    const active = sortedLines().filter((l) => l.enabled !== false);
+    if (!monitorCourseGroup) return active;
+    return active.filter((l) => (l.courseGroup || 'Other') === monitorCourseGroup);
   }
 
   function renderLineList() {
     const el = $('#timingLineList');
     if (!el) return;
     if (!lines.length) {
-      el.innerHTML = '<p class="poll-line">No timing lines yet. Draw a line or generate a split course.</p>';
+      el.innerHTML =
+        '<p class="poll-line">No courses yet. Draw a start line on the map and click Create course.</p>';
       return;
     }
     const groups = new Map();
@@ -218,46 +372,32 @@
     }
     el.innerHTML = [...groups.entries()]
       .map(([group, groupLines]) => {
-        const groupDelete =
-          group !== 'Other'
-            ? `<button type="button" class="hub-btn hub-btn--danger hub-btn--sm timing-delete-group-btn" data-group="${esc(group)}">Delete course</button>`
-            : '';
-        const rows = groupLines
+        const summary = courseSummary(groupLines);
+        const lineRows = groupLines
           .map(
             (line) => `
-          <div class="timing-line-item" data-id="${line.id}">
-            <div class="timing-line-item__main">
-              <strong>${esc(line.name)}</strong>
-              <span class="timing-line-item__meta">${esc(line.lineType)}${line.distanceM != null ? ` · ${Math.round(line.distanceM)} m` : ''}</span>
-            </div>
-            <button type="button" class="hub-btn hub-btn--danger hub-btn--sm timing-delete-btn" data-id="${line.id}">Delete</button>
-          </div>`,
+          <li class="timing-course-line">
+            <span class="timing-course-line__type timing-course-line__type--${esc(line.lineType)}">${esc(line.lineType)}</span>
+            ${esc(line.name)}${line.distanceM != null ? ` · ${Math.round(line.distanceM)} m` : ''}
+          </li>`,
           )
           .join('');
-        return `<div class="timing-line-group"><div class="timing-line-group__head"><strong>${esc(group)}</strong>${groupDelete}</div>${rows}</div>`;
+        return `<div class="timing-line-group">
+          <div class="timing-line-group__head">
+            <div>
+              <strong>${esc(group)}</strong>
+              <span class="timing-line-item__meta">${esc(summary)}</span>
+            </div>
+            <button type="button" class="hub-btn hub-btn--danger hub-btn--sm timing-delete-group-btn" data-group="${esc(group)}">Delete</button>
+          </div>
+          <ul class="timing-course-lines">${lineRows}</ul>
+        </div>`;
       })
       .join('');
 
-    el.querySelectorAll('.timing-delete-btn').forEach((btn) => {
-      btn.addEventListener('click', () => void deleteLine(btn.getAttribute('data-id')));
-    });
     el.querySelectorAll('.timing-delete-group-btn').forEach((btn) => {
       btn.addEventListener('click', () => void deleteCourseGroup(btn.getAttribute('data-group')));
     });
-  }
-
-  async function deleteLine(id) {
-    if (!id || !confirm('Delete this timing line?')) return;
-    const res = await fetch(`${apiBase()}/api/timing-lines?id=${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: headers(),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      setStatus(data.error || 'Delete failed', true);
-      return;
-    }
-    await loadTimingLines();
   }
 
   async function deleteCourseGroup(group) {
@@ -274,68 +414,36 @@
     await loadTimingLines();
   }
 
-  async function createLine(ev) {
+  async function createCourse(ev) {
     ev.preventDefault();
     if (lineDraft.length < 2) {
-      setStatus('Draw a line on the map (two points).', true);
+      setStatus('Draw the start line on the map first (two clicks).', true);
       return;
     }
-    const name = $('#timingLineName')?.value?.trim();
-    const lineType = $('#timingLineType')?.value || 'split';
-    const distanceM = Number($('#timingLineDistance')?.value);
-    if (!name) {
-      setStatus('Line name is required.', true);
-      return;
-    }
-    const payload = {
-      name,
-      lineType,
-      lat1: lineDraft[0].lat,
-      lon1: lineDraft[0].lon,
-      lat2: lineDraft[1].lat,
-      lon2: lineDraft[1].lon,
-      distanceM: Number.isFinite(distanceM) ? distanceM : null,
-    };
-    setStatus('Saving line…');
-    const res = await fetch(`${apiBase()}/api/timing-lines`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      setStatus(data.error || 'Save failed', true);
-      return;
-    }
-    lineDraft = [];
-    setDrawLineMode(false);
-    updateDraftLayer();
-    $('#timingLineForm')?.reset();
-    await loadTimingLines();
-  }
-
-  async function generateSplitCourse(ev) {
-    ev.preventDefault();
-    if (lineDraft.length < 2) {
-      setStatus('Draw the start line on the map first (two points).', true);
-      return;
-    }
-    const courseGroup = $('#timingCourseName')?.value?.trim() || 'Course';
-    const splitIntervalM = Number($('#timingSplitInterval')?.value) || 500;
-    const totalDistanceM = Number($('#timingTotalDistance')?.value) || 2000;
+    const courseGroup = $('#timingCourseName')?.value?.trim();
+    const totalDistanceM = Number($('#timingTotalDistance')?.value);
+    const splitCount = Number($('#timingSplitCount')?.value);
     const courseDirection = $('#timingCourseDirection')?.value || 'right';
+    if (!courseGroup) {
+      setStatus('Course name is required.', true);
+      return;
+    }
+    if (!Number.isFinite(totalDistanceM) || totalDistanceM < 100) {
+      setStatus('Total distance must be at least 100 m.', true);
+      return;
+    }
     const payload = {
-      generateSplits: true,
+      generateCourse: true,
       courseGroup,
       lat1: lineDraft[0].lat,
       lon1: lineDraft[0].lon,
       lat2: lineDraft[1].lat,
       lon2: lineDraft[1].lon,
-      splitIntervalM,
       totalDistanceM,
+      splitCount: Number.isFinite(splitCount) ? splitCount : 0,
       courseDirection,
     };
-    setStatus('Generating split course…');
+    setStatus('Creating course…');
     const res = await fetch(`${apiBase()}/api/timing-lines`, {
       method: 'POST',
       headers: headers(),
@@ -343,14 +451,17 @@
     });
     const data = await res.json();
     if (!res.ok || !data.ok) {
-      setStatus(data.error || 'Generate failed', true);
+      setStatus(data.error || 'Create failed', true);
       return;
     }
     lineDraft = [];
     setDrawLineMode(false);
+    previewLayer?.clearLayers();
     updateDraftLayer();
+    monitorCourseGroup = courseGroup;
+    localStorage.setItem('rnz_timing_monitor_course', courseGroup);
     await loadTimingLines();
-    setStatus(`Created ${data.lines?.length ?? 0} lines for ${courseGroup}.`);
+    setStatus(`Course "${courseGroup}" created with ${data.lines?.length ?? 0} parallel lines.`);
   }
 
   function ccw(a, b, c) {
@@ -385,11 +496,11 @@
   }
 
   function activeLines() {
-    return sortedLines().filter((l) => l.enabled !== false);
+    return linesForMonitor();
   }
 
   function sectionLines() {
-    const active = activeLines();
+    const active = linesForMonitor();
     const start = active.find((l) => l.lineType === 'start') || active[0];
     const finish = [...active].reverse().find((l) => l.lineType === 'finish') || active[active.length - 1];
     const splits = active.filter((l) => l.lineType === 'split' || (l.id !== start?.id && l.id !== finish?.id));
@@ -432,7 +543,7 @@
     if (!el) return;
     const { start, finish, splits, all } = sectionLines();
     if (!all.length) {
-      el.innerHTML = '<p class="poll-line">Add timing lines to see live split times.</p>';
+      el.innerHTML = '<p class="poll-line">Create a course to see live split times.</p>';
       return;
     }
 
@@ -504,17 +615,18 @@
       if (status) {
         status.textContent =
           lineDraft.length >= 2
-            ? 'Line ready — add single line or generate split course.'
-            : `Line draw: ${lineDraft.length}/2 point(s).`;
+            ? 'Start line ready — set distance and click Create course.'
+            : `Start line: ${lineDraft.length}/2 point(s).`;
       }
+      updateCoursePreviewLayer();
+      updateDrawButtons();
       if (lineDraft.length >= 2) setDrawLineMode(false);
       return;
     }
   }
 
   function bind() {
-    $('#timingLineForm')?.addEventListener('submit', createLine);
-    $('#timingSplitForm')?.addEventListener('submit', generateSplitCourse);
+    $('#timingCourseForm')?.addEventListener('submit', createCourse);
     $('#timingDrawLineBtn')?.addEventListener('click', () => setDrawLineMode(!drawLineMode));
     $('#timingEditLinesBtn')?.addEventListener('click', () => setEditLinesMode(!editLinesMode));
     $('#timingResetBtn')?.addEventListener('click', resetTimings);
@@ -524,15 +636,27 @@
     $('#timingMonitorToggle')?.addEventListener('change', (ev) => {
       monitorEnabled = ev.target.checked;
     });
+    $('#timingMonitorCourse')?.addEventListener('change', (ev) => {
+      monitorCourseGroup = ev.target.value;
+      localStorage.setItem('rnz_timing_monitor_course', monitorCourseGroup);
+      renderTimingTable();
+    });
+    ['#timingTotalDistance', '#timingSplitCount', '#timingCourseDirection'].forEach((sel) => {
+      $(sel)?.addEventListener('input', updateSplitPreview);
+      $(sel)?.addEventListener('change', updateSplitPreview);
+    });
 
     const map = getMap();
     if (map) map.on('click', onMapClick);
+    updateSplitPreview();
   }
 
   window.dashboardInitTimingLines = function () {
     bind();
     void loadTimingLines().catch((e) => setStatus(String(e.message || e), true));
   };
+
+  window.dashboardComputeSplitDistances = computeSplitDistances;
 
   window.dashboardGetTimingLines = function () {
     return lines.slice();

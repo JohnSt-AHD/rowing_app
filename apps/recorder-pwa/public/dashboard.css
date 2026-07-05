@@ -1248,8 +1248,60 @@
 }
 
 .timing-line-form,
-.timing-split-form {
+.timing-split-form,
+.timing-course-form {
   margin-top: 0.85rem;
+}
+
+.timing-course-monitor-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.75rem 0;
+  font-size: 0.78rem;
+  color: var(--ahd-muted);
+}
+
+.timing-course-select {
+  min-width: 200px;
+  padding: 0.4rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--ahd-border);
+  background: rgba(10, 22, 40, 0.9);
+  color: var(--ahd-text);
+}
+
+.timing-course-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 0.35rem;
+}
+
+.timing-course-line {
+  font-size: 0.82rem;
+  color: var(--ahd-muted);
+  padding: 0.2rem 0;
+}
+
+.timing-course-line__type {
+  display: inline-block;
+  min-width: 3.2rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-right: 0.35rem;
+}
+
+.timing-course-line__type--start {
+  color: #22c55e;
+}
+
+.timing-course-line__type--finish {
+  color: #ef4444;
+}
+
+.timing-course-line__type--split {
+  color: #3b82f6;
 }
 
 /* Course view overlay (RNZ / CrewSight theme) */

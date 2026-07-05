@@ -1628,9 +1628,10 @@ async function generateTimingSplitCourse(orgId, body) {
     startLat2: lat2,
     startLon2: lon2,
     courseBearingDeg,
-    splitIntervalM: body.splitIntervalM ?? body.splitInterval ?? 500,
     totalDistanceM: body.totalDistanceM ?? body.totalDistance ?? 2000,
     courseGroup,
+    splitCount: body.splitCount ?? body.splitLines ?? body.numSplits,
+    splitIntervalM: body.splitIntervalM ?? body.splitInterval,
   });
 
   await sql`DELETE FROM rnz_timing_lines WHERE org_id = ${orgId} AND course_group = ${courseGroup}`;
