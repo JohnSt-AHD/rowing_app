@@ -696,6 +696,19 @@
             <button type="button" class="hub-btn hub-btn--ghost" id="courseViewSaveRotateBtn" disabled>
               Save rotation
             </button>
+            <label class="course-view__check" title="Race in the opposite direction — finish becomes start">
+              <input type="checkbox" id="courseViewReverse" /> Reverse
+            </label>
+            <label class="course-view__check" title="Start when boat reaches 50% prognostic for 200 m after rest">
+              <input type="checkbox" id="courseViewRollingStart" checked /> Rolling start
+            </label>
+            <button type="button" class="hub-btn hub-btn--ghost" id="courseViewSaveRaceBtn">Save race</button>
+            <label class="course-view__recall-label">
+              Recall
+              <select id="courseViewRecallSelect" class="course-view__select" aria-label="Recall saved race">
+                <option value="">Live timing</option>
+              </select>
+            </label>
             <button type="button" class="hub-btn hub-btn--ghost" id="courseViewResetBtn">Reset times</button>
             <button type="button" class="hub-btn hub-btn--primary" id="courseViewCloseBtn">Close</button>
           </div>

@@ -1449,6 +1449,46 @@ body.course-view-open {
   color: var(--ahd-text);
 }
 
+.course-view__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--ahd-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.course-view__check input {
+  accent-color: var(--ahd-accent);
+}
+
+.course-view__recall-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--ahd-muted);
+}
+
+.course-view-hide-btn {
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--ahd-border);
+  background: transparent;
+  color: var(--ahd-muted);
+  cursor: pointer;
+}
+
+.course-view-hide-btn:hover {
+  color: var(--ahd-text);
+  border-color: var(--ahd-accent);
+}
+
 .course-view__body {
   flex: 1;
   min-height: 0;

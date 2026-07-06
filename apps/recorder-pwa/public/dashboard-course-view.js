@@ -3,7 +3,14 @@
  */
 (function () {
   const LS_COURSE = 'rnz_course_view_course';
+  const LS_COURSE_REVERSE = 'rnz_course_view_reverse';
+  const LS_ROLLING_START = 'rnz_course_view_rolling_start';
+  const LS_SAVED_RACES = 'rnz_course_view_saved_races';
   const EARTH_R = 6371000;
+  const REST_SPEED_MPS = 0.5;
+  const ROLLING_START_DIST_M = 200;
+  const ROLLING_PROGNOSTIC_PCT = 50;
+  const MAX_SAVED_RACES = 30;
   const DEVICE_COLORS = [
     '#00e5ff',
     '#4ade80',
@@ -35,9 +42,17 @@
   const tracesByDevice = new Map();
   /** @type {Map<string, { speedMps: number|null, strokeRate: number|null, online: boolean }>} */
   const liveByDevice = new Map();
+  /** @type {Set<string>} */
+  const hiddenDevices = new Set();
+  /** @type {Map<string, { confirmed: boolean, tMs?: number, distM?: number, lat?: number, lon?: number, pendingDistM: number, pendingStartT?: number, pendingStartAlong?: number, pendingStartLat?: number, pendingStartLon?: number, lastAlong?: number, source?: string }>} */
+  const raceStartByDevice = new Map();
 
   /** Fine rotation preview (degrees) around fixed start line. */
   let rotationPreviewDeg = 0;
+  let courseReversed = false;
+  let rollingStartEnabled = true;
+  /** @type {object|null} */
+  let recalledRace = null;
 
   function destinationLatLon(lat, lon, brg, distM) {
     if (!Number.isFinite(distM) || distM <= 0) return [lat, lon];
@@ -279,12 +294,284 @@
     return along;
   }
 
+  function effectiveAlong(lat, lon, course) {
+    const along = distanceAlongCourse(lat, lon, course);
+    if (along == null || !Number.isFinite(along)) return null;
+    return courseReversed ? course.totalDist - along : along;
+  }
+
+  function timingStartLine(course) {
+    if (!course) return null;
+    return courseReversed && course.finish ? course.finish : course.start;
+  }
+
+  function prognosticThresholdMps(deviceId, athleteId) {
+    const RS = window.RowingSpeed;
+    if (!RS?.parseBoatClass || !RS?.reference2kSec) return null;
+    const boat = RS.parseBoatClass(deviceId, athleteId);
+    const refSec = RS.reference2kSec(boat);
+    if (!refSec) return null;
+    const pct = ROLLING_PROGNOSTIC_PCT / 100;
+    return 2000 / (refSec / pct);
+  }
+
+  function getEffectiveStartMs(deviceId, course) {
+    const rolling = raceStartByDevice.get(deviceId);
+    if (rolling?.confirmed && Number.isFinite(rolling.tMs)) return rolling.tMs;
+    const crossed = crossingsByDevice.get(deviceId);
+    const startLine = timingStartLine(course);
+    if (crossed && startLine) {
+      const t = crossed.get(startLine.id);
+      if (Number.isFinite(t)) {
+        if (rollingStartEnabled && prognosticThresholdMps(deviceId) != null) return null;
+        return t;
+      }
+    }
+    return null;
+  }
+
+  function isDeviceHidden(deviceId) {
+    return hiddenDevices.has(deviceId);
+  }
+
+  function visibleDeviceIds(extraKeys = []) {
+    const ids = new Set([...tracesByDevice.keys(), ...crossingsByDevice.keys(), ...extraKeys]);
+    return [...ids]
+      .filter((id) => !isDeviceHidden(id))
+      .sort((a, b) => String(a).localeCompare(String(b), undefined, { sensitivity: 'base' }));
+  }
+
+  function serializeCrossings(map) {
+    const out = {};
+    for (const [deviceId, lineMap] of map) {
+      out[deviceId] = Object.fromEntries(lineMap);
+    }
+    return out;
+  }
+
+  function deserializeCrossings(obj) {
+    const map = new Map();
+    for (const [deviceId, lines] of Object.entries(obj || {})) {
+      const inner = new Map();
+      for (const [lineId, t] of Object.entries(lines || {})) {
+        inner.set(Number(lineId), Number(t));
+      }
+      map.set(deviceId, inner);
+    }
+    return map;
+  }
+
+  function serializeTraces(map) {
+    const out = {};
+    for (const [deviceId, trace] of map) {
+      out[deviceId] = trace.slice();
+    }
+    return out;
+  }
+
+  function deserializeTraces(obj) {
+    const map = new Map();
+    for (const [deviceId, trace] of Object.entries(obj || {})) {
+      map.set(deviceId, Array.isArray(trace) ? trace.slice() : []);
+    }
+    return map;
+  }
+
+  function serializeRaceStarts(map) {
+    const out = {};
+    for (const [deviceId, st] of map) {
+      out[deviceId] = { ...st };
+    }
+    return out;
+  }
+
+  function deserializeRaceStarts(obj) {
+    const map = new Map();
+    for (const [deviceId, st] of Object.entries(obj || {})) {
+      map.set(deviceId, { ...st });
+    }
+    return map;
+  }
+
+  function loadSavedRacesList() {
+    try {
+      const raw = localStorage.getItem(LS_SAVED_RACES);
+      const list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function persistSavedRacesList(list) {
+    try {
+      localStorage.setItem(LS_SAVED_RACES, JSON.stringify(list.slice(0, MAX_SAVED_RACES)));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function populateRecallSelect() {
+    const sel = $('#courseViewRecallSelect');
+    if (!sel) return;
+    const races = loadSavedRacesList();
+    const current = recalledRace?.id != null ? String(recalledRace.id) : '';
+    sel.innerHTML =
+      '<option value="">Live timing</option>' +
+      races
+        .map(
+          (r) =>
+            `<option value="${r.id}"${String(r.id) === current ? ' selected' : ''}>${esc(r.name || r.courseGroup || r.id)}</option>`,
+        )
+        .join('');
+  }
+
+  function saveCurrentRace() {
+    const course = getDisplayCourse();
+    if (!course) {
+      setStatus('Select a course before saving.', true);
+      return;
+    }
+    const name =
+      window.prompt('Race name (optional):', `${course.group} ${new Date().toLocaleString()}`) ||
+      `${course.group} ${new Date().toLocaleString()}`;
+    const race = {
+      id: Date.now(),
+      name,
+      courseGroup: selectedCourse,
+      courseReversed,
+      rollingStartEnabled,
+      savedAt: Date.now(),
+      crossings: serializeCrossings(crossingsByDevice),
+      traces: serializeTraces(tracesByDevice),
+      raceStarts: serializeRaceStarts(raceStartByDevice),
+      live: Object.fromEntries(liveByDevice),
+      hiddenDevices: [...hiddenDevices],
+    };
+    const list = loadSavedRacesList();
+    list.unshift(race);
+    persistSavedRacesList(list);
+    populateRecallSelect();
+    setStatus(`Race saved: ${name}`);
+  }
+
+  function restoreRaceState(race) {
+    crossingsByDevice.clear();
+    for (const [k, v] of deserializeCrossings(race.crossings)) crossingsByDevice.set(k, v);
+    tracesByDevice.clear();
+    for (const [k, v] of deserializeTraces(race.traces)) tracesByDevice.set(k, v);
+    raceStartByDevice.clear();
+    for (const [k, v] of deserializeRaceStarts(race.raceStarts)) raceStartByDevice.set(k, v);
+    liveByDevice.clear();
+    for (const [k, v] of Object.entries(race.live || {})) liveByDevice.set(k, v);
+    hiddenDevices.clear();
+    for (const id of race.hiddenDevices || []) hiddenDevices.add(id);
+    courseReversed = Boolean(race.courseReversed);
+    rollingStartEnabled = race.rollingStartEnabled !== false;
+    const revEl = $('#courseViewReverse');
+    const rollEl = $('#courseViewRollingStart');
+    if (revEl) revEl.checked = courseReversed;
+    if (rollEl) rollEl.checked = rollingStartEnabled;
+    try {
+      localStorage.setItem(LS_COURSE_REVERSE, courseReversed ? '1' : '0');
+      localStorage.setItem(LS_ROLLING_START, rollingStartEnabled ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function recallRace(id) {
+    if (!id) {
+      recalledRace = null;
+      populateRecallSelect();
+      refreshCourseView();
+      setStatus('Live timing restored.');
+      return;
+    }
+    const race = loadSavedRacesList().find((r) => String(r.id) === String(id));
+    if (!race) {
+      setStatus('Saved race not found.', true);
+      return;
+    }
+    recalledRace = race;
+    if (race.courseGroup && race.courseGroup !== selectedCourse) {
+      selectedCourse = race.courseGroup;
+      const sel = $('#courseViewSelect');
+      if (sel) sel.value = selectedCourse;
+      localStorage.setItem(LS_COURSE, selectedCourse);
+    }
+    restoreRaceState(race);
+    populateRecallSelect();
+    refreshCourseView();
+    setStatus(`Recalled: ${race.name || race.courseGroup}`);
+  }
+
+  function updateRollingStart(deviceId, { spd, along, nowMs, cur, athleteId }) {
+    if (!rollingStartEnabled || recalledRace) return;
+    const threshold = prognosticThresholdMps(deviceId, athleteId);
+    if (threshold == null) return;
+
+    let st = raceStartByDevice.get(deviceId);
+    if (!st) {
+      st = { confirmed: false, pendingDistM: 0 };
+      raceStartByDevice.set(deviceId, st);
+    }
+    if (st.confirmed) return;
+
+    const isFast = Number.isFinite(spd) && spd >= threshold;
+    const isRest = !Number.isFinite(spd) || spd < REST_SPEED_MPS;
+
+    if (isFast && along != null) {
+      if (st.pendingStartT == null) {
+        st.pendingStartT = nowMs;
+        st.pendingStartAlong = along;
+        st.pendingStartLat = cur.lat;
+        st.pendingStartLon = cur.lon;
+        st.pendingDistM = 0;
+      } else if (Number.isFinite(st.lastAlong)) {
+        st.pendingDistM += Math.max(0, along - st.lastAlong);
+      }
+      if (st.pendingDistM >= ROLLING_START_DIST_M) {
+        st.confirmed = true;
+        st.tMs = st.pendingStartT;
+        st.distM = st.pendingStartAlong;
+        st.lat = st.pendingStartLat;
+        st.lon = st.pendingStartLon;
+        st.source = 'rolling';
+      }
+    } else if (isRest) {
+      st.pendingStartT = undefined;
+      st.pendingDistM = 0;
+      st.pendingStartAlong = undefined;
+      st.pendingStartLat = undefined;
+      st.pendingStartLon = undefined;
+    }
+    if (along != null) st.lastAlong = along;
+  }
+
   function ccw(a, b, c) {
     return (c.lat - a.lat) * (b.lon - a.lon) > (b.lat - a.lat) * (c.lon - a.lon);
   }
 
   function segmentsCross(a, b, c, d) {
     return ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+  }
+
+  function segmentsCrossDirected(prev, cur, line, course) {
+    if (
+      !segmentsCross(
+        prev,
+        cur,
+        { lat: line.lat1, lon: line.lon1 },
+        { lat: line.lat2, lon: line.lon2 },
+      )
+    ) {
+      return false;
+    }
+    const alongPrev = effectiveAlong(prev.lat, prev.lon, course);
+    const alongCur = effectiveAlong(cur.lat, cur.lon, course);
+    if (alongPrev == null || alongCur == null) return false;
+    return alongCur - alongPrev > 0.3;
   }
 
   function posFromRecord(p) {
@@ -321,9 +608,13 @@
     return `${mm}:${String(ss).padStart(2, '0')}`;
   }
 
-  function formatSpeedDisplay(mps, deviceId) {
+  function formatSpeedDisplay(mps, deviceId, athleteId) {
     const RS = window.RowingSpeed;
-    if (RS) return RS.formatPaceWithPrognostic(mps, deviceId, { suffix: true });
+    if (RS) {
+      const parts = [deviceId];
+      if (athleteId) parts.push(athleteId);
+      return RS.formatPaceWithPrognostic(mps, ...parts, { suffix: true });
+    }
     return `${formatSplit500(mps)}/500`;
   }
 
@@ -400,7 +691,11 @@
             : { color: '#3b82f6', weight: 2, dashArray: '8 6' };
       const label =
         line.distanceM != null
-          ? `${line.name} (${Math.round(line.distanceM - (course.startDist ?? 0))} m)`
+          ? `${line.name} (${Math.round(
+              courseReversed
+                ? (course.finishDist ?? 0) - line.distanceM
+                : line.distanceM - (course.startDist ?? 0),
+            )} m)${courseReversed ? ' ↺' : ''}`
           : line.name;
       L.polyline(
         [
@@ -426,6 +721,7 @@
     for (const p of positions) {
       const id = p.deviceId || p.uniqueId;
       if (!id) continue;
+      if (isDeviceHidden(id)) continue;
       const pos = posFromRecord(p);
       if (!pos) continue;
       const along = distanceAlongCourse(pos.lat, pos.lon, course);
@@ -505,7 +801,9 @@
 
     for (const line of course.markers) {
       if (line.lineType === 'start' || !Number.isFinite(line.distanceM)) continue;
-      const dist = line.distanceM - course.startDist;
+      const dist = courseReversed
+        ? (course.finishDist ?? 0) - line.distanceM
+        : line.distanceM - course.startDist;
       if (dist <= 0 || dist >= maxDist) continue;
       const x = xAt(dist);
       ctx.strokeStyle =
@@ -554,6 +852,7 @@
     }
 
     for (const [deviceId, trace] of tracesByDevice) {
+      if (isDeviceHidden(deviceId)) continue;
       if (trace.length < 2) continue;
       ctx.strokeStyle = colorForDevice(deviceId);
       ctx.lineWidth = 2;
@@ -577,6 +876,7 @@
     ctx.textAlign = 'left';
     let ly = pad.t + 4;
     for (const deviceId of tracesByDevice.keys()) {
+      if (isDeviceHidden(deviceId)) continue;
       ctx.fillStyle = colorForDevice(deviceId);
       ctx.fillRect(pad.l + 4, ly, 10, 10);
       ctx.fillStyle = '#e8f4fc';
@@ -594,7 +894,7 @@
       (a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0),
     );
 
-    const deviceIds = [...new Set([...tracesByDevice.keys(), ...crossingsByDevice.keys()])].sort();
+    const deviceIds = visibleDeviceIds();
     if (!deviceIds.length) {
       el.innerHTML =
         '<p class="poll-line">Waiting for devices on course…</p>';
@@ -607,18 +907,28 @@
       if (line.lineType === 'start') continue;
       const label =
         line.distanceM != null
-          ? `${Math.round(line.distanceM - course.startDist)}m`
+          ? `${Math.round(
+              courseReversed
+                ? (course.finishDist ?? 0) - line.distanceM
+                : line.distanceM - course.startDist,
+            )}m`
           : line.name;
       html += `<th>${esc(label)}</th>`;
     }
-    html += '<th>Pace</th><th>Rating</th></tr></thead><tbody>';
+    html += '<th>Pace</th><th>Rating</th><th></th></tr></thead><tbody>';
 
     for (const deviceId of deviceIds) {
       const crossed = crossingsByDevice.get(deviceId) || new Map();
       const live = liveByDevice.get(deviceId) || {};
-      const tStart = course.start ? crossed.get(course.start.id) : null;
+      const tStart = getEffectiveStartMs(deviceId, course);
+      const rolling = raceStartByDevice.get(deviceId);
+      const startLabel = tStart
+        ? rolling?.confirmed
+          ? `${formatClock(tStart)} ↺`
+          : formatClock(tStart)
+        : '—';
       html += `<tr><td><span class="course-view-table__dot" style="background:${colorForDevice(deviceId)}"></span><strong>${esc(deviceId)}</strong></td>`;
-      html += `<td>${tStart ? formatClock(tStart) : '—'}</td>`;
+      html += `<td>${startLabel}</td>`;
       for (const line of ordered) {
         if (line.lineType === 'start') continue;
         const t = crossed.get(line.id);
@@ -629,8 +939,9 @@
         html += `<td>${formatElapsed(t - tStart)}</td>`;
       }
       const spd = live.speedMps;
-      html += `<td>${Number.isFinite(spd) && spd > 0 ? formatSpeedDisplay(spd, deviceId) : '—'}</td>`;
+      html += `<td>${Number.isFinite(spd) && spd > 0 ? formatSpeedDisplay(spd, deviceId, live.athleteId) : '—'}</td>`;
       html += `<td>${live.strokeRate != null && live.strokeRate > 0 ? `${Math.round(live.strokeRate)} spm` : '—'}</td>`;
+      html += `<td><button type="button" class="course-view-hide-btn" data-hide-device="${esc(deviceId)}">Hide</button></td>`;
       html += '</tr>';
     }
     html += '</tbody></table>';
@@ -639,6 +950,7 @@
 
   function processPoll(positions, nowMs) {
     if (!open || !selectedCourse) return;
+    if (recalledRace) return;
     const course = getDisplayCourse();
     if (!course) return;
 
@@ -660,6 +972,16 @@
             ? p.strokeRate
             : p.attributes?.strokeRate ?? null,
         online: Boolean(p.online),
+        athleteId: p.athleteId ?? null,
+      });
+
+      const effAlong = effectiveAlong(cur.lat, cur.lon, course);
+      updateRollingStart(deviceId, {
+        spd,
+        along: effAlong,
+        nowMs,
+        cur,
+        athleteId: p.athleteId,
       });
 
       if (!crossingsByDevice.has(deviceId)) crossingsByDevice.set(deviceId, new Map());
@@ -667,27 +989,18 @@
       if (prev) {
         for (const line of course.lines) {
           if (crossed.has(line.id)) continue;
-          if (
-            segmentsCross(
-              { lat: prev.lat, lon: prev.lon },
-              { lat: cur.lat, lon: cur.lon },
-              { lat: line.lat1, lon: line.lon1 },
-              { lat: line.lat2, lon: line.lon2 },
-            )
-          ) {
-            crossed.set(line.id, nowMs);
-          }
+          if (!segmentsCrossDirected(prev, cur, line, course)) continue;
+          crossed.set(line.id, nowMs);
         }
       }
 
-      const along = distanceAlongCourse(cur.lat, cur.lon, course);
-      if (along == null) continue;
-      const tStart = course.start ? crossed.get(course.start.id) : null;
-      const onCourse = tStart || (along >= -20 && along <= course.totalDist + 40);
+      if (effAlong == null) continue;
+      const tStart = getEffectiveStartMs(deviceId, course);
+      const onCourse = tStart || (effAlong >= -20 && effAlong <= course.totalDist + 40);
       if (!onCourse) continue;
       if (!Number.isFinite(spd) || spd <= 0) continue;
 
-      const distM = Math.max(0, Math.min(course.totalDist, along));
+      const distM = Math.max(0, Math.min(course.totalDist, effAlong));
       if (!tracesByDevice.has(deviceId)) tracesByDevice.set(deviceId, []);
       const trace = tracesByDevice.get(deviceId);
       const last = trace[trace.length - 1];
@@ -700,8 +1013,11 @@
     drawChart(course);
     renderTable(course);
     updateCourseMapDevices(positions, course);
+    const hiddenNote = hiddenDevices.size ? ` · ${hiddenDevices.size} hidden` : '';
+    const recallNote = recalledRace ? ' · recalled race' : '';
+    const reverseNote = courseReversed ? ' · reverse' : '';
     setStatus(
-      `${course.group} · ${Math.round(course.totalDist)} m · ${deviceIdsOnCourse()} device(s) on course${Math.abs(rotationPreviewDeg) >= 0.05 ? ` · preview ${rotationPreviewDeg.toFixed(1)}°` : ''}`,
+      `${course.group} · ${Math.round(course.totalDist)} m · ${visibleDeviceIds().length} visible on course${hiddenNote}${reverseNote}${recallNote}${Math.abs(rotationPreviewDeg) >= 0.05 ? ` · preview ${rotationPreviewDeg.toFixed(1)}°` : ''}`,
     );
   }
 
@@ -711,13 +1027,21 @@
     return n;
   }
 
-  function resetSession() {
+  function resetTimingData() {
     lastPosByDevice.clear();
     crossingsByDevice.clear();
     tracesByDevice.clear();
-    liveByDevice.clear();
+    raceStartByDevice.clear();
     courseDeviceMarkers.clear();
     courseDeviceLayer?.clearLayers();
+  }
+
+  function resetSession() {
+    resetTimingData();
+    liveByDevice.clear();
+    hiddenDevices.clear();
+    recalledRace = null;
+    populateRecallSelect();
     refreshCourseView();
     setStatus('Course session reset.');
   }
@@ -731,7 +1055,19 @@
     }
     document.body.classList.add('course-view-open');
     populateCourseSelect();
+    populateRecallSelect();
     resetRotationUi();
+    try {
+      courseReversed = localStorage.getItem(LS_COURSE_REVERSE) === '1';
+      rollingStartEnabled = localStorage.getItem(LS_ROLLING_START) !== '0';
+    } catch {
+      courseReversed = false;
+      rollingStartEnabled = true;
+    }
+    const revEl = $('#courseViewReverse');
+    const rollEl = $('#courseViewRollingStart');
+    if (revEl) revEl.checked = courseReversed;
+    if (rollEl) rollEl.checked = rollingStartEnabled;
     selectedCourse = $('#courseViewSelect')?.value || selectedCourse;
     localStorage.setItem(LS_COURSE, selectedCourse);
     const course = getDisplayCourse();
@@ -768,6 +1104,40 @@
     $('#courseViewCloseBtn')?.addEventListener('click', closeOverlay);
     $('#courseViewBackdrop')?.addEventListener('click', closeOverlay);
     $('#courseViewResetBtn')?.addEventListener('click', resetSession);
+    $('#courseViewSaveRaceBtn')?.addEventListener('click', saveCurrentRace);
+    $('#courseViewRecallSelect')?.addEventListener('change', (ev) => {
+      recallRace(ev.target.value || '');
+    });
+    $('#courseViewReverse')?.addEventListener('change', (ev) => {
+      courseReversed = Boolean(ev.target.checked);
+      try {
+        localStorage.setItem(LS_COURSE_REVERSE, courseReversed ? '1' : '0');
+      } catch {
+        /* ignore */
+      }
+      resetTimingData();
+      refreshCourseView();
+      setStatus(courseReversed ? 'Course reversed — finish is now start.' : 'Course direction normal.');
+    });
+    $('#courseViewRollingStart')?.addEventListener('change', (ev) => {
+      rollingStartEnabled = Boolean(ev.target.checked);
+      try {
+        localStorage.setItem(LS_ROLLING_START, rollingStartEnabled ? '1' : '0');
+      } catch {
+        /* ignore */
+      }
+      raceStartByDevice.clear();
+      refreshCourseView();
+    });
+    $('#courseViewTable')?.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('[data-hide-device]');
+      if (!btn) return;
+      const id = btn.getAttribute('data-hide-device');
+      if (!id) return;
+      hiddenDevices.add(id);
+      refreshCourseView();
+      setStatus(`${id} hidden — data still saved. Use Save race to keep results.`);
+    });
     $('#courseViewSaveRotateBtn')?.addEventListener('click', () => void saveRotation());
     $('#courseViewRotate')?.addEventListener('input', (ev) => {
       rotationPreviewDeg = Number(ev.target.value) || 0;
@@ -794,6 +1164,13 @@
   window.dashboardInitCourseView = function () {
     bind();
     selectedCourse = localStorage.getItem(LS_COURSE) || '';
+    try {
+      courseReversed = localStorage.getItem(LS_COURSE_REVERSE) === '1';
+      rollingStartEnabled = localStorage.getItem(LS_ROLLING_START) !== '0';
+    } catch {
+      courseReversed = false;
+      rollingStartEnabled = true;
+    }
   };
 
   window.dashboardOnPollUpdate = function (payload) {
