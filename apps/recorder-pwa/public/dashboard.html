@@ -664,8 +664,8 @@
               src="/assets/crewsight/crewsight-logo-icon-only-color.png"
               alt=""
               class="course-view__logo"
-              width="40"
-              height="40"
+              width="60"
+              height="60"
             />
             <div>
               <h2 id="courseViewTitle" class="course-view__title">Course timing</h2>
@@ -677,24 +677,45 @@
               Course
               <select id="courseViewSelect" class="course-view__select" aria-label="Select timing course"></select>
             </label>
-            <button type="button" class="hub-btn hub-btn--ghost" id="courseViewResetBtn">Reset</button>
+            <label class="course-view__rotate-label" title="Fine-tune course bearing — start line stays fixed">
+              Rotate
+              <div class="course-view__rotate-row">
+                <input
+                  type="range"
+                  id="courseViewRotate"
+                  class="course-view__rotate-slider"
+                  min="-5"
+                  max="5"
+                  step="0.1"
+                  value="0"
+                  aria-label="Rotate course around start line"
+                />
+                <span id="courseViewRotateVal" class="course-view__rotate-val">0.0°</span>
+              </div>
+            </label>
+            <button type="button" class="hub-btn hub-btn--ghost" id="courseViewSaveRotateBtn" disabled>
+              Save rotation
+            </button>
+            <button type="button" class="hub-btn hub-btn--ghost" id="courseViewResetBtn">Reset times</button>
             <button type="button" class="hub-btn hub-btn--primary" id="courseViewCloseBtn">Close</button>
           </div>
         </header>
         <div class="course-view__body">
-          <div class="course-view__main">
-            <div class="course-view__chart-card">
-              <h3 class="course-view__card-title">Pace vs distance</h3>
-              <canvas id="courseViewChart" class="course-view__chart" height="320" aria-label="Pace versus distance chart"></canvas>
+          <div class="course-view__chart-card">
+            <h3 class="course-view__card-title">Pace vs distance</h3>
+            <div class="course-view__chart-wrap">
+              <canvas id="courseViewChart" class="course-view__chart" aria-label="Pace versus distance chart"></canvas>
             </div>
+          </div>
+          <div class="course-view__lower">
             <div class="course-view__map-card">
               <h3 class="course-view__card-title">Course map</h3>
               <div id="courseViewMap" class="course-view__map" role="application" aria-label="Course map with live devices"></div>
             </div>
-          </div>
-          <div class="course-view__table-card">
-            <h3 class="course-view__card-title">Live splits &amp; rating</h3>
-            <div id="courseViewTable" class="course-view__table-wrap" aria-live="polite"></div>
+            <div class="course-view__table-card">
+              <h3 class="course-view__card-title">Live splits &amp; rating</h3>
+              <div id="courseViewTable" class="course-view__table-wrap" aria-live="polite"></div>
+            </div>
           </div>
         </div>
         <p class="poll-line course-view__status" id="courseViewStatus">Select a course with start and finish lines.</p>

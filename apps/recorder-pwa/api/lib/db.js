@@ -1771,6 +1771,10 @@ async function updateTimingLine(orgId, id, body = {}) {
       : null;
   const enabled =
     body.enabled === true ? true : body.enabled === false ? false : null;
+  const courseBearingDeg =
+    body.courseBearingDeg != null || body.course_bearing_deg != null
+      ? Number(body.courseBearingDeg ?? body.course_bearing_deg)
+      : null;
 
   const rows = await sql`
     UPDATE rnz_timing_lines
@@ -1783,6 +1787,7 @@ async function updateTimingLine(orgId, id, body = {}) {
       lon2 = COALESCE(${lon2}, lon2),
       distance_m = COALESCE(${Number.isFinite(distanceM) ? distanceM : null}, distance_m),
       sort_order = COALESCE(${Number.isFinite(sortOrder) ? sortOrder : null}, sort_order),
+      course_bearing_deg = COALESCE(${Number.isFinite(courseBearingDeg) ? courseBearingDeg : null}, course_bearing_deg),
       enabled = COALESCE(${enabled}, enabled),
       updated_at = NOW()
     WHERE org_id = ${orgId} AND id = ${n}

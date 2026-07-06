@@ -36,6 +36,132 @@
   /** @type {Map<string, { speedMps: number|null, strokeRate: number|null, online: boolean }>} */
   const liveByDevice = new Map();
 
+  /** Fine rotation preview (degrees) around fixed start line. */
+  let rotationPreviewDeg = 0;
+
+  function destinationLatLon(lat, lon, brg, distM) {
+    if (!Number.isFinite(distM) || distM <= 0) return [lat, lon];
+    const δ = distM / EARTH_R;
+    const θ = toRad(brg);
+    const φ1 = toRad(lat);
+    const λ1 = toRad(lon);
+    const φ2 = Math.asin(
+      Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ),
+    );
+    const λ2 =
+      λ1 +
+      Math.atan2(
+        Math.sin(θ) * Math.sin(δ) * Math.cos(φ1),
+        Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2),
+      );
+    return [(φ2 * 180) / Math.PI, (λ2 * 180) / Math.PI];
+  }
+
+  function parallelLineAtDistance(lat1, lon1, lat2, lon2, courseBearingDeg, offsetM) {
+    const [a1, b1] = destinationLatLon(lat1, lon1, courseBearingDeg, offsetM);
+    const [a2, b2] = destinationLatLon(lat2, lon2, courseBearingDeg, offsetM);
+    return { lat1: a1, lon1: b1, lat2: a2, lon2: b2 };
+  }
+
+  function courseWithRotation(course, deltaDeg) {
+    if (!course?.start || !Number.isFinite(deltaDeg) || Math.abs(deltaDeg) < 0.01) {
+      return course;
+    }
+    const start = course.start;
+    const newBearing = (course.bearing + deltaDeg + 360) % 360;
+    const startDist = course.startDist ?? 0;
+    const lines = course.lines.map((line) => {
+      if (line.lineType === 'start') {
+        return { ...line, courseBearingDeg: newBearing };
+      }
+      const offsetM = (line.distanceM ?? 0) - startDist;
+      const pts = parallelLineAtDistance(
+        start.lat1,
+        start.lon1,
+        start.lat2,
+        start.lon2,
+        newBearing,
+        offsetM,
+      );
+      return { ...line, ...pts, courseBearingDeg: newBearing };
+    });
+    const markers = lines.filter(
+      (l) => l.lineType === 'start' || l.lineType === 'finish' || l.lineType === 'split',
+    );
+    return { ...course, lines, markers, bearing: newBearing };
+  }
+
+  function getDisplayCourse() {
+    const base = parseCourse(selectedCourse);
+    if (!base) return null;
+    return courseWithRotation(base, rotationPreviewDeg);
+  }
+
+  function resetRotationUi() {
+    rotationPreviewDeg = 0;
+    const slider = $('#courseViewRotate');
+    const val = $('#courseViewRotateVal');
+    const saveBtn = $('#courseViewSaveRotateBtn');
+    if (slider) slider.value = '0';
+    if (val) val.textContent = '0.0°';
+    if (saveBtn) saveBtn.disabled = true;
+  }
+
+  function updateRotationUi() {
+    const val = $('#courseViewRotateVal');
+    const saveBtn = $('#courseViewSaveRotateBtn');
+    if (val) val.textContent = `${rotationPreviewDeg.toFixed(1)}°`;
+    if (saveBtn) saveBtn.disabled = Math.abs(rotationPreviewDeg) < 0.05;
+  }
+
+  function refreshCourseView() {
+    const course = getDisplayCourse();
+    if (!course) return;
+    ensureCourseMap(course);
+    drawChart(course);
+    renderTable(course);
+  }
+
+  async function saveRotation() {
+    const base = parseCourse(selectedCourse);
+    if (!base?.start || Math.abs(rotationPreviewDeg) < 0.05) return;
+    const rotated = courseWithRotation(base, rotationPreviewDeg);
+    setStatus('Saving course rotation…');
+    try {
+      for (const line of rotated.lines) {
+        const payload = {
+          lat1: line.lat1,
+          lon1: line.lon1,
+          lat2: line.lat2,
+          lon2: line.lon2,
+          courseBearingDeg: line.courseBearingDeg,
+        };
+        const res = await fetch(
+          `${apiBase()}/api/timing-lines?id=${encodeURIComponent(line.id)}`,
+          {
+            method: 'PATCH',
+            headers: headers(),
+            body: JSON.stringify(payload),
+          },
+        );
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `Save failed for ${line.name}`);
+        }
+      }
+      resetRotationUi();
+      if (typeof window.dashboardRefreshTimingLines === 'function') {
+        window.dashboardRefreshTimingLines();
+      }
+      setTimeout(() => {
+        refreshCourseView();
+        setStatus(`Rotation saved for "${selectedCourse}".`);
+      }, 400);
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e), true);
+    }
+  }
+
   function headers() {
     if (typeof window.dashboardHeaders === 'function') return window.dashboardHeaders();
     return { Accept: 'application/json' };
@@ -206,9 +332,11 @@
     return d / dtSec;
   }
 
-  function setStatus(msg) {
+  function setStatus(msg, isError) {
     const el = $('#courseViewStatus');
-    if (el) el.textContent = msg;
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.toggle('poll-line--warn', !!isError);
   }
 
   function populateCourseSelect() {
@@ -329,9 +457,9 @@
   function drawChart(course) {
     const canvas = $('#courseViewChart');
     if (!canvas || !course) return;
-    const wrap = canvas.parentElement;
+    const wrap = canvas.closest('.course-view__chart-wrap') || canvas.parentElement;
     const w = wrap?.clientWidth || 640;
-    const h = 320;
+    const h = Math.max(160, wrap?.clientHeight || 280);
     canvas.width = w * (window.devicePixelRatio || 1);
     canvas.height = h * (window.devicePixelRatio || 1);
     canvas.style.width = `${w}px`;
@@ -506,7 +634,7 @@
 
   function processPoll(positions, nowMs) {
     if (!open || !selectedCourse) return;
-    const course = parseCourse(selectedCourse);
+    const course = getDisplayCourse();
     if (!course) return;
 
     for (const p of positions) {
@@ -568,7 +696,7 @@
     renderTable(course);
     updateCourseMapDevices(positions, course);
     setStatus(
-      `${course.group} · ${Math.round(course.totalDist)} m · ${deviceIdsOnCourse()} device(s) on course`,
+      `${course.group} · ${Math.round(course.totalDist)} m · ${deviceIdsOnCourse()} device(s) on course${Math.abs(rotationPreviewDeg) >= 0.05 ? ` · preview ${rotationPreviewDeg.toFixed(1)}°` : ''}`,
     );
   }
 
@@ -585,11 +713,7 @@
     liveByDevice.clear();
     courseDeviceMarkers.clear();
     courseDeviceLayer?.clearLayers();
-    const course = parseCourse(selectedCourse);
-    if (course) {
-      drawChart(course);
-      renderTable(course);
-    }
+    refreshCourseView();
     setStatus('Course session reset.');
   }
 
@@ -602,13 +726,15 @@
     }
     document.body.classList.add('course-view-open');
     populateCourseSelect();
+    resetRotationUi();
     selectedCourse = $('#courseViewSelect')?.value || selectedCourse;
     localStorage.setItem(LS_COURSE, selectedCourse);
-    const course = parseCourse(selectedCourse);
+    const course = getDisplayCourse();
     if (course) {
-      ensureCourseMap(course);
-      drawChart(course);
-      renderTable(course);
+      setTimeout(() => {
+        refreshCourseView();
+        courseMap?.invalidateSize();
+      }, 80);
       setStatus(`${course.group} · ${Math.round(course.totalDist)} m course loaded.`);
     } else {
       setStatus('Add timing lines with start and finish in Geofences.');
@@ -637,17 +763,22 @@
     $('#courseViewCloseBtn')?.addEventListener('click', closeOverlay);
     $('#courseViewBackdrop')?.addEventListener('click', closeOverlay);
     $('#courseViewResetBtn')?.addEventListener('click', resetSession);
+    $('#courseViewSaveRotateBtn')?.addEventListener('click', () => void saveRotation());
+    $('#courseViewRotate')?.addEventListener('input', (ev) => {
+      rotationPreviewDeg = Number(ev.target.value) || 0;
+      updateRotationUi();
+      refreshCourseView();
+    });
     $('#courseViewSelect')?.addEventListener('change', (ev) => {
       selectedCourse = ev.target.value;
       localStorage.setItem(LS_COURSE, selectedCourse);
+      resetRotationUi();
       resetSession();
-      const course = parseCourse(selectedCourse);
-      if (course) ensureCourseMap(course);
+      setTimeout(() => courseMap?.invalidateSize(), 80);
     });
     window.addEventListener('resize', () => {
       if (!open) return;
-      const course = parseCourse(selectedCourse);
-      if (course) drawChart(course);
+      refreshCourseView();
       courseMap?.invalidateSize();
     });
     document.addEventListener('keydown', (ev) => {
