@@ -1,0 +1,11 @@
+{
+  "name": "@rowing/rowing-pace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": "./index.js"
+  }
+}

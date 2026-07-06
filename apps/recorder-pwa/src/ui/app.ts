@@ -29,6 +29,7 @@ import { flushOutbox } from '../upload/sync';
 import { repairOversizedPendingOutbox } from '../session/store';
 import {
   formatSplit500m,
+  formatPaceWithPrognostic,
   hrToT,
   MetricRollingAvg,
   SPEED_AVG_WINDOW_MS,
@@ -263,7 +264,11 @@ export function mountApp(root: HTMLElement): void {
       speedAvg.push(stats.speedMps);
     }
     const avgMps = speedAvg.average();
-    setHudText('[data-hud-split]', formatSplit500m(avgMps));
+    const s = loadSettings();
+    setHudText(
+      '[data-hud-split]',
+      formatPaceWithPrognostic(avgMps, s.deviceId, s.athleteId),
+    );
 
     const splitSec = splitSecFromMps(avgMps);
     updateSpectrumRail(

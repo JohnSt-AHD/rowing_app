@@ -12,6 +12,7 @@
   "dependencies": {
     "@rowing/telemetry-types": "*",
     "@rowing/motion-analysis": "*",
+    "@rowing/rowing-pace": "*",
     "@rowing/sensor-adapters": "*",
     "@vercel/postgres": "^0.10.0",
     "@capacitor/core": "^7.2.0",

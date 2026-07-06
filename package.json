@@ -10,6 +10,7 @@
     "apps/coach-native",
     "packages/telemetry-types",
     "packages/motion-analysis",
+    "packages/rowing-pace",
     "packages/sensor-adapters"
   ],
   "scripts": {

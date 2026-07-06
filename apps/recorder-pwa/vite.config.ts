@@ -52,6 +52,10 @@ export default defineConfig(({ mode }) => {
           __dirname,
           '../../packages/motion-analysis/index.js',
         ),
+        '@rowing/rowing-pace': path.resolve(
+          __dirname,
+          '../../packages/rowing-pace/index.js',
+        ),
         '@rowing/sensor-adapters': path.resolve(
           __dirname,
           isNative

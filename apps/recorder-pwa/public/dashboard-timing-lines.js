@@ -487,12 +487,14 @@
     return m > 0 ? `${m}:${s.toFixed(1).padStart(m > 0 ? 4 : 1, '0')}` : `${s.toFixed(1)}s`;
   }
 
-  function formatSpeedMps(mps) {
-    if (!Number.isFinite(mps) || mps <= 0) return '—';
-    const split500 = 500 / mps;
-    const mm = Math.floor(split500 / 60);
-    const ss = Math.round(split500 - mm * 60);
-    return `${mps.toFixed(2)} m/s (${mm}:${String(ss).padStart(2, '0')}/500)`;
+  function formatSpeedDisplay(mps, deviceId, athleteId) {
+    const RS = window.RowingSpeed;
+    if (!RS) return '—';
+    return RS.formatPaceWithPrognostic(mps, deviceId, athleteId, { suffix: true });
+  }
+
+  function formatSpeedMps(mps, deviceId, athleteId) {
+    return formatSpeedDisplay(mps, deviceId, athleteId);
   }
 
   function activeLines() {
@@ -563,7 +565,7 @@
     let html =
       '<table class="timing-live-table"><thead><tr><th>Device</th>' +
       cols.map((c) => `<th>${esc(c.label)}</th>`).join('') +
-      '<th>Section</th><th>Speed</th></tr></thead><tbody>';
+      '<th>Section</th><th>Pace</th></tr></thead><tbody>';
 
     for (const deviceId of deviceIds) {
       const crossed = crossingsByDevice.get(deviceId);
@@ -586,7 +588,7 @@
           section = formatMs(t1 - t0);
           const dist = (finish.distanceM ?? 0) - (start.distanceM ?? 0);
           if (dist > 0) {
-            speed = formatSpeedMps(dist / ((t1 - t0) / 1000));
+            speed = formatSpeedMps(dist / ((t1 - t0) / 1000), deviceId);
           }
         } else if (t0 && !t1) {
           section = 'On course';

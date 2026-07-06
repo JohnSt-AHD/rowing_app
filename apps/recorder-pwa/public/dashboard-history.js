@@ -103,17 +103,16 @@
     return new Date(ms).toLocaleString();
   }
 
-  function fmtSpeedMps(mps) {
-    if (mps == null || mps < 0) return '—';
-    return `${mps.toFixed(2)} m/s`;
-  }
-
-  function fmtPace(mps) {
+  function fmtPace(mps, deviceId) {
+    const RS = window.RowingSpeed;
+    if (RS) {
+      return RS.formatPaceWithPrognostic(mps, deviceId, { suffix: true });
+    }
     if (mps == null || mps <= 0.1) return '—';
     const secPer500 = 500 / mps;
     const m = Math.floor(secPer500 / 60);
     const s = Math.round(secPer500 % 60);
-    return `${m}:${String(s).padStart(2, '0')} /500m`;
+    return `${m}:${String(s).padStart(2, '0')}/500`;
   }
 
   function downsample(points, maxPoints) {
@@ -336,10 +335,13 @@
       empty: 'No heart rate in this range',
     });
     drawLineChart(speedCanvas, speedSeries, {
-      title: 'GPS speed (m/s)',
+      title: 'GPS pace (/500m)',
       color: '#38bdf8',
-      yLabel: 'm/s',
-      formatY: (v) => v.toFixed(1),
+      yLabel: '/500m',
+      formatY: (v) => {
+        const RS = window.RowingSpeed;
+        return RS ? RS.formatSplit500m(v) : String(v);
+      },
       empty: 'No GPS speed in this range',
     });
     drawLineChart(strokeCanvas, strokeSeries, {
@@ -617,7 +619,7 @@
           ? ' · no GPS in this session (map empty)'
           : '';
       setHistoryStatus(
-        `Loaded — scroll down for map and charts. ${data.pointCount} samples · ${data.gpsCount} GPS · ${hrPts} HR · max ${fmtSpeedMps(maxSpd)} (${fmtPace(maxSpd)}) · ${data.capsizeEvents?.length ?? 0} capsize${dsNote}${gpsNote}`,
+        `Loaded — scroll down for map and charts. ${data.pointCount} samples · ${data.gpsCount} GPS · ${hrPts} HR · max ${fmtPace(maxSpd, data.uniqueId || deviceId)} · ${data.capsizeEvents?.length ?? 0} capsize${dsNote}${gpsNote}`,
       );
 
       const meta = document.getElementById('historyMeta');

@@ -868,7 +868,11 @@ function popupHtml(p) {
     p.batteryPct != null
       ? `<br>Battery: <strong>${fmtBatteryPct(p.batteryPct)}</strong>${p.batteryAgeSec != null ? ` · ${fmtAgoSec(p.batteryAgeSec)}` : ''}`
       : '';
-  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${p.lastSeenAgoSec}s ago${smoothNote}${compareNote}${hb}${bat}${hr}${spm}${tilt}${cap}</div>`;
+  const pace =
+    p.speed != null && p.speed >= 0.25 && window.RowingSpeed
+      ? `<br>Pace: ${window.RowingSpeed.formatPaceWithPrognostic(p.speed, p.deviceId, p.athleteId, { suffix: true })}`
+      : '';
+  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${p.lastSeenAgoSec}s ago${smoothNote}${compareNote}${hb}${bat}${pace}${hr}${spm}${tilt}${cap}</div>`;
 }
 
 function updateMap(positions) {

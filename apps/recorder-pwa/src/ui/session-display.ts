@@ -1,5 +1,13 @@
 /** Live session HUD: rainbow rails, rolling speed, pace formatting. */
 
+export {
+  MIN_SPEED_MPS,
+  formatSplit500m,
+  splitSecFromMps,
+  parseBoatClass,
+  formatPaceWithPrognostic,
+} from '@rowing/rowing-pace';
+
 export const SPLIT_SLOW_SEC = 2 * 60 + 30; // 2:30 /500m
 export const SPLIT_FAST_SEC = 60 + 15; // 1:15 /500m
 export const HR_SLOW_BPM = 100;
@@ -29,19 +37,6 @@ export function hrToT(bpm: number): number {
 /** Vertical marker: 0% top = fast, 100% bottom = slow. */
 export function railPositionFromT(t: number): number {
   return (1 - clamp01(t)) * 100;
-}
-
-export function formatSplit500m(speedMps: number | undefined): string {
-  if (speedMps == null || speedMps < 0.25) return '—';
-  const sec = 500 / speedMps;
-  const m = Math.floor(sec / 60);
-  const s = (sec % 60).toFixed(1);
-  return `${m}:${s.padStart(4, '0')}`;
-}
-
-export function splitSecFromMps(mps: number | undefined): number | undefined {
-  if (mps == null || mps < 0.25) return undefined;
-  return 500 / mps;
 }
 
 export class MetricRollingAvg {

@@ -181,11 +181,19 @@
   }
 
   function formatSplit500(mps) {
+    const RS = window.RowingSpeed;
+    if (RS) return RS.formatSplit500m(mps);
     if (!Number.isFinite(mps) || mps <= 0) return '—';
     const t = 500 / mps;
     const mm = Math.floor(t / 60);
     const ss = Math.round(t - mm * 60);
     return `${mm}:${String(ss).padStart(2, '0')}`;
+  }
+
+  function formatSpeedDisplay(mps, deviceId) {
+    const RS = window.RowingSpeed;
+    if (RS) return RS.formatPaceWithPrognostic(mps, deviceId, { suffix: true });
+    return `${formatSplit500(mps)}/500`;
   }
 
   function speedFromPosition(p, prev, dtSec) {
@@ -398,7 +406,7 @@
     ctx.save();
     ctx.translate(14, pad.t + plotH / 2);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText('Speed (m/s)', 0, 0);
+    ctx.fillText('Pace /500m', 0, 0);
     ctx.restore();
 
     for (let i = 0; i <= 4; i++) {
@@ -409,7 +417,7 @@
     ctx.textAlign = 'right';
     for (let i = 0; i <= 4; i++) {
       const spd = (maxSpeed * i) / 4;
-      ctx.fillText(spd.toFixed(1), pad.l - 6, yAt(spd) + 4);
+      ctx.fillText(formatSplit500(spd), pad.l - 6, yAt(spd) + 4);
     }
 
     for (const [deviceId, trace] of tracesByDevice) {
@@ -470,7 +478,7 @@
           : line.name;
       html += `<th>${esc(label)}</th>`;
     }
-    html += '<th>Speed</th><th>Rating</th></tr></thead><tbody>';
+    html += '<th>Pace</th><th>Rating</th></tr></thead><tbody>';
 
     for (const deviceId of deviceIds) {
       const crossed = crossingsByDevice.get(deviceId) || new Map();
@@ -488,7 +496,7 @@
         html += `<td>${formatElapsed(t - tStart)}</td>`;
       }
       const spd = live.speedMps;
-      html += `<td>${Number.isFinite(spd) && spd > 0 ? `${spd.toFixed(2)} m/s · ${formatSplit500(spd)}/500` : '—'}</td>`;
+      html += `<td>${Number.isFinite(spd) && spd > 0 ? formatSpeedDisplay(spd, deviceId) : '—'}</td>`;
       html += `<td>${live.strokeRate != null && live.strokeRate > 0 ? `${Math.round(live.strokeRate)} spm` : '—'}</td>`;
       html += '</tr>';
     }
