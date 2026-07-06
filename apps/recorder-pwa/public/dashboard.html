@@ -237,9 +237,10 @@
 
           <h3 class="hub-subsection-title">Timing courses</h3>
           <p class="geofence-intro">
-            Create a <strong>course</strong> with a start line, finish line, and optional evenly spaced
-            split lines — all parallel across the river. Draw the start line on the map, set the total
-            distance, and choose how many splits you want.
+            Create a <strong>course</strong> by drawing or selecting a <strong>start</strong> and
+            <strong>finish</strong> line on the map. Split lines are placed at equal distances in between.
+            Use <em>Adjust to target distance</em> to snap the finish line (and splits) to an exact length
+            while keeping lines parallel.
           </p>
           <div id="timingLineList" class="timing-line-list" aria-live="polite"></div>
 
@@ -251,12 +252,28 @@
           </label>
 
           <div class="geofence-form__actions">
-            <button type="button" class="hub-btn" id="timingDrawLineBtn">Draw start line</button>
+            <button type="button" class="hub-btn" id="timingDrawStartBtn">Draw start line</button>
+            <button type="button" class="hub-btn hub-btn--ghost" id="timingDrawFinishBtn">Draw finish line</button>
             <button type="button" class="hub-btn hub-btn--ghost" id="timingEditLinesBtn">Edit course on map</button>
             <button type="button" class="hub-btn hub-btn--ghost" id="timingResetBtn">Reset times</button>
             <button type="button" class="hub-btn hub-btn--ghost" id="timingRefreshBtn">Refresh</button>
           </div>
-          <p class="geofence-draw-status poll-line" id="timingDrawStatus">Draw the start line (two clicks on the map).</p>
+          <p class="geofence-draw-status poll-line" id="timingDrawStatus">Draw or select start and finish lines on the map.</p>
+
+          <div class="ahd-inline-fields timing-line-pick-fields">
+            <label class="ahd-field">
+              Or select start line
+              <select id="timingSelectStart" aria-label="Select existing start line">
+                <option value="">— draw on map —</option>
+              </select>
+            </label>
+            <label class="ahd-field">
+              Or select finish line
+              <select id="timingSelectFinish" aria-label="Select existing finish line">
+                <option value="">— draw on map —</option>
+              </select>
+            </label>
+          </div>
 
           <form id="timingCourseForm" class="geofence-form timing-course-form">
             <div class="ahd-inline-fields">
@@ -265,25 +282,36 @@
                 <input type="text" id="timingCourseName" required value="2 km course" />
               </label>
               <label class="ahd-field">
-                Total distance (m)
+                Target distance (m)
                 <input type="number" id="timingTotalDistance" min="100" step="50" value="2000" required />
               </label>
               <label class="ahd-field">
-                Split lines
+                Split lines (equal spacing)
                 <input type="number" id="timingSplitCount" min="0" max="20" step="1" value="3" />
               </label>
               <label class="ahd-field">
                 Course direction
                 <select id="timingCourseDirection">
-                  <option value="right" selected>Finish to the right of start line</option>
-                  <option value="left">Finish to the left of start line</option>
+                  <option value="right" selected>Finish ahead to the right of start</option>
+                  <option value="left">Finish ahead to the left of start</option>
                 </select>
               </label>
             </div>
+            <div class="timing-course-options">
+              <label class="ahd-field geofence-form__check">
+                <input type="checkbox" id="timingParallelLines" checked />
+                Parallel start &amp; finish lines
+              </label>
+              <label class="ahd-field geofence-form__check">
+                <input type="checkbox" id="timingAdjustDistance" checked />
+                Adjust finish to target distance
+              </label>
+            </div>
+            <p class="geofence-draw-help poll-line" id="timingMeasuredDistance"></p>
             <p class="geofence-draw-help poll-line" id="timingSplitPreview">
               Splits at 500 m, 1000 m, 1500 m · finish at 2000 m (parallel lines).
             </p>
-            <button type="submit" class="hub-btn hub-btn--primary">Create course</button>
+            <button type="submit" class="hub-btn hub-btn--primary">Generate course</button>
           </form>
 
           <div class="timing-live-toolbar">

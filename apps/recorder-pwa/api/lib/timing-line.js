@@ -76,6 +76,18 @@ function normalizeTimingLine(row) {
   };
 }
 
+/**
+ * Signed distance (m) from (lat1,lon1) to (lat2,lon2) along bearingDeg.
+ * Positive = destination is ahead along the bearing.
+ */
+function distanceAlongBearing(lat1, lon1, lat2, lon2, bearing) {
+  const dist = distanceM(lat1, lon1, lat2, lon2);
+  if (dist < 0.01) return 0;
+  const toBrg = bearingDeg(lat1, lon1, lat2, lon2);
+  const Δ = toRad(((toBrg - bearing) + 540) % 360 - 180);
+  return dist * Math.cos(Δ);
+}
+
 /** Bearing from point 1 → point 2 (degrees, 0 = north). */
 function bearingDeg(lat1, lon1, lat2, lon2) {
   const φ1 = toRad(lat1);
@@ -204,6 +216,141 @@ function generateCourseLines({
   return lines;
 }
 
+/**
+ * Build a course from drawn start + finish lines.
+ * @param {boolean} [parallelLines=true] — place finish parallel to start
+ * @param {number|null} [targetDistanceM] — snap finish to this distance from start
+ */
+function generateCourseFromStartFinish({
+  startLat1,
+  startLon1,
+  startLat2,
+  startLon2,
+  finishLat1,
+  finishLon1,
+  finishLat2,
+  finishLon2,
+  courseGroup,
+  courseDirection = 'right',
+  courseBearingDeg,
+  targetDistanceM,
+  splitCount,
+  parallelLines = true,
+}) {
+  const start = validateEndpoints(startLat1, startLon1, startLat2, startLon2);
+  const finish = validateEndpoints(finishLat1, finishLon1, finishLat2, finishLon2);
+
+  let brg = Number(courseBearingDeg);
+  if (!Number.isFinite(brg)) {
+    brg = courseBearingFromLine(
+      start.lat1,
+      start.lon1,
+      start.lat2,
+      start.lon2,
+      courseDirection,
+    );
+  }
+
+  const startMid = lineMidpoint(start.lat1, start.lon1, start.lat2, start.lon2);
+  const finishMid = lineMidpoint(finish.lat1, finish.lon1, finish.lat2, finish.lon2);
+  let measuredDist = distanceAlongBearing(
+    startMid.lat,
+    startMid.lon,
+    finishMid.lat,
+    finishMid.lon,
+    brg,
+  );
+
+  if (measuredDist <= 0) {
+    const altBrg = (brg + 180) % 360;
+    const altDist = distanceAlongBearing(
+      startMid.lat,
+      startMid.lon,
+      finishMid.lat,
+      finishMid.lon,
+      altBrg,
+    );
+    if (altDist > 0) {
+      brg = altBrg;
+      measuredDist = altDist;
+    }
+  }
+
+  if (measuredDist < 5) {
+    throw new Error(
+      'Finish line must be clearly ahead of the start line along the course direction',
+    );
+  }
+
+  const snapTarget =
+    targetDistanceM != null && targetDistanceM !== '' && Number.isFinite(Number(targetDistanceM))
+      ? Number(targetDistanceM)
+      : null;
+  const total = snapTarget != null && snapTarget >= 100 ? snapTarget : measuredDist;
+  if (total < 100) {
+    throw new Error('Course distance must be at least 100 metres');
+  }
+
+  const splitDistances = computeSplitDistances(total, splitCount ?? 0);
+
+  const finishPts =
+    parallelLines !== false
+      ? parallelLineAtDistance(start.lat1, start.lon1, start.lat2, start.lon2, brg, total)
+      : {
+          lat1: finish.lat1,
+          lon1: finish.lon1,
+          lat2: finish.lat2,
+          lon2: finish.lon2,
+        };
+
+  const lines = [];
+  lines.push({
+    name: 'Start',
+    lineType: 'start',
+    distanceM: 0,
+    lat1: start.lat1,
+    lon1: start.lon1,
+    lat2: start.lat2,
+    lon2: start.lon2,
+    sortOrder: 0,
+    courseGroup,
+    courseBearingDeg: brg,
+  });
+
+  let order = 1;
+  for (const d of splitDistances) {
+    const pts = parallelLineAtDistance(
+      start.lat1,
+      start.lon1,
+      start.lat2,
+      start.lon2,
+      brg,
+      d,
+    );
+    lines.push({
+      name: `${Math.round(d)} m`,
+      lineType: 'split',
+      distanceM: d,
+      ...pts,
+      sortOrder: order++,
+      courseGroup,
+      courseBearingDeg: brg,
+    });
+  }
+
+  lines.push({
+    name: 'Finish',
+    lineType: 'finish',
+    distanceM: total,
+    ...finishPts,
+    sortOrder: order,
+    courseGroup,
+    courseBearingDeg: brg,
+  });
+
+  return lines;
+}
+
 /** @deprecated use generateCourseLines */
 function generateSplitLines(opts) {
   return generateCourseLines(opts);
@@ -224,11 +371,13 @@ module.exports = {
   normalizeLineType,
   normalizeTimingLine,
   bearingDeg,
+  distanceAlongBearing,
   courseBearingFromLine,
   lineMidpoint,
   parallelLineAtDistance,
   computeSplitDistances,
   generateCourseLines,
+  generateCourseFromStartFinish,
   generateSplitLines,
   segmentsCross,
   distanceM,

@@ -8,10 +8,10 @@
   let timingDraftLayer = null;
   let timingEditLayer = null;
   let lines = [];
-  let drawLineMode = false;
+  let drawMode = null;
   let editLinesMode = false;
-  let lineDraft = [];
-  let courseDirectionClick = false;
+  let startDraft = [];
+  let finishDraft = [];
   let previewLayer = null;
   let monitorCourseGroup = localStorage.getItem('rnz_timing_monitor_course') || '';
 
@@ -92,6 +92,100 @@
     return direction === 'left' ? (lineBrg + 270) % 360 : (lineBrg + 90) % 360;
   }
 
+  function lineMidpoint(lat1, lon1, lat2, lon2) {
+    return { lat: (lat1 + lat2) / 2, lon: (lon1 + lon2) / 2 };
+  }
+
+  function distanceAlongBearing(lat1, lon1, lat2, lon2, bearing) {
+    const φ1 = toRad(lat1);
+    const φ2 = toRad(lat2);
+    const Δλ = toRad(lon2 - lon1);
+    const y = Math.sin(Δλ) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+    const dist =
+      2 *
+      EARTH_R *
+      Math.asin(
+        Math.sqrt(
+          Math.sin((φ2 - φ1) / 2) ** 2 +
+            Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2,
+        ),
+      );
+    if (dist < 0.01) return 0;
+    const toBrg = (Math.atan2(y, x) * 180) / Math.PI;
+    const Δ = toRad(((toBrg - bearing) + 540) % 360 - 180);
+    return dist * Math.cos(Δ);
+  }
+
+  function haversineM(lat1, lon1, lat2, lon2) {
+    const φ1 = toRad(lat1);
+    const φ2 = toRad(lat2);
+    const Δλ = toRad(lon2 - lon1);
+    const a =
+      Math.sin((φ2 - φ1) / 2) ** 2 +
+      Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+    return 2 * EARTH_R * Math.asin(Math.sqrt(a));
+  }
+
+  function getSelectedLineId(selId) {
+    const v = $(selId)?.value;
+    if (!v) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function lineById(id) {
+    return lines.find((l) => Number(l.id) === id) || null;
+  }
+
+  /** @returns {{ lat1: number, lon1: number, lat2: number, lon2: number } | null} */
+  function resolveStartLine() {
+    const selId = getSelectedLineId('#timingSelectStart');
+    if (selId) {
+      const line = lineById(selId);
+      if (line) return { lat1: line.lat1, lon1: line.lon1, lat2: line.lat2, lon2: line.lon2 };
+    }
+    if (startDraft.length >= 2) {
+      return {
+        lat1: startDraft[0].lat,
+        lon1: startDraft[0].lon,
+        lat2: startDraft[1].lat,
+        lon2: startDraft[1].lon,
+      };
+    }
+    return null;
+  }
+
+  /** @returns {{ lat1: number, lon1: number, lat2: number, lon2: number } | null} */
+  function resolveFinishLine() {
+    const selId = getSelectedLineId('#timingSelectFinish');
+    if (selId) {
+      const line = lineById(selId);
+      if (line) return { lat1: line.lat1, lon1: line.lon1, lat2: line.lat2, lon2: line.lon2 };
+    }
+    if (finishDraft.length >= 2) {
+      return {
+        lat1: finishDraft[0].lat,
+        lon1: finishDraft[0].lon,
+        lat2: finishDraft[1].lat,
+        lon2: finishDraft[1].lon,
+      };
+    }
+    return null;
+  }
+
+  function measureCourseDistanceM(start, finish, direction) {
+    const brg = courseBearingFromLine(start.lat1, start.lon1, start.lat2, start.lon2, direction);
+    const sm = lineMidpoint(start.lat1, start.lon1, start.lat2, start.lon2);
+    const fm = lineMidpoint(finish.lat1, finish.lon1, finish.lat2, finish.lon2);
+    let d = distanceAlongBearing(sm.lat, sm.lon, fm.lat, fm.lon, brg);
+    if (d <= 0) {
+      const altBrg = (brg + 180) % 360;
+      d = distanceAlongBearing(sm.lat, sm.lon, fm.lat, fm.lon, altBrg);
+    }
+    return d > 0 ? d : null;
+  }
+
   function computeSplitDistances(totalDistanceM, splitCount) {
     const total = Number(totalDistanceM);
     const n = Math.max(0, Math.floor(Number(splitCount) || 0));
@@ -105,35 +199,82 @@
 
   function updateSplitPreview() {
     const el = $('#timingSplitPreview');
+    const measuredEl = $('#timingMeasuredDistance');
     if (!el) return;
-    const total = Number($('#timingTotalDistance')?.value) || 2000;
+
+    const direction = $('#timingCourseDirection')?.value || 'right';
+    const target = Number($('#timingTotalDistance')?.value) || 2000;
     const splitCount = Number($('#timingSplitCount')?.value) || 0;
+    const adjust = $('#timingAdjustDistance')?.checked !== false;
+    const parallel = $('#timingParallelLines')?.checked !== false;
+
+    const start = resolveStartLine();
+    const finish = resolveFinishLine();
+    let total = target;
+    let measured = null;
+
+    if (start && finish) {
+      measured = measureCourseDistanceM(start, finish, direction);
+      if (measured != null) {
+        if (adjust) {
+          total = target;
+          if (measuredEl) {
+            measuredEl.textContent = `Measured between lines: ${Math.round(measured)} m → adjusting to ${Math.round(total)} m (parallel lines moved equally).`;
+          }
+        } else {
+          total = measured;
+          if (measuredEl) {
+            measuredEl.textContent = `Measured course distance: ${Math.round(measured)} m (using drawn line positions).`;
+          }
+        }
+      } else if (measuredEl) {
+        measuredEl.textContent =
+          'Could not measure distance — check course direction or finish placement.';
+      }
+    } else if (start) {
+      total = target;
+      if (measuredEl) {
+        measuredEl.textContent = 'Finish not set — finish line will be generated at target distance.';
+      }
+    } else if (measuredEl) {
+      measuredEl.textContent = '';
+    }
+
     const splits = computeSplitDistances(total, splitCount);
+    const parallelNote = parallel ? 'parallel' : 'as drawn';
     if (!splitCount) {
-      el.textContent = `Start and finish only · finish at ${Math.round(total)} m (parallel lines).`;
+      el.textContent = `Start and finish only · ${Math.round(total)} m (${parallelNote}).`;
     } else {
-      el.textContent = `Splits at ${splits.map((d) => `${d} m`).join(', ')} · finish at ${Math.round(total)} m (all parallel).`;
+      el.textContent = `Splits at ${splits.map((d) => `${d} m`).join(', ')} · finish at ${Math.round(total)} m (${parallelNote}).`;
     }
     updateCoursePreviewLayer();
   }
 
   function updateCoursePreviewLayer() {
     const map = getMap();
-    if (!map || typeof L === 'undefined' || lineDraft.length < 2) {
+    const start = resolveStartLine();
+    if (!map || typeof L === 'undefined' || !start) {
       previewLayer?.clearLayers();
       return;
     }
     if (!previewLayer) previewLayer = L.layerGroup().addTo(map);
     previewLayer.clearLayers();
 
-    const lat1 = lineDraft[0].lat;
-    const lon1 = lineDraft[0].lon;
-    const lat2 = lineDraft[1].lat;
-    const lon2 = lineDraft[1].lon;
+    const { lat1, lon1, lat2, lon2 } = start;
     const dir = $('#timingCourseDirection')?.value || 'right';
     const brg = courseBearingFromLine(lat1, lon1, lat2, lon2, dir);
-    const total = Number($('#timingTotalDistance')?.value) || 2000;
+    const adjust = $('#timingAdjustDistance')?.checked !== false;
+    const parallel = $('#timingParallelLines')?.checked !== false;
+    const target = Number($('#timingTotalDistance')?.value) || 2000;
     const splitCount = Number($('#timingSplitCount')?.value) || 0;
+
+    const finish = resolveFinishLine();
+    let total = target;
+    if (finish) {
+      const measured = measureCourseDistanceM(start, finish, dir);
+      if (measured != null) total = adjust ? target : measured;
+    }
+
     const splits = computeSplitDistances(total, splitCount);
 
     const drawLine = (pts, style) => {
@@ -147,6 +288,7 @@
     };
 
     drawLine({ lat1, lon1, lat2, lon2 }, { color: '#22c55e', weight: 2, dashArray: '6 4', opacity: 0.85 });
+
     for (const d of splits) {
       drawLine(parallelLineAtDistance(lat1, lon1, lat2, lon2, brg, d), {
         color: '#3b82f6',
@@ -155,7 +297,12 @@
         opacity: 0.7,
       });
     }
-    drawLine(parallelLineAtDistance(lat1, lon1, lat2, lon2, brg, total), {
+
+    const finishPts =
+      finish && !parallel
+        ? finish
+        : parallelLineAtDistance(lat1, lon1, lat2, lon2, brg, total);
+    drawLine(finishPts, {
       color: '#ef4444',
       weight: 2,
       dashArray: '6 4',
@@ -257,46 +404,95 @@
     if (!map || typeof L === 'undefined') return;
     if (!timingDraftLayer) timingDraftLayer = L.layerGroup().addTo(map);
     timingDraftLayer.clearLayers();
-    if (!lineDraft.length) return;
-    for (const p of lineDraft) {
-      L.circleMarker([p.lat, p.lon], {
-        radius: 6,
-        color: '#3b82f6',
-        fillColor: '#fff',
-        fillOpacity: 1,
-        weight: 2,
-      }).addTo(timingDraftLayer);
-    }
-    if (lineDraft.length >= 2) {
-      L.polyline(
-        lineDraft.map((p) => [p.lat, p.lon]),
-        { color: '#3b82f6', weight: 3 },
-      ).addTo(timingDraftLayer);
+
+    const drawDraft = (draft, color) => {
+      if (!draft.length) return;
+      for (const p of draft) {
+        L.circleMarker([p.lat, p.lon], {
+          radius: 6,
+          color,
+          fillColor: '#fff',
+          fillOpacity: 1,
+          weight: 2,
+        }).addTo(timingDraftLayer);
+      }
+      if (draft.length >= 2) {
+        L.polyline(
+          draft.map((p) => [p.lat, p.lon]),
+          { color, weight: 3 },
+        ).addTo(timingDraftLayer);
+      }
+    };
+
+    drawDraft(startDraft, '#22c55e');
+    drawDraft(finishDraft, '#ef4444');
+  }
+
+  function updateDrawStatus() {
+    const status = $('#timingDrawStatus');
+    if (!status) return;
+    const startOk = !!resolveStartLine();
+    const finishOk = !!resolveFinishLine();
+    if (drawMode === 'start') {
+      status.textContent = `Start line: ${startDraft.length}/2 point(s) on map.`;
+    } else if (drawMode === 'finish') {
+      status.textContent = `Finish line: ${finishDraft.length}/2 point(s) on map.`;
+    } else if (startOk && finishOk) {
+      status.textContent = 'Start and finish ready — set options and click Generate course.';
+    } else if (startOk) {
+      status.textContent = 'Start line ready — draw or select finish, or generate from target distance only.';
+    } else {
+      status.textContent = 'Draw or select start and finish lines on the map.';
     }
   }
 
-  function setDrawLineMode(on) {
-    drawLineMode = on;
-    if (on) {
-      lineDraft = [];
-      updateDraftLayer();
+  function updateDrawButtons() {
+    const startBtn = $('#timingDrawStartBtn');
+    const finishBtn = $('#timingDrawFinishBtn');
+    if (startBtn) {
+      startBtn.textContent = drawMode === 'start' ? 'Click map: start line…' : 'Draw start line';
+      startBtn.classList.toggle('hub-btn--primary', drawMode === 'start');
     }
-    const btn = $('#timingDrawLineBtn');
-    if (btn) {
-      btn.textContent = on ? 'Click map: start line…' : 'Draw start line';
-      btn.classList.toggle('hub-btn--primary', on);
+    if (finishBtn) {
+      finishBtn.textContent = drawMode === 'finish' ? 'Click map: finish line…' : 'Draw finish line';
+      finishBtn.classList.toggle('hub-btn--primary', drawMode === 'finish');
     }
     const map = getMap();
-    if (map) map.getContainer().style.cursor = on || courseDirectionClick ? 'crosshair' : '';
-    const status = $('#timingDrawStatus');
-    if (status) {
-      status.textContent = on
-        ? `Start line: ${lineDraft.length}/2 point(s) on map.`
-        : lineDraft.length >= 2
-          ? 'Start line ready — set distance and click Create course.'
-          : 'Draw the start line (two clicks on the map).';
+    if (map) map.getContainer().style.cursor = drawMode ? 'crosshair' : '';
+    updateDrawStatus();
+  }
+
+  function setDrawMode(mode) {
+    if (drawMode === mode) {
+      drawMode = null;
+    } else {
+      drawMode = mode;
+      if (mode === 'start') startDraft = [];
+      if (mode === 'finish') finishDraft = [];
     }
+    updateDraftLayer();
+    updateDrawButtons();
     updateCoursePreviewLayer();
+  }
+
+  function populateLineSelects() {
+    const startSel = $('#timingSelectStart');
+    const finishSel = $('#timingSelectFinish');
+    if (!startSel || !finishSel) return;
+
+    const startVal = startSel.value;
+    const finishVal = finishSel.value;
+    const opts = lines
+      .map((line) => {
+        const label = `${line.courseGroup ? line.courseGroup + ' · ' : ''}${line.name} (${line.lineType})`;
+        return `<option value="${line.id}">${esc(label)}</option>`;
+      })
+      .join('');
+
+    startSel.innerHTML = `<option value="">— draw on map —</option>${opts}`;
+    finishSel.innerHTML = `<option value="">— draw on map —</option>${opts}`;
+    if (startVal) startSel.value = startVal;
+    if (finishVal) finishSel.value = finishVal;
   }
 
   function setEditLinesMode(on) {
@@ -316,6 +512,7 @@
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
     lines = data.lines || [];
     renderLineList();
+    populateLineSelects();
     populateMonitorCourseSelect();
     drawTimingLines();
     renderTimingTable();
@@ -361,7 +558,7 @@
     if (!el) return;
     if (!lines.length) {
       el.innerHTML =
-        '<p class="poll-line">No courses yet. Draw a start line on the map and click Create course.</p>';
+        '<p class="poll-line">No courses yet. Draw or select start and finish lines, then Generate course.</p>';
       return;
     }
     const groups = new Map();
@@ -416,34 +613,76 @@
 
   async function createCourse(ev) {
     ev.preventDefault();
-    if (lineDraft.length < 2) {
-      setStatus('Draw the start line on the map first (two clicks).', true);
+    const start = resolveStartLine();
+    const finish = resolveFinishLine();
+    const startLineId = getSelectedLineId('#timingSelectStart');
+    const finishLineId = getSelectedLineId('#timingSelectFinish');
+
+    if (!start) {
+      setStatus('Draw or select a start line first.', true);
       return;
     }
+
     const courseGroup = $('#timingCourseName')?.value?.trim();
     const totalDistanceM = Number($('#timingTotalDistance')?.value);
     const splitCount = Number($('#timingSplitCount')?.value);
     const courseDirection = $('#timingCourseDirection')?.value || 'right';
+    const parallelLines = $('#timingParallelLines')?.checked !== false;
+    const adjustToDistance = $('#timingAdjustDistance')?.checked !== false;
+
     if (!courseGroup) {
       setStatus('Course name is required.', true);
       return;
     }
-    if (!Number.isFinite(totalDistanceM) || totalDistanceM < 100) {
-      setStatus('Total distance must be at least 100 m.', true);
-      return;
-    }
+
     const payload = {
       generateCourse: true,
       courseGroup,
-      lat1: lineDraft[0].lat,
-      lon1: lineDraft[0].lon,
-      lat2: lineDraft[1].lat,
-      lon2: lineDraft[1].lon,
-      totalDistanceM,
+      lat1: start.lat1,
+      lon1: start.lon1,
+      lat2: start.lat2,
+      lon2: start.lon2,
       splitCount: Number.isFinite(splitCount) ? splitCount : 0,
       courseDirection,
+      parallelLines,
+      adjustToDistance,
     };
-    setStatus('Creating course…');
+
+    if (startLineId && finishLineId) {
+      payload.startLineId = startLineId;
+      payload.finishLineId = finishLineId;
+      delete payload.lat1;
+      delete payload.lon1;
+      delete payload.lat2;
+      delete payload.lon2;
+      if (adjustToDistance) {
+        if (!Number.isFinite(totalDistanceM) || totalDistanceM < 100) {
+          setStatus('Target distance must be at least 100 m when adjusting.', true);
+          return;
+        }
+        payload.totalDistanceM = totalDistanceM;
+      }
+    } else if (finish) {
+      payload.finishLat1 = finish.lat1;
+      payload.finishLon1 = finish.lon1;
+      payload.finishLat2 = finish.lat2;
+      payload.finishLon2 = finish.lon2;
+      if (adjustToDistance) {
+        if (!Number.isFinite(totalDistanceM) || totalDistanceM < 100) {
+          setStatus('Target distance must be at least 100 m when adjusting.', true);
+          return;
+        }
+        payload.totalDistanceM = totalDistanceM;
+      }
+    } else {
+      if (!Number.isFinite(totalDistanceM) || totalDistanceM < 100) {
+        setStatus('Target distance must be at least 100 m when finish is not drawn.', true);
+        return;
+      }
+      payload.totalDistanceM = totalDistanceM;
+    }
+
+    setStatus('Generating course…');
     const res = await fetch(`${apiBase()}/api/timing-lines`, {
       method: 'POST',
       headers: headers(),
@@ -454,14 +693,18 @@
       setStatus(data.error || 'Create failed', true);
       return;
     }
-    lineDraft = [];
-    setDrawLineMode(false);
+    startDraft = [];
+    finishDraft = [];
+    drawMode = null;
+    $('#timingSelectStart') && ($('#timingSelectStart').value = '');
+    $('#timingSelectFinish') && ($('#timingSelectFinish').value = '');
+    updateDrawButtons();
     previewLayer?.clearLayers();
     updateDraftLayer();
     monitorCourseGroup = courseGroup;
     localStorage.setItem('rnz_timing_monitor_course', courseGroup);
     await loadTimingLines();
-    setStatus(`Course "${courseGroup}" created with ${data.lines?.length ?? 0} parallel lines.`);
+    setStatus(`Course "${courseGroup}" created with ${data.lines?.length ?? 0} lines.`);
   }
 
   function ccw(a, b, c) {
@@ -609,27 +852,30 @@
   }
 
   function onMapClick(e) {
-    if (drawLineMode) {
-      if (lineDraft.length >= 2) lineDraft = [];
-      lineDraft.push({ lat: e.latlng.lat, lon: e.latlng.lng });
-      updateDraftLayer();
-      const status = $('#timingDrawStatus');
-      if (status) {
-        status.textContent =
-          lineDraft.length >= 2
-            ? 'Start line ready — set distance and click Create course.'
-            : `Start line: ${lineDraft.length}/2 point(s).`;
-      }
-      updateCoursePreviewLayer();
-      updateDrawButtons();
-      if (lineDraft.length >= 2) setDrawLineMode(false);
-      return;
+    if (!drawMode) return;
+    const draft = drawMode === 'start' ? startDraft : finishDraft;
+    if (draft.length >= 2) {
+      if (drawMode === 'start') startDraft = [];
+      else finishDraft = [];
     }
+    const target = drawMode === 'start' ? startDraft : finishDraft;
+    target.push({ lat: e.latlng.lat, lon: e.latlng.lng });
+    if (drawMode === 'start') {
+      $('#timingSelectStart') && ($('#timingSelectStart').value = '');
+    } else {
+      $('#timingSelectFinish') && ($('#timingSelectFinish').value = '');
+    }
+    updateDraftLayer();
+    updateDrawButtons();
+    updateCoursePreviewLayer();
+    if (target.length >= 2) drawMode = null;
+    updateDrawButtons();
   }
 
   function bind() {
     $('#timingCourseForm')?.addEventListener('submit', createCourse);
-    $('#timingDrawLineBtn')?.addEventListener('click', () => setDrawLineMode(!drawLineMode));
+    $('#timingDrawStartBtn')?.addEventListener('click', () => setDrawMode('start'));
+    $('#timingDrawFinishBtn')?.addEventListener('click', () => setDrawMode('finish'));
     $('#timingEditLinesBtn')?.addEventListener('click', () => setEditLinesMode(!editLinesMode));
     $('#timingResetBtn')?.addEventListener('click', resetTimings);
     $('#timingRefreshBtn')?.addEventListener('click', () =>
@@ -643,7 +889,25 @@
       localStorage.setItem('rnz_timing_monitor_course', monitorCourseGroup);
       renderTimingTable();
     });
-    ['#timingTotalDistance', '#timingSplitCount', '#timingCourseDirection'].forEach((sel) => {
+    $('#timingSelectStart')?.addEventListener('change', () => {
+      startDraft = [];
+      updateDraftLayer();
+      updateSplitPreview();
+      updateDrawStatus();
+    });
+    $('#timingSelectFinish')?.addEventListener('change', () => {
+      finishDraft = [];
+      updateDraftLayer();
+      updateSplitPreview();
+      updateDrawStatus();
+    });
+    [
+      '#timingTotalDistance',
+      '#timingSplitCount',
+      '#timingCourseDirection',
+      '#timingParallelLines',
+      '#timingAdjustDistance',
+    ].forEach((sel) => {
       $(sel)?.addEventListener('input', updateSplitPreview);
       $(sel)?.addEventListener('change', updateSplitPreview);
     });
@@ -651,6 +915,7 @@
     const map = getMap();
     if (map) map.on('click', onMapClick);
     updateSplitPreview();
+    updateDrawButtons();
   }
 
   window.dashboardInitTimingLines = function () {

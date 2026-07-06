@@ -1544,7 +1544,9 @@ const {
   normalizeTimingLine,
   validateEndpoints,
   normalizeLineType,
+  courseBearingFromLine,
   generateSplitLines,
+  generateCourseFromStartFinish,
 } = require('./timing-line');
 
 async function listTimingLines(orgId) {
@@ -1609,30 +1611,109 @@ async function generateTimingSplitCourse(orgId, body) {
   if (!hasDb()) return [];
   const sql = await getSql();
   await ensureOrgsBootstrapped();
-  const { lat1, lon1, lat2, lon2 } = validateEndpoints(
-    body.lat1 ?? body.startLat1,
-    body.lon1 ?? body.startLon1,
-    body.lat2 ?? body.startLat2,
-    body.lon2 ?? body.startLon2,
-  );
   const courseGroup = String(body.courseGroup ?? body.courseName ?? 'Course').trim() || 'Course';
-  let courseBearingDeg = Number(body.courseBearingDeg ?? body.course_bearing_deg);
-  if (!Number.isFinite(courseBearingDeg)) {
-    const { courseBearingFromLine } = require('./timing-line');
-    const dir = body.courseDirection === 'left' ? 'left' : 'right';
-    courseBearingDeg = courseBearingFromLine(lat1, lon1, lat2, lon2, dir);
+
+  const hasFinishLineIds =
+    body.startLineId != null &&
+    body.finishLineId != null &&
+    Number.isFinite(Number(body.startLineId)) &&
+    Number.isFinite(Number(body.finishLineId));
+  const hasFinishCoords =
+    body.finishLat1 != null ||
+    body.finish_lat1 != null ||
+    body.finishLon1 != null ||
+    body.finish_lon1 != null;
+
+  let specs;
+  if (hasFinishLineIds) {
+    const startLineId = Number(body.startLineId);
+    const finishLineId = Number(body.finishLineId);
+    const startRow = await sql`
+      SELECT lat1, lon1, lat2, lon2 FROM rnz_timing_lines
+      WHERE org_id = ${orgId} AND id = ${startLineId} LIMIT 1
+    `;
+    const finishRow = await sql`
+      SELECT lat1, lon1, lat2, lon2 FROM rnz_timing_lines
+      WHERE org_id = ${orgId} AND id = ${finishLineId} LIMIT 1
+    `;
+    if (!startRow.rows[0] || !finishRow.rows[0]) {
+      throw new Error('Selected start or finish line not found');
+    }
+    specs = generateCourseFromStartFinish({
+      startLat1: startRow.rows[0].lat1,
+      startLon1: startRow.rows[0].lon1,
+      startLat2: startRow.rows[0].lat2,
+      startLon2: startRow.rows[0].lon2,
+      finishLat1: finishRow.rows[0].lat1,
+      finishLon1: finishRow.rows[0].lon1,
+      finishLat2: finishRow.rows[0].lat2,
+      finishLon2: finishRow.rows[0].lon2,
+      courseGroup,
+      courseDirection: body.courseDirection === 'left' ? 'left' : 'right',
+      courseBearingDeg: body.courseBearingDeg ?? body.course_bearing_deg,
+      targetDistanceM:
+        body.adjustToDistance === false || body.adjustToDistance === 'false'
+          ? null
+          : body.totalDistanceM ?? body.totalDistance,
+      splitCount: body.splitCount ?? body.splitLines ?? body.numSplits,
+      parallelLines: body.parallelLines !== false && body.parallelLines !== 'false',
+    });
+  } else if (hasFinishCoords) {
+    const { lat1, lon1, lat2, lon2 } = validateEndpoints(
+      body.lat1 ?? body.startLat1,
+      body.lon1 ?? body.startLon1,
+      body.lat2 ?? body.startLat2,
+      body.lon2 ?? body.startLon2,
+    );
+    const finish = validateEndpoints(
+      body.finishLat1 ?? body.finish_lat1,
+      body.finishLon1 ?? body.finish_lon1,
+      body.finishLat2 ?? body.finish_lat2,
+      body.finishLon2 ?? body.finish_lon2,
+    );
+    specs = generateCourseFromStartFinish({
+      startLat1: lat1,
+      startLon1: lon1,
+      startLat2: lat2,
+      startLon2: lon2,
+      finishLat1: finish.lat1,
+      finishLon1: finish.lon1,
+      finishLat2: finish.lat2,
+      finishLon2: finish.lon2,
+      courseGroup,
+      courseDirection: body.courseDirection === 'left' ? 'left' : 'right',
+      courseBearingDeg: body.courseBearingDeg ?? body.course_bearing_deg,
+      targetDistanceM:
+        body.adjustToDistance === false || body.adjustToDistance === 'false'
+          ? null
+          : body.totalDistanceM ?? body.totalDistance,
+      splitCount: body.splitCount ?? body.splitLines ?? body.numSplits,
+      parallelLines: body.parallelLines !== false && body.parallelLines !== 'false',
+    });
+  } else {
+    const { lat1, lon1, lat2, lon2 } = validateEndpoints(
+      body.lat1 ?? body.startLat1,
+      body.lon1 ?? body.startLon1,
+      body.lat2 ?? body.startLat2,
+      body.lon2 ?? body.startLon2,
+    );
+    let courseBearingDeg = Number(body.courseBearingDeg ?? body.course_bearing_deg);
+    if (!Number.isFinite(courseBearingDeg)) {
+      const dir = body.courseDirection === 'left' ? 'left' : 'right';
+      courseBearingDeg = courseBearingFromLine(lat1, lon1, lat2, lon2, dir);
+    }
+    specs = generateSplitLines({
+      startLat1: lat1,
+      startLon1: lon1,
+      startLat2: lat2,
+      startLon2: lon2,
+      courseBearingDeg,
+      totalDistanceM: body.totalDistanceM ?? body.totalDistance ?? 2000,
+      courseGroup,
+      splitCount: body.splitCount ?? body.splitLines ?? body.numSplits,
+      splitIntervalM: body.splitIntervalM ?? body.splitInterval,
+    });
   }
-  const specs = generateSplitLines({
-    startLat1: lat1,
-    startLon1: lon1,
-    startLat2: lat2,
-    startLon2: lon2,
-    courseBearingDeg,
-    totalDistanceM: body.totalDistanceM ?? body.totalDistance ?? 2000,
-    courseGroup,
-    splitCount: body.splitCount ?? body.splitLines ?? body.numSplits,
-    splitIntervalM: body.splitIntervalM ?? body.splitInterval,
-  });
 
   await sql`DELETE FROM rnz_timing_lines WHERE org_id = ${orgId} AND course_group = ${courseGroup}`;
 
