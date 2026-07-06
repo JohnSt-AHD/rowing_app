@@ -30,7 +30,7 @@ if (values.help) {
   console.log(`Usage: node scripts/sync-traccar-geofences.mjs [--dry-run] [--replace] [--update-settings]
 
 Imports polygon/circle geofences from Traccar (via overlay snapshot) into CrewSight.
-Skips LINESTRING zones. Capsize on for all zones except Rowing NZ.
+Skips LINESTRING zones. Capsize on for all zones except the geofence named "Rowing NZ".
 Intervals: course ${process.env.COURSE_ECONOMY_SEC || 1}s, other non-RNZ ${process.env.ECONOMY_SEC || 3}s, Rowing NZ ${process.env.RNZ_ECONOMY_SEC || 30}s.
 
 --update-settings  Patch economy/capsize on existing CrewSight geofences by name (no geometry changes).`);
@@ -60,14 +60,19 @@ function isCourseGeofenceName(name) {
   return n.includes('course');
 }
 
+function isRowingNzCapsizeOffName(name) {
+  return String(name || '').trim().toLowerCase() === 'rowing nz';
+}
+
 function geofenceSettingsForName(name) {
+  const disableCapsize = isRowingNzCapsizeOffName(name);
   if (isRnzBoundaryName(name)) {
-    return { economyIntervalSec: RNZ_ECONOMY_SEC, disableCapsize: true };
+    return { economyIntervalSec: RNZ_ECONOMY_SEC, disableCapsize };
   }
   if (isCourseGeofenceName(name)) {
-    return { economyIntervalSec: COURSE_ECONOMY_SEC, disableCapsize: false };
+    return { economyIntervalSec: COURSE_ECONOMY_SEC, disableCapsize };
   }
-  return { economyIntervalSec: ECONOMY_SEC, disableCapsize: false };
+  return { economyIntervalSec: ECONOMY_SEC, disableCapsize };
 }
 
 /** @returns {{ shapeType: 'circle'|'polygon', centerLat?: number, centerLon?: number, radiusM?: number, polygonCoords?: number[][] } | null} */
