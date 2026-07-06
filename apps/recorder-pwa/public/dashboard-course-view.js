@@ -136,14 +136,11 @@
           lon2: line.lon2,
           courseBearingDeg: line.courseBearingDeg,
         };
-        const res = await fetch(
-          `${apiBase()}/api/timing-lines?id=${encodeURIComponent(line.id)}`,
-          {
-            method: 'PATCH',
-            headers: headers(),
-            body: JSON.stringify(payload),
-          },
-        );
+        const res = await fetch(timingLinesUrl(line.id), {
+          method: 'PATCH',
+          headers: headers(),
+          body: JSON.stringify(payload),
+        });
         const data = await res.json();
         if (!res.ok || !data.ok) {
           throw new Error(data.error || `Save failed for ${line.name}`);
@@ -170,6 +167,14 @@
   function apiBase() {
     if (typeof window.dashboardApiBase === 'function') return window.dashboardApiBase();
     return window.location.origin;
+  }
+
+  function timingLinesUrl(id) {
+    if (typeof window.RNZ_courseViewTimingUrl === 'function') {
+      return window.RNZ_courseViewTimingUrl(id);
+    }
+    const q = id ? `?id=${encodeURIComponent(id)}` : '';
+    return `${apiBase()}/api/timing-lines${q}`;
   }
 
   function esc(s) {
