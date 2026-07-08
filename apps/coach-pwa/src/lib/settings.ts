@@ -16,7 +16,11 @@ function defaultApiBaseUrl(): string {
   if (typeof window !== 'undefined' && window.location?.origin && !IS_NATIVE) {
     try {
       const host = new URL(window.location.origin).hostname;
-      if (host === 'localhost' || host === '127.0.0.1') {
+      if (
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        host.endsWith('.vercel.app')
+      ) {
         return window.location.origin;
       }
     } catch {

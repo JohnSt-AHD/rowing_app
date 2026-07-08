@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { defineConfig } from 'vite';
+import { VitePWA } from 'vite-plugin-pwa';
 import { capacitorNativeHtml } from '../../packages/vite-plugins/capacitor-html.ts';
 
 function readNativeAppVersion(): { version: string; versionCode: string } {
@@ -20,10 +21,12 @@ function readNativeAppVersion(): { version: string; versionCode: string } {
 
 export default defineConfig(({ mode }) => {
   const isNative = mode === 'native';
+  const isDev = mode === 'development';
+  const webBase = isDev ? '/' : '/manager/';
   const nativeVersion = isNative ? readNativeAppVersion() : null;
 
   return {
-    base: isNative ? './' : '/',
+    base: isNative ? './' : webBase,
     build: {
       outDir: isNative
         ? path.resolve(__dirname, '../coach-native/www')
@@ -31,7 +34,59 @@ export default defineConfig(({ mode }) => {
       emptyOutDir: true,
       modulePreload: false,
     },
-    plugins: isNative ? [capacitorNativeHtml()] : [],
+    plugins: [
+      ...(isNative
+        ? [capacitorNativeHtml()]
+        : [
+            VitePWA({
+              registerType: 'autoUpdate',
+              strategies: 'injectManifest',
+              srcDir: 'src',
+              filename: 'sw.ts',
+              injectRegister: 'auto',
+              includeAssets: ['icons/icon-192.png', 'icons/icon-512.png'],
+              manifest: {
+                name: 'CrewSight Manager',
+                short_name: 'Manager',
+                description:
+                  'Fleet map, session history, and capsize monitoring for coaches',
+                theme_color: '#0a1628',
+                background_color: '#0a1628',
+                display: 'standalone',
+                orientation: 'any',
+                start_url: webBase,
+                scope: webBase,
+                icons: [
+                  {
+                    src: 'icons/icon-192.png',
+                    sizes: '192x192',
+                    type: 'image/png',
+                  },
+                  {
+                    src: 'icons/icon-512.png',
+                    sizes: '512x512',
+                    type: 'image/png',
+                  },
+                  {
+                    src: 'icons/icon-512.png',
+                    sizes: '512x512',
+                    type: 'image/png',
+                    purpose: 'maskable',
+                  },
+                ],
+              },
+              workbox: {
+                globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+                runtimeCaching: [
+                  {
+                    urlPattern: /^https:\/\/.*\/api\//,
+                    handler: 'NetworkOnly',
+                  },
+                ],
+              },
+            }),
+          ]),
+    ],
     define: {
       'import.meta.env.VITE_PLATFORM': JSON.stringify(isNative ? 'native' : 'web'),
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(

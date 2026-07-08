@@ -40,8 +40,9 @@
   "rewrites": [
     { "source": "/dashboard", "destination": "/dashboard.html" },
     { "source": "/install-native", "destination": "/install-native.html" },
+    { "source": "/manager", "destination": "/manager/index.html" },
     {
-      "source": "/((?!downloads/|api/).*)",
+      "source": "/((?!downloads/|api/|manager/).*)",
       "destination": "/index.html"
     }
   ]

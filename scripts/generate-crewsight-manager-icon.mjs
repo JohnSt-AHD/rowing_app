@@ -82,4 +82,24 @@ for (const [srcName, outName] of pairs) {
   await remapIcon(inPath, path.join(srcDir, outName));
 }
 
+const managerIcon = path.join(srcDir, 'crewsight-logo-icon-only-manager-color.png');
+const fallbackIcon = path.join(
+  root,
+  'apps/coach-pwa/public/assets/crewsight/crewsight-logo-icon-only-manager-color.png',
+);
+const iconSrc = fs.existsSync(managerIcon) ? managerIcon : fallbackIcon;
+const coachIconsDir = path.join(root, 'apps/coach-pwa/public/icons');
+if (fs.existsSync(iconSrc)) {
+  const sharp = (await import('sharp')).default;
+  fs.mkdirSync(coachIconsDir, { recursive: true });
+  for (const size of [192, 512]) {
+    const outPath = path.join(coachIconsDir, `icon-${size}.png`);
+    await sharp(iconSrc)
+      .resize(size, size, { fit: 'contain', background: { r: 10, g: 22, b: 40, alpha: 1 } })
+      .png()
+      .toFile(outPath);
+    console.log('[generate-crewsight-manager-icon]', path.relative(root, outPath));
+  }
+}
+
 console.log('[generate-crewsight-manager-icon] done');

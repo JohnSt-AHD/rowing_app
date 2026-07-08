@@ -13,7 +13,13 @@ Uses the same **API base URL** and **ingest token** as the rower app and web Cre
 
 ## Download
 
+**Android (background capsize alerts):**  
 **https://github.com/JohnSt-AHD/rowing_app/releases/download/android-apk-manager-latest/CrewSight-Manager.apk**
+
+**iPhone / iPad / browser (PWA):**  
+**https://rowing-app-recorder-pwa.vercel.app/manager/** — open in Safari → Share → **Add to Home Screen**. Live map and history while the app is open; no background capsize alerts (use Android APK for that).
+
+Install page: **https://rowing-app-recorder-pwa.vercel.app/install-native.html**
 
 Build status: [Android APK (CrewSight Manager)](https://github.com/JohnSt-AHD/rowing_app/actions/workflows/android-apk-coach.yml)
 

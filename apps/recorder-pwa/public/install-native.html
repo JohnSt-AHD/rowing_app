@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0a1628" />
-    <title>Install CrewSight apps · Android</title>
+    <title>Install CrewSight apps</title>
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
     <link rel="stylesheet" href="/ahd-hub-theme.css" />
     <style>
@@ -39,6 +39,11 @@
       .btn-dl--manager {
         background: var(--ahd-teal, #0d9488);
         color: #fff !important;
+      }
+      .btn-dl--pwa {
+        background: rgba(13, 148, 136, 0.2);
+        color: var(--ahd-teal, #0d9488) !important;
+        border: 1px solid rgba(13, 148, 136, 0.55);
       }
       .install-warn {
         border-left: 3px solid var(--cs-gold, #fbbf24);
@@ -78,7 +83,7 @@
             height="200"
           />
         </div>
-        <p class="hub-tagline">Android install guide — rower app and Manager</p>
+        <p class="hub-tagline">Install guide — rower app and Manager (Android APK + iPhone PWA)</p>
       </div>
     </header>
 
@@ -108,11 +113,12 @@
       <section class="hub-panel install-app-block" id="manager">
         <h2 class="hub-section-title">CrewSight Manager</h2>
         <p class="install-app-lead">
-          Coach / ops monitor — live fleet map, session history, and <strong>background capsize alerts</strong> while monitoring is on.
-          The <a href="/dashboard.html">web dashboard</a> is also available in a browser.
+          Coach / ops monitor — live fleet map, session history, and capsize alerts while the app is open.
+          On <strong>iPhone</strong>, use the web app (Add to Home Screen). On <strong>Android</strong>, the native APK adds background capsize alerts while monitoring is on.
+          The <a href="/dashboard.html">desktop dashboard</a> is also available in a browser.
         </p>
         <p class="install-note">
-          arm64 build (~10 MB). Allow notifications for capsize alerts when the app is in the background.
+          <strong>Android APK:</strong> arm64 build (~10 MB). Allow notifications for capsize alerts when the app is in the background.
         </p>
         <p>
           <a
@@ -120,6 +126,11 @@
             href="https://github.com/JohnSt-AHD/rowing_app/releases/download/android-apk-manager-latest/CrewSight-Manager.apk"
             ><strong>Download CrewSight-Manager.apk</strong></a
           >
+          <a class="btn-dl btn-dl--pwa" href="/manager/"><strong>Open Manager (web / PWA)</strong></a>
+        </p>
+        <p class="install-note">
+          <strong>iPhone / iPad:</strong> open <a href="/manager/">CrewSight Manager (PWA)</a> in Safari → Share → <strong>Add to Home Screen</strong>.
+          Live map and history work from the home-screen icon; background capsize alerts need the Android app.
         </p>
         <p class="install-note">
           <a href="https://github.com/JohnSt-AHD/rowing_app/releases/tag/android-apk-manager-latest">Releases</a>
@@ -158,7 +169,8 @@ adb install -r CrewSight-Manager.apk</pre>
 
       <p class="install-links">
         <a href="/">CrewSight app (PWA)</a>
-        <a href="/dashboard.html">CrewSight Manager (web)</a>
+        <a href="/manager/">CrewSight Manager (PWA)</a>
+        <a href="/dashboard.html">CrewSight Manager (desktop web)</a>
         <a href="/test.html">Connection test</a>
       </p>
     </div>
