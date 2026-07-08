@@ -38,6 +38,7 @@
     { "source": "/dashboard", "destination": "/dashboard.html" },
     { "source": "/install-native", "destination": "/install-native.html" },
     { "source": "/manager", "destination": "/manager/index.html" },
+    { "source": "/manager/", "destination": "/manager/index.html" },
     {
       "source": "/((?!api/|downloads/|manager/).*)",
       "destination": "/index.html"

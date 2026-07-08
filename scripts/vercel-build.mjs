@@ -42,9 +42,12 @@ if (!fs.existsSync(path.join(coachDist, 'index.html'))) {
   process.exit(1);
 }
 
+const managerInAppDist = path.join(appDist, 'manager');
+fs.rmSync(managerInAppDist, { recursive: true, force: true });
+fs.cpSync(coachDist, managerInAppDist, { recursive: true });
+
 fs.rmSync(rootDist, { recursive: true, force: true });
 fs.cpSync(appDist, rootDist, { recursive: true });
-fs.cpSync(coachDist, path.join(rootDist, 'manager'), { recursive: true });
 
 const appApi = path.join(root, 'apps', 'recorder-pwa', 'api');
 const rootApi = path.join(root, 'api');
@@ -58,9 +61,9 @@ if (!fs.existsSync(path.join(rootDist, 'index.html'))) {
   process.exit(1);
 }
 
-if (!fs.existsSync(path.join(rootDist, 'manager', 'index.html'))) {
-  console.error('[vercel-build] Failed to create dist/manager/index.html');
+if (!fs.existsSync(path.join(managerInAppDist, 'index.html'))) {
+  console.error('[vercel-build] Failed to create apps/recorder-pwa/dist/manager/index.html');
   process.exit(1);
 }
 
-console.log('[vercel-build] OK — dist/index.html + dist/manager/index.html ready');
+console.log('[vercel-build] OK — recorder dist + manager PWA ready');
