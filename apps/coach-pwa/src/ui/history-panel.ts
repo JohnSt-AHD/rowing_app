@@ -11,8 +11,13 @@ import { drawMultiSeriesChart } from '../lib/history-charts';
 import {
   buildDeviceTrack,
   colorForDevice,
+  computeDeviceStats,
   defaultSelection,
   filterTracks,
+  formatDuration,
+  formatPrognosticPct,
+  formatSpeedKmh,
+  formatSplitSec,
   maxDistance,
   speedVsDistanceSeries,
   speedVsTimeSeries,
@@ -40,12 +45,20 @@ const SETUP_HTML = `
   <label class="coach-field">Session
     <select data-session-select><option value="">— load sessions first —</option></select>
   </label>
-  <button type="button" class="coach-btn coach-btn--primary" data-load-track>Load trace &amp; charts</button>`;
+  <button type="button" class="coach-btn coach-btn--primary" data-load-track>Load trace &amp; charts</button>
+  <p class="history-load-status" data-setup-load-status hidden aria-live="polite"></p>`;
 
 const TRACK_HTML = `
   <div class="history-main" data-history-main>
     <p class="poll-line history-main__hint" data-track-hint>Use Settings to choose devices and load a session.</p>
+    <div class="history-loading" data-history-loading hidden aria-live="polite">
+      <div class="history-loading__bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+        <div class="history-loading__fill"></div>
+      </div>
+      <p class="history-loading__text" data-loading-text>Loading session data…</p>
+    </div>
     <div data-timeline-mount hidden></div>
+    <div class="history-stats" data-history-stats hidden></div>
     <div class="history-map-wrap" hidden>
       <div class="history-map" data-history-map></div>
     </div>
@@ -70,6 +83,10 @@ export class HistoryPanel {
   private knownDevices: string[] = [];
   private sessionMeta: { from: string; to: string } | null = null;
   private devicesLoaded = false;
+  private loading = false;
+  private loadingMessage = '';
+  private chartResizeObserver: ResizeObserver | null = null;
+  private refreshScheduled = false;
 
   constructor(
     getSettings: () => CoachSettings,
@@ -85,12 +102,18 @@ export class HistoryPanel {
   prepareForRender(nextTab: 'live' | 'history' | 'settings'): void {
     if (nextTab !== 'history') {
       this.teardownMap();
+      this.teardownChartObserver();
       this.timeline = null;
       this.trackHost = null;
     }
     if (nextTab !== 'settings') {
       this.setupHost = null;
     }
+  }
+
+  /** Call after History tab is shown — fixes map/chart sizing when panel was hidden. */
+  onHistoryTabShown(): void {
+    if (this.tracks.length) this.scheduleRefreshViews();
   }
 
   mountSetup(host: HTMLElement): void {
@@ -103,6 +126,7 @@ export class HistoryPanel {
       if ((e as KeyboardEvent).key === 'Enter') this.addDeviceFromInput();
     });
     host.querySelector('[data-device-add]')?.addEventListener('blur', () => this.addDeviceFromInput());
+    this.syncLoadingUi();
     if (!this.devicesLoaded) {
       this.devicesLoaded = true;
       void this.loadDeviceList();
@@ -119,7 +143,7 @@ export class HistoryPanel {
       this.timeline = new HistoryTimeline(tlMount, {
         onChange: (sel) => {
           this.selection = sel;
-          this.refreshViews();
+          this.scheduleRefreshViews();
         },
       });
       if (this.selection && this.tracks.length) {
@@ -132,12 +156,15 @@ export class HistoryPanel {
         });
       }
     }
+    this.bindChartResizeObserver();
     this.updateTrackHint();
-    if (this.tracks.length) this.refreshViews();
+    this.syncLoadingUi();
+    if (this.tracks.length) this.scheduleRefreshViews();
   }
 
   destroy(): void {
     this.teardownMap();
+    this.teardownChartObserver();
     this.timeline = null;
     this.setupHost = null;
     this.trackHost = null;
@@ -145,12 +172,64 @@ export class HistoryPanel {
     this.tracks = [];
     this.selection = null;
     this.knownDevices = [];
+    this.loading = false;
   }
 
   private q<T extends Element>(sel: string): T | null {
     return (this.setupHost?.querySelector(sel) ??
       this.trackHost?.querySelector(sel) ??
       null) as T | null;
+  }
+
+  private setLoading(active: boolean, message = 'Loading session data…'): void {
+    this.loading = active;
+    this.loadingMessage = message;
+    this.syncLoadingUi();
+  }
+
+  private syncLoadingUi(): void {
+    const loadBtn = this.q<HTMLButtonElement>('[data-load-track]');
+    const setupStatus = this.q<HTMLElement>('[data-setup-load-status]');
+    const overlay = this.q<HTMLElement>('[data-history-loading]');
+    const overlayText = this.q<HTMLElement>('[data-loading-text]');
+
+    if (loadBtn) {
+      loadBtn.disabled = this.loading;
+      loadBtn.textContent = this.loading ? 'Loading…' : 'Load trace & charts';
+    }
+    if (setupStatus) {
+      setupStatus.hidden = !this.loading;
+      setupStatus.textContent = this.loading ? this.loadingMessage : '';
+      setupStatus.classList.toggle('history-load-status--active', this.loading);
+    }
+    if (overlay) overlay.hidden = !this.loading;
+    if (overlayText && this.loading) overlayText.textContent = this.loadingMessage;
+  }
+
+  private scheduleRefreshViews(): void {
+    if (this.refreshScheduled) return;
+    this.refreshScheduled = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        this.refreshScheduled = false;
+        this.refreshViews();
+      });
+    });
+  }
+
+  private bindChartResizeObserver(): void {
+    this.teardownChartObserver();
+    const charts = this.q<HTMLElement>('.history-charts');
+    if (!charts || typeof ResizeObserver === 'undefined') return;
+    this.chartResizeObserver = new ResizeObserver(() => {
+      if (this.tracks.length && this.selection) this.renderCharts();
+    });
+    this.chartResizeObserver.observe(charts);
+  }
+
+  private teardownChartObserver(): void {
+    this.chartResizeObserver?.disconnect();
+    this.chartResizeObserver = null;
   }
 
   private teardownMap(): void {
@@ -164,8 +243,9 @@ export class HistoryPanel {
   private updateTrackHint(): void {
     const hint = this.q<HTMLElement>('[data-track-hint]');
     const hasTracks = this.tracks.length > 0;
-    if (hint) hint.hidden = hasTracks;
+    if (hint) hint.hidden = hasTracks || this.loading;
     this.q('[data-timeline-mount]')?.toggleAttribute('hidden', !hasTracks);
+    this.q('[data-history-stats]')?.toggleAttribute('hidden', !hasTracks);
     this.q('.history-map-wrap')?.toggleAttribute('hidden', !hasTracks);
     this.q('.history-charts')?.toggleAttribute('hidden', !hasTracks);
   }
@@ -178,6 +258,7 @@ export class HistoryPanel {
   private renderDeviceCheckboxes(): void {
     const list = this.q<HTMLElement>('[data-device-list]');
     if (!list) return;
+    const selected = new Set(this.selectedDeviceIds());
     if (!this.knownDevices.length) {
       list.innerHTML = '<p class="poll-line">No devices — add IDs manually.</p>';
       return;
@@ -185,7 +266,7 @@ export class HistoryPanel {
     list.innerHTML = this.knownDevices
       .map(
         (id, i) =>
-          `<label class="history-device-chip"><input type="checkbox" data-device-id value="${esc(id)}" ${i === 0 ? 'checked' : ''} /> ${esc(id)}</label>`,
+          `<label class="history-device-chip"><input type="checkbox" data-device-id value="${esc(id)}" ${selected.has(id) || (selected.size === 0 && i === 0) ? 'checked' : ''} /> ${esc(id)}</label>`,
       )
       .join('');
   }
@@ -265,11 +346,12 @@ export class HistoryPanel {
     const sessionId = this.q<HTMLSelectElement>('[data-session-select]')?.value ?? '';
     let fromTo = this.sessionTimeRange();
 
+    this.setLoading(true, 'Fetching GPS tracks…');
     try {
-      this.onStatus('Loading tracks…');
       const loaded: DeviceTrack[] = [];
 
       if (sessionId && devices.length === 1) {
+        this.setLoading(true, `Loading session for ${devices[0]}…`);
         const dash = await loadSessionDashboard(settings, sessionId);
         loaded.push(buildDeviceTrack(devices[0], colorForDevice(0), dash.track ?? []));
         if (dash.from && dash.to) fromTo = { from: dash.from, to: dash.to };
@@ -291,6 +373,7 @@ export class HistoryPanel {
         for (let i = 0; i < devices.length; i++) {
           const deviceId = devices[i];
           if (loaded.some((t) => t.deviceId === deviceId)) continue;
+          this.setLoading(true, `Loading ${deviceId} (${i + 1}/${devices.length})…`);
           const payload = await loadDeviceHistoryRange(settings, deviceId, fromTo.from, fromTo.to);
           loaded.push(buildDeviceTrack(deviceId, colorForDevice(i), payload.track ?? []));
         }
@@ -312,20 +395,60 @@ export class HistoryPanel {
         totalDistM: maxDistance(this.tracks),
       });
       this.updateTrackHint();
-      this.refreshViews();
       this.onStatus(
         `Loaded ${this.tracks.length} device(s) · ${this.tracks.reduce((n, t) => n + t.points.length, 0)} points`,
       );
       this.onTracksLoaded?.();
+      if (this.trackHost) this.scheduleRefreshViews();
     } catch (e) {
       this.onStatus(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      this.setLoading(false);
     }
   }
 
   private refreshViews(): void {
     if (!this.selection || !this.tracks.length) return;
+    this.renderStats();
     this.renderMap();
     this.renderCharts();
+  }
+
+  private renderStats(): void {
+    const host = this.q<HTMLElement>('[data-history-stats]');
+    if (!host || !this.selection) return;
+    const stats = computeDeviceStats(this.tracks, this.selection);
+    if (!stats.length) {
+      host.innerHTML = '';
+      return;
+    }
+    const rangeLabel = this.selection.distanceMode
+      ? `${Math.round(this.selection.distStartM)}–${Math.round(this.selection.distStartM + this.selection.distWindowM)} m window`
+      : `${formatDuration((this.selection.t1 - this.selection.t0) / 1000)} selected`;
+
+    host.innerHTML = `
+      <h2 class="history-stats__title">Session stats <span class="history-hint">(${esc(rangeLabel)})</span></h2>
+      <div class="history-stats__grid">
+        ${stats
+          .map(
+            (s) => `
+          <article class="history-stats__card" style="border-left-color: ${esc(s.color)}">
+            <h3 class="history-stats__device">${esc(s.deviceId)}${s.boatClass ? ` <span class="history-hint">${esc(s.boatClass)}</span>` : ''}</h3>
+            <dl class="history-stats__dl">
+              <div><dt>Duration</dt><dd>${esc(formatDuration(s.durationSec))}</dd></div>
+              <div><dt>Distance</dt><dd>${esc(Math.round(s.distanceM))} m</dd></div>
+              <div><dt>Avg speed</dt><dd>${esc(formatSpeedKmh(s.avgSpeedMps))}</dd></div>
+              <div><dt>Avg split</dt><dd>${esc(formatSplitSec(s.avgSplitSec))}</dd></div>
+              <div><dt>Best split</dt><dd>${esc(formatSplitSec(s.bestSplitSec))}</dd></div>
+              <div><dt>Max speed</dt><dd>${esc(formatSpeedKmh(s.maxSpeedMps))}</dd></div>
+              <div><dt>Avg prognostic</dt><dd>${esc(formatPrognosticPct(s.avgPrognosticPct))}</dd></div>
+              <div><dt>Avg stroke</dt><dd>${s.avgStrokeRate != null ? `${s.avgStrokeRate.toFixed(1)} spm` : '—'}</dd></div>
+              <div><dt>GPS points</dt><dd>${s.pointCount}</dd></div>
+            </dl>
+          </article>`,
+          )
+          .join('')}
+      </div>`;
   }
 
   private renderMap(): void {
@@ -371,7 +494,8 @@ export class HistoryPanel {
     if (bounds.length >= 2) {
       this.historyMap.fitBounds(L.latLngBounds(bounds), { padding: [28, 28] });
     }
-    setTimeout(() => this.historyMap?.invalidateSize(), 120);
+    window.setTimeout(() => this.historyMap?.invalidateSize(), 50);
+    window.setTimeout(() => this.historyMap?.invalidateSize(), 280);
   }
 
   private renderCharts(): void {

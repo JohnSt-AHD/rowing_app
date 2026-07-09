@@ -1,5 +1,6 @@
 import type { HistoryPoint } from './api';
 import { smoothChartSeriesByTime } from './chart-smooth';
+import { parseBoatClass, prognosticPercent, splitSecFromMps } from '@rowing/rowing-pace';
 
 export const DEVICE_COLORS = [
   '#38bdf8',
@@ -42,6 +43,10 @@ export type DeviceStats = {
   avgSpeedMps: number;
   maxSpeedMps: number;
   avgStrokeRate: number | null;
+  avgSplitSec: number | null;
+  bestSplitSec: number | null;
+  avgPrognosticPct: number | null;
+  boatClass: string | null;
   pointCount: number;
 };
 
@@ -125,9 +130,10 @@ function inDistanceRange(p: EnrichedPoint, sel: HistorySelection): boolean {
 export function filterTracks(tracks: DeviceTrack[], sel: HistorySelection): DeviceTrack[] {
   return tracks.map((track) => ({
     ...track,
-    points: track.points.filter((p) =>
-      sel.distanceMode ? inDistanceRange(p, sel) && inTimeRange(p, sel) : inTimeRange(p, sel),
-    ),
+    points: track.points.filter((p) => {
+      if (sel.distanceMode) return inDistanceRange(p, sel);
+      return inTimeRange(p, sel);
+    }),
   }));
 }
 
@@ -139,7 +145,10 @@ export function computeDeviceStats(tracks: DeviceTrack[], sel: HistorySelection)
     const spm = pts
       .map((p) => p.strokeRate)
       .filter((v): v is number => v != null && v >= 15 && v <= 50);
-    const durationSec = Math.max(0, (sel.t1 - sel.t0) / 1000);
+    const durationSec =
+      pts.length >= 2
+        ? Math.max(0, (pts[pts.length - 1].t - pts[0].t) / 1000)
+        : Math.max(0, (sel.t1 - sel.t0) / 1000);
     let distanceM = 0;
     if (pts.length >= 2) {
       distanceM = pts[pts.length - 1].cumDistM - pts[0].cumDistM;
@@ -150,16 +159,27 @@ export function computeDeviceStats(tracks: DeviceTrack[], sel: HistorySelection)
         : durationSec > 0
           ? distanceM / durationSec
           : 0;
+    const boatClass = parseBoatClass(track.deviceId);
+    const splits = speeds
+      .map((s) => splitSecFromMps(s))
+      .filter((v): v is number => v != null);
+    const prognostics = speeds
+      .map((s) => prognosticPercent(s, boatClass))
+      .filter((v): v is number => v != null);
     return {
       deviceId: track.deviceId,
       color: track.color,
-      durationSec: sel.distanceMode
-        ? Math.max(0, (pts[pts.length - 1]?.t ?? sel.t1) - (pts[0]?.t ?? sel.t0)) / 1000
-        : durationSec,
+      durationSec,
       distanceM,
       avgSpeedMps,
       maxSpeedMps: speeds.length ? Math.max(...speeds) : 0,
       avgStrokeRate: spm.length ? spm.reduce((a, b) => a + b, 0) / spm.length : null,
+      avgSplitSec: splits.length ? splits.reduce((a, b) => a + b, 0) / splits.length : null,
+      bestSplitSec: splits.length ? Math.min(...splits) : null,
+      avgPrognosticPct: prognostics.length
+        ? prognostics.reduce((a, b) => a + b, 0) / prognostics.length
+        : null,
+      boatClass,
       pointCount: pts.length,
     };
   });
@@ -189,25 +209,46 @@ export function speedVsTimeSeries(tracks: DeviceTrack[], sel: HistorySelection):
 export function speedVsDistanceSeries(tracks: DeviceTrack[], sel: HistorySelection): ChartSeries[] {
   const filtered = filterTracks(tracks, sel);
   return filtered.map((track) => {
-    const withTime = track.points.filter((p) => p.speed != null);
-    const dist0 = sel.distanceMode ? sel.distStartM : track.points[0]?.cumDistM ?? 0;
-    const t0 = withTime[0]?.t ?? sel.t0;
+    const pts = track.points.filter((p) => p.speed != null);
+    if (pts.length < 2) {
+      return { id: track.deviceId, label: track.deviceId, color: track.color, points: [] };
+    }
+    const dist0 = sel.distanceMode ? sel.distStartM : pts[0].cumDistM;
+    const t0 = pts[0].t;
     const smoothed = smoothChartSeriesByTime(
-      withTime.map((p) => ({ x: (p.t - t0) / 1000, y: p.speed! * 3.6 })),
+      pts.map((p) => ({ x: (p.t - t0) / 1000, y: p.speed! * 3.6 })),
       t0,
       (y) => y / 3.6,
       (v) => v * 3.6,
     );
+    const points = smoothed.map((sp) => {
+      const tMs = t0 + sp.x * 1000;
+      const distM = interpolateDistanceAtTime(pts, tMs) - dist0;
+      return { x: distM, y: sp.y };
+    });
     return {
       id: track.deviceId,
       label: track.deviceId,
       color: track.color,
-      points: withTime.map((p, i) => ({
-        x: p.cumDistM - dist0,
-        y: smoothed[i]?.y ?? p.speed! * 3.6,
-      })),
+      points,
     };
   });
+}
+
+function interpolateDistanceAtTime(pts: EnrichedPoint[], tMs: number): number {
+  if (!pts.length) return 0;
+  if (tMs <= pts[0].t) return pts[0].cumDistM;
+  if (tMs >= pts[pts.length - 1].t) return pts[pts.length - 1].cumDistM;
+  for (let i = 1; i < pts.length; i++) {
+    const prev = pts[i - 1];
+    const next = pts[i];
+    if (tMs > next.t) continue;
+    const span = next.t - prev.t;
+    if (span <= 0) return next.cumDistM;
+    const f = (tMs - prev.t) / span;
+    return prev.cumDistM + f * (next.cumDistM - prev.cumDistM);
+  }
+  return pts[pts.length - 1].cumDistM;
 }
 
 export function strokeRateSeries(tracks: DeviceTrack[], sel: HistorySelection): ChartSeries[] {
@@ -242,4 +283,16 @@ export function formatDuration(sec: number): string {
 
 export function formatSpeedKmh(mps: number): string {
   return `${(mps * 3.6).toFixed(1)} km/h`;
+}
+
+export function formatSplitSec(sec: number | null): string {
+  if (sec == null || !Number.isFinite(sec)) return '—';
+  const m = Math.floor(sec / 60);
+  const s = (sec % 60).toFixed(1);
+  return `${m}:${s.padStart(4, '0')}`;
+}
+
+export function formatPrognosticPct(pct: number | null): string {
+  if (pct == null || !Number.isFinite(pct)) return '—';
+  return `${pct.toFixed(1)}%`;
 }

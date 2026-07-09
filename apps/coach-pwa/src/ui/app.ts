@@ -599,7 +599,11 @@ export function mountApp(root: HTMLElement): void {
 
     if (tab === 'history') {
       const trackRoot = root.querySelector('[data-history-track-root]') as HTMLElement | null;
-      if (trackRoot) ensureHistoryPanel().mountTrack(trackRoot);
+      if (trackRoot) {
+        const panel = ensureHistoryPanel();
+        panel.mountTrack(trackRoot);
+        panel.onHistoryTabShown();
+      }
     }
 
     if (tab === 'settings') {

@@ -93,6 +93,14 @@ export default defineConfig(({ mode }) => {
         nativeVersion?.version ?? '0.1.0',
       ),
     },
+    resolve: {
+      alias: {
+        '@rowing/rowing-pace': path.resolve(
+          __dirname,
+          '../../packages/rowing-pace/index.js',
+        ),
+      },
+    },
     server: {
       port: 5185,
       proxy: {

@@ -59,11 +59,16 @@ export function drawMultiSeriesChart(
   ctx.font = '600 13px system-ui, sans-serif';
   ctx.fillText(opts.title, padL, 20);
 
-  const allPts = series.flatMap((s) => s.points);
+  const plotted = series.filter((s) => s.points.length >= 2);
+  const allPts = plotted.flatMap((s) => s.points);
   if (allPts.length < 2) {
     ctx.fillStyle = '#64748b';
     ctx.font = '12px system-ui';
-    ctx.fillText('No data in selection', padL, padT + 24);
+    ctx.fillText(
+      series.length > 1 ? 'No data in selection for selected devices' : 'No data in selection',
+      padL,
+      padT + 24,
+    );
     return;
   }
 
@@ -111,7 +116,7 @@ export function drawMultiSeriesChart(
   }
 
   // Series lines + area
-  for (const s of series) {
+  for (const s of plotted) {
     if (s.points.length < 2) continue;
     ctx.beginPath();
     s.points.forEach((p, i) => {
@@ -138,7 +143,7 @@ export function drawMultiSeriesChart(
   const ly = h - 6;
   ctx.font = '11px system-ui';
   ctx.textAlign = 'left';
-  for (const s of series) {
+  for (const s of plotted) {
     if (!s.points.length) continue;
     ctx.fillStyle = s.color;
     ctx.fillRect(lx, ly - 9, 10, 10);
