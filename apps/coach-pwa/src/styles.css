@@ -355,10 +355,19 @@
 }
 
 .history-loading {
-  display: flex;
+  display: none;
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.85rem 0;
+}
+
+.history-loading--active,
+.history-loading[aria-busy='true'] {
+  display: flex;
+}
+
+.history-loading[hidden] {
+  display: none !important;
 }
 
 .history-loading__bar {

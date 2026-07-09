@@ -497,6 +497,7 @@ export function mountApp(root: HTMLElement): void {
         () => loadSettings(),
         (msg, err) => setStatus(msg, err),
         () => {
+          historyPanel?.prepareForRender('history');
           tab = 'history';
           render();
         },

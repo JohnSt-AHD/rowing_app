@@ -202,7 +202,11 @@ export class HistoryPanel {
       setupStatus.textContent = this.loading ? this.loadingMessage : '';
       setupStatus.classList.toggle('history-load-status--active', this.loading);
     }
-    if (overlay) overlay.hidden = !this.loading;
+    if (overlay) {
+      overlay.hidden = !this.loading;
+      overlay.classList.toggle('history-loading--active', this.loading);
+      overlay.setAttribute('aria-busy', this.loading ? 'true' : 'false');
+    }
     if (overlayText && this.loading) overlayText.textContent = this.loadingMessage;
   }
 
@@ -248,6 +252,14 @@ export class HistoryPanel {
     this.q('[data-history-stats]')?.toggleAttribute('hidden', !hasTracks);
     this.q('.history-map-wrap')?.toggleAttribute('hidden', !hasTracks);
     this.q('.history-charts')?.toggleAttribute('hidden', !hasTracks);
+    if (hasTracks && !this.loading) {
+      const overlay = this.q<HTMLElement>('[data-history-loading]');
+      if (overlay) {
+        overlay.hidden = true;
+        overlay.classList.remove('history-loading--active');
+        overlay.setAttribute('aria-busy', 'false');
+      }
+    }
   }
 
   private selectedDeviceIds(): string[] {
@@ -398,6 +410,7 @@ export class HistoryPanel {
       this.onStatus(
         `Loaded ${this.tracks.length} device(s) · ${this.tracks.reduce((n, t) => n + t.points.length, 0)} points`,
       );
+      this.setLoading(false);
       this.onTracksLoaded?.();
       if (this.trackHost) this.scheduleRefreshViews();
     } catch (e) {
