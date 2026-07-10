@@ -852,7 +852,7 @@ async function filterSamplesInsideSuppressZones(orgId, scopedDevice, samples) {
   }
   if (!geofences.length) return { samples, dropped: 0 };
 
-  const suppressZones = geofences.filter((g) => g && g.suppressRecording !== false);
+  const suppressZones = geofences.filter((g) => g && g.suppressRecording === true);
   if (!suppressZones.length) return { samples, dropped: 0 };
 
   let last = lastGpsByDevice.get(scopedDevice) || null;

@@ -194,10 +194,45 @@ async function initSchema() {
   `;
   await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS shape_type TEXT NOT NULL DEFAULT 'circle'`;
   await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS polygon_coords JSONB`;
-  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS suppress_recording BOOLEAN NOT NULL DEFAULT true`;
-  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS auto_stop_on_enter BOOLEAN NOT NULL DEFAULT true`;
-  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS auto_start_on_exit BOOLEAN NOT NULL DEFAULT true`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS suppress_recording BOOLEAN NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS auto_stop_on_enter BOOLEAN NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS auto_start_on_exit BOOLEAN NOT NULL DEFAULT false`;
   await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS session_dwell_sec DOUBLE PRECISION NOT NULL DEFAULT 45`;
+  await sql`ALTER TABLE rnz_geofences ALTER COLUMN suppress_recording SET DEFAULT false`;
+  await sql`ALTER TABLE rnz_geofences ALTER COLUMN auto_stop_on_enter SET DEFAULT false`;
+  await sql`ALTER TABLE rnz_geofences ALTER COLUMN auto_start_on_exit SET DEFAULT false`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_schema_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  const geofenceSessionMig = await sql`
+    SELECT 1 AS ok FROM rnz_schema_migrations WHERE id = 'geofence_session_control_rnz_v1' LIMIT 1
+  `;
+  if (!geofenceSessionMig.rows.length) {
+    // Restore prior behaviour for all zones, then enable session control only on RNZ parks.
+    await sql`
+      UPDATE rnz_geofences
+      SET
+        suppress_recording = false,
+        auto_stop_on_enter = false,
+        auto_start_on_exit = false
+    `;
+    await sql`
+      UPDATE rnz_geofences
+      SET
+        suppress_recording = true,
+        auto_stop_on_enter = true,
+        auto_start_on_exit = true
+      WHERE lower(trim(name)) IN ('geofence', 'rowing nz')
+    `;
+    await sql`
+      INSERT INTO rnz_schema_migrations (id) VALUES ('geofence_session_control_rnz_v1')
+      ON CONFLICT (id) DO NOTHING
+    `;
+  }
   await sql`
     CREATE TABLE IF NOT EXISTS rnz_regatta_messages (
       id SERIAL PRIMARY KEY,
@@ -1390,9 +1425,9 @@ async function createGeofence(orgId, body) {
   const economyGps = economyInterval;
   const economyUpload = economyInterval;
   const disableCapsize = body.disableCapsize !== false;
-  const suppressRecording = boolFromInput(body, 'suppressRecording', 'suppress_recording', true);
-  const autoStopOnEnter = boolFromInput(body, 'autoStopOnEnter', 'auto_stop_on_enter', true);
-  const autoStartOnExit = boolFromInput(body, 'autoStartOnExit', 'auto_start_on_exit', true);
+  const suppressRecording = boolFromInput(body, 'suppressRecording', 'suppress_recording', false);
+  const autoStopOnEnter = boolFromInput(body, 'autoStopOnEnter', 'auto_stop_on_enter', false);
+  const autoStartOnExit = boolFromInput(body, 'autoStartOnExit', 'auto_start_on_exit', false);
   const sessionDwellSec = sessionDwellSecFromInput(body);
   const enabled = body.enabled !== false;
   const shapeType =

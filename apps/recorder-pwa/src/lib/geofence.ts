@@ -127,9 +127,9 @@ export function findBoatParkAt(
 }
 
 function boolFlag(raw: Record<string, unknown>, camel: string, snake: string): boolean {
-  if (Object.prototype.hasOwnProperty.call(raw, camel)) return raw[camel] !== false;
-  if (Object.prototype.hasOwnProperty.call(raw, snake)) return raw[snake] !== false;
-  return true;
+  if (Object.prototype.hasOwnProperty.call(raw, camel)) return raw[camel] === true;
+  if (Object.prototype.hasOwnProperty.call(raw, snake)) return raw[snake] === true;
+  return false;
 }
 
 function sessionDwellFromRaw(raw: Record<string, unknown>): number {

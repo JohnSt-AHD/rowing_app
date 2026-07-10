@@ -161,11 +161,11 @@ function normalizeGeofence(row) {
     disableCapsize: row.disable_capsize !== false && row.disableCapsize !== false,
     /** Drop GPS/telemetry while inside (server + phone). */
     suppressRecording:
-      row.suppress_recording !== false && row.suppressRecording !== false,
+      row.suppress_recording === true || row.suppressRecording === true,
     /** End session after dwell inside zone. */
-    autoStopOnEnter: row.auto_stop_on_enter !== false && row.autoStopOnEnter !== false,
+    autoStopOnEnter: row.auto_stop_on_enter === true || row.autoStopOnEnter === true,
     /** Start session after dwell outside zone (armed standby). */
-    autoStartOnExit: row.auto_start_on_exit !== false && row.autoStartOnExit !== false,
+    autoStartOnExit: row.auto_start_on_exit === true || row.autoStartOnExit === true,
     sessionDwellSec,
     createdAt: row.created_at ?? row.createdAt ?? null,
     updatedAt: row.updated_at ?? row.updatedAt ?? null,
@@ -178,13 +178,13 @@ function sessionDwellSecFromInput(input) {
   return 45;
 }
 
-function boolFromInput(input, camel, snake, defaultTrue = true) {
+function boolFromInput(input, camel, snake, defaultTrue = false) {
   if (input == null) return defaultTrue;
   if (Object.prototype.hasOwnProperty.call(input, camel)) {
-    return input[camel] !== false;
+    return input[camel] === true;
   }
   if (Object.prototype.hasOwnProperty.call(input, snake)) {
-    return input[snake] !== false;
+    return input[snake] === true;
   }
   return defaultTrue;
 }
@@ -194,7 +194,7 @@ function findSuppressRecordingAt(lat, lon, geofences) {
   if (!Array.isArray(geofences)) return null;
   for (const g of geofences) {
     if (!pointInGeofence(g, lat, lon)) continue;
-    if (g.suppressRecording === false) continue;
+    if (g.suppressRecording !== true) continue;
     return g;
   }
   return null;

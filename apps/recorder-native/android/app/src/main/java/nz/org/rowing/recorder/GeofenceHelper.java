@@ -75,15 +75,15 @@ final class GeofenceHelper {
     }
 
     static boolean suppressRecording(JSONObject g) {
-        if (g == null) return true;
-        if (g.has("suppressRecording")) return g.optBoolean("suppressRecording", true);
-        return g.optBoolean("suppress_recording", true);
+        if (g == null) return false;
+        if (g.has("suppressRecording")) return g.optBoolean("suppressRecording", false);
+        return g.optBoolean("suppress_recording", false);
     }
 
     static boolean autoStopOnEnter(JSONObject g) {
-        if (g == null) return true;
-        if (g.has("autoStopOnEnter")) return g.optBoolean("autoStopOnEnter", true);
-        return g.optBoolean("auto_stop_on_enter", true);
+        if (g == null) return false;
+        if (g.has("autoStopOnEnter")) return g.optBoolean("autoStopOnEnter", false);
+        return g.optBoolean("auto_stop_on_enter", false);
     }
 
     private static boolean pointInCircle(

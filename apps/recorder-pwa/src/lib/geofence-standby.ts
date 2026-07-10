@@ -55,7 +55,7 @@ export async function startGeofenceStandby(
 
   await refreshZones(true);
   const autoStartZones = () =>
-    geofences.filter((g) => g.enabled && g.autoStartOnExit !== false);
+    geofences.filter((g) => g.enabled && g.autoStartOnExit === true);
 
   if (!autoStartZones().length) {
     hooks.onLog('No geofences with auto-start — standby will wait for zones.');
@@ -75,7 +75,7 @@ export async function startGeofenceStandby(
   const onFix = (lat: number, lon: number) => {
     if (stopped || startTriggered) return;
     const match = findBoatParkAt(lat, lon, geofences);
-    const blocking = match != null && match.autoStartOnExit !== false;
+    const blocking = match != null && match.autoStartOnExit === true;
     inside = blocking;
     zoneName = blocking ? match!.name : null;
 
