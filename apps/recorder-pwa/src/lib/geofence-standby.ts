@@ -26,6 +26,7 @@ type StandbyHooks = {
 };
 
 const DEFAULT_WATCH_MS = 15000;
+const ZONE_FETCH_TIMEOUT_MS = 8000;
 
 export async function startGeofenceStandby(
   settings: RecorderSettings,
@@ -50,21 +51,41 @@ export async function startGeofenceStandby(
   };
 
   const refreshZones = async (force = false) => {
-    geofences = await fetchGeofences(settings.ingestUrl, settings.ingestToken, force);
+    try {
+      geofences = await fetchGeofences(
+        settings.ingestUrl,
+        settings.ingestToken,
+        force,
+        ZONE_FETCH_TIMEOUT_MS,
+      );
+    } catch (e) {
+      hooks.onLog(
+        `Geofence fetch failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   };
 
-  await refreshZones(true);
+  // Arm GPS immediately — do not block on zone fetch (can hang if API is slow).
+  emit('Armed — loading geofences…');
+  void refreshZones(true).then(() => {
+    if (stopped) return;
+    const autoStartZones = () =>
+      geofences.filter((g) => g.enabled && g.autoStartOnExit === true);
+    if (!autoStartZones().length) {
+      hooks.onLog(
+        'No auto-start geofences loaded yet (check ingest token / network). GPS watch is on.',
+      );
+      emit('Armed — waiting for GPS (no auto-start zones yet)');
+    } else {
+      hooks.onLog(
+        `Geofence standby armed — auto-start after leaving park (${autoStartZones().length} zone(s)).`,
+      );
+      emit('Armed — waiting for GPS…');
+    }
+  });
+
   const autoStartZones = () =>
     geofences.filter((g) => g.enabled && g.autoStartOnExit === true);
-
-  if (!autoStartZones().length) {
-    hooks.onLog('No geofences with auto-start — standby will wait for zones.');
-  } else {
-    hooks.onLog(
-      `Geofence standby armed — auto-start after leaving park (${autoStartZones().length} zone(s)).`,
-    );
-  }
-  emit(message);
 
   const dwellMsFor = () => {
     const zones = autoStartZones();
@@ -74,6 +95,10 @@ export async function startGeofenceStandby(
 
   const onFix = (lat: number, lon: number) => {
     if (stopped || startTriggered) return;
+    if (!autoStartZones().length) {
+      emit('Armed — GPS ok, waiting for auto-start zones…');
+      return;
+    }
     const match = findBoatParkAt(lat, lon, geofences);
     const blocking = match != null && match.autoStartOnExit === true;
     inside = blocking;
@@ -106,17 +131,17 @@ export async function startGeofenceStandby(
     });
   };
 
-  const watchMs = Math.max(
-    DEFAULT_WATCH_MS,
-    Math.min(60000, (autoStartZones()[0]?.economyIntervalSec ?? 30) * 1000),
-  );
+  const watchMs = Math.max(DEFAULT_WATCH_MS, 15000);
 
   const gps = startGpsWatcher(
     (r) => {
       if (Number.isFinite(r.lat) && Number.isFinite(r.lon)) onFix(r.lat, r.lon);
     },
     watchMs,
-    (m) => hooks.onLog(`Standby GPS: ${m}`),
+    (m) => {
+      hooks.onLog(`Standby GPS: ${m}`);
+      emit(`Armed — GPS: ${m}`);
+    },
   );
 
   const refreshTimer = setInterval(() => {

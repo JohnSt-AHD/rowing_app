@@ -111,7 +111,16 @@ export function mountApp(root: HTMLElement): void {
       updateMap();
       setStatus(`Updated · ${devices.length} device(s)`, false);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e), true);
+      const msg = e instanceof Error ? e.message : String(e);
+      const network =
+        /failed to fetch|networkerror|load failed|aborted/i.test(msg) ||
+        (e instanceof TypeError && /fetch/i.test(msg));
+      setStatus(
+        network
+          ? 'Failed to fetch — check API URL, ingest token, and Vercel (cold start / timeout)'
+          : msg,
+        true,
+      );
     }
   }
 

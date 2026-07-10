@@ -289,7 +289,8 @@ async function initSchema() {
 
   if (!globalThis.__rnzRegistryGpsBackfill) {
     globalThis.__rnzRegistryGpsBackfill = true;
-    await sql`
+    // Do not block API cold starts — this scan can be large and exceed Vercel maxDuration.
+    void sql`
       UPDATE rnz_devices d
       SET last_gps_t_ms = s.t_ms,
           last_lat = s.latitude,
@@ -304,7 +305,10 @@ async function initSchema() {
       ) s
       WHERE d.unique_id = s.unique_id
         AND (d.last_gps_t_ms IS NULL OR d.last_gps_t_ms < s.t_ms)
-    `;
+    `.catch((err) => {
+      console.error('[db] GPS registry backfill failed:', err);
+      globalThis.__rnzRegistryGpsBackfill = false;
+    });
   }
 
   schemaReady = true;

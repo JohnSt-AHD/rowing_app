@@ -612,7 +612,15 @@ export function mountApp(root: HTMLElement): void {
   }
 
   async function armStandby(): Promise<void> {
-    if (recording || standby) return;
+    if (recording) {
+      pushLog('Stop the session before arming geofence standby.');
+      return;
+    }
+    if (standby) {
+      pushLog('Geofence standby is already armed.');
+      render();
+      return;
+    }
     const s = loadSettings();
     if (s.geofenceSessionControl === false) {
       pushLog('Enable geofence session control in Settings first.');
@@ -622,6 +630,11 @@ export function mountApp(root: HTMLElement): void {
       pushLog('Set Device ID in Settings before arming standby.');
       return;
     }
+    if (!s.enableGps) {
+      pushLog('Enable GPS in Settings — standby needs location.');
+      return;
+    }
+    pushLog('Arming geofence standby…');
     if (IS_NATIVE) {
       try {
         const p = await requestNativePermissions();
@@ -635,21 +648,36 @@ export function mountApp(root: HTMLElement): void {
         return;
       }
     }
-    standby = await startGeofenceStandby(s, {
-      onLog: (msg) => pushLog(msg, false),
-      onStatus: (st) => {
-        standbyStatus = st;
-        if (!recording && view === 'record') {
-          const hint = root.querySelector('.session-standby-hint');
-          if (hint) hint.textContent = st.message;
-        }
-      },
-      onAutoStart: async () => {
-        await stopStandby();
-        await beginRecording({ skipPermissions: true });
-      },
-    });
-    render();
+    try {
+      standby = await startGeofenceStandby(s, {
+        onLog: (msg) => pushLog(msg),
+        onStatus: (st) => {
+          standbyStatus = st;
+          if (!recording && view === 'record') {
+            const hint = root.querySelector('.session-standby-hint');
+            if (hint) hint.textContent = st.message;
+            const btn = root.querySelector('[data-action="toggle-standby"]');
+            if (btn && standby) {
+              btn.textContent = 'Disarm geofence standby';
+              btn.classList.add('hub-btn--danger');
+              btn.classList.remove('hub-btn--ghost');
+            }
+          }
+        },
+        onAutoStart: async () => {
+          await stopStandby();
+          await beginRecording({ skipPermissions: true });
+        },
+      });
+      standbyStatus = standby.getStatus();
+      pushLog(standbyStatus.message || 'Geofence standby armed.');
+      render();
+    } catch (e) {
+      standby = null;
+      standbyStatus = null;
+      pushLog(`Could not arm standby: ${e instanceof Error ? e.message : String(e)}`);
+      render();
+    }
   }
 
   async function beginRecording(opts?: {

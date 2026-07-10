@@ -39,6 +39,9 @@ export async function fetchDevices(settings: CoachSettings): Promise<FleetDevice
   const url = `${apiBase(settings)}/api/devices?windowSec=60&onlineSec=120`;
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Devices 401 — set ingest token in Settings');
+    }
     throw new Error(`Devices ${res.status}`);
   }
   const data = (await res.json()) as { devices?: FleetDevice[] };
@@ -52,6 +55,9 @@ export async function fetchMapPositions(settings: CoachSettings): Promise<MapPos
   const url = `${apiBase(settings)}/api/map-positions?onlineSec=120&staleSec=3600&predictMode=rowing`;
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Map 401 — set ingest token in Settings');
+    }
     throw new Error(`Map ${res.status}`);
   }
   const data = (await res.json()) as { positions?: MapPosition[] };
