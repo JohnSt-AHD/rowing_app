@@ -160,9 +160,11 @@
         </div>
         <div class="dashboard-section__body" id="section-body-geofences" hidden>
           <p class="geofence-intro">
-            Define zones where phones switch to <strong>economy mode</strong>: slower GPS and uploads
-            <strong>capsize detection off</strong>. Recorders fetch these zones automatically when a
-            session starts.
+            Define boat-park zones for phones: <strong>economy mode</strong> (slower GPS),
+            optional <strong>capsize off</strong>, and session control —
+            <strong>suppress recording inside</strong>, <strong>auto-stop on enter</strong>,
+            and <strong>auto-start on exit</strong> (arm standby on the CrewSight app).
+            Recorders fetch these zones automatically.
           </p>
           <div id="geofenceList" class="geofence-list" aria-live="polite"></div>
           <div class="geofence-form__actions">
@@ -222,9 +224,29 @@
                 Economy interval (s) in zone
                 <input type="number" id="geofenceIntervalSec" min="1" step="1" value="30" />
               </label>
+              <label class="ahd-field">
+                Session dwell (s)
+                <input type="number" id="geofenceDwellSec" min="5" step="5" value="45" title="Seconds inside/outside before auto start or stop" />
+              </label>
+            </div>
+            <div class="ahd-inline-fields geofence-form__economy">
               <label class="ahd-field geofence-form__check">
                 <input type="checkbox" id="geofenceDisableCapsize" checked />
                 Disable capsize in zone
+              </label>
+              <label class="ahd-field geofence-form__check">
+                <input type="checkbox" id="geofenceSuppressRecording" checked />
+                Suppress recording in zone
+              </label>
+            </div>
+            <div class="ahd-inline-fields geofence-form__economy">
+              <label class="ahd-field geofence-form__check">
+                <input type="checkbox" id="geofenceAutoStop" checked />
+                Auto-stop session on enter
+              </label>
+              <label class="ahd-field geofence-form__check">
+                <input type="checkbox" id="geofenceAutoStart" checked />
+                Auto-start on exit (standby)
               </label>
             </div>
             <div class="geofence-form__actions geofence-form__actions--submit">

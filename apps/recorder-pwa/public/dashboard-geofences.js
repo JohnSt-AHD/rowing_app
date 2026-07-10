@@ -66,7 +66,7 @@
       g.shapeType === 'polygon' && g.polygonCoords?.length >= 3
         ? `Polygon · ${g.polygonCoords.length} points`
         : `${Math.round(g.radiusM)} m radius`;
-    return `<strong>${esc(g.name)}</strong><br>Geofence zone · ${shape}<br>Every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'}`;
+    return `<strong>${esc(g.name)}</strong><br>Geofence zone · ${shape}<br>Every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording === false ? 'on' : 'paused'} · auto ${g.autoStopOnEnter === false ? 'stop off' : 'stop'} / ${g.autoStartOnExit === false ? 'start off' : 'start'}`;
   }
 
   function drawGeofences() {
@@ -347,7 +347,7 @@
         <div class="geofence-item__main">
           <strong>${esc(g.name)}</strong>
           <span class="geofence-item__meta">${esc(shapeSummary(g))}</span>
-          <span class="geofence-item__meta">Economy: every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'}</span>
+          <span class="geofence-item__meta">Economy: every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording === false ? 'on' : 'paused'} · dwell ${g.sessionDwellSec ?? 45}s · auto-stop ${g.autoStopOnEnter === false ? 'off' : 'on'} · auto-start ${g.autoStartOnExit === false ? 'off' : 'on'}</span>
         </div>
         <button type="button" class="hub-btn hub-btn--danger geofence-delete-btn" data-id="${g.id}">Delete</button>
       </div>`,
@@ -378,7 +378,11 @@
     const name = $('#geofenceName')?.value?.trim();
     const shapeType = currentShapeType();
     const economyIntervalSec = Number($('#geofenceIntervalSec')?.value) || 30;
+    const sessionDwellSec = Number($('#geofenceDwellSec')?.value) || 45;
     const disableCapsize = $('#geofenceDisableCapsize')?.checked !== false;
+    const suppressRecording = $('#geofenceSuppressRecording')?.checked !== false;
+    const autoStopOnEnter = $('#geofenceAutoStop')?.checked !== false;
+    const autoStartOnExit = $('#geofenceAutoStart')?.checked !== false;
 
     if (!name) {
       setStatus('Name is required.', true);
@@ -390,7 +394,11 @@
       kind: 'boat_park',
       shapeType,
       economyIntervalSec,
+      sessionDwellSec,
       disableCapsize,
+      suppressRecording,
+      autoStopOnEnter,
+      autoStartOnExit,
     };
 
     if (shapeType === 'polygon') {
@@ -427,7 +435,11 @@
     }
     $('#geofenceForm')?.reset();
     if ($('#geofenceIntervalSec')) $('#geofenceIntervalSec').value = '30';
+    if ($('#geofenceDwellSec')) $('#geofenceDwellSec').value = '45';
     if ($('#geofenceDisableCapsize')) $('#geofenceDisableCapsize').checked = true;
+    if ($('#geofenceSuppressRecording')) $('#geofenceSuppressRecording').checked = true;
+    if ($('#geofenceAutoStop')) $('#geofenceAutoStop').checked = true;
+    if ($('#geofenceAutoStart')) $('#geofenceAutoStart').checked = true;
     if ($('#geofenceShapeType')) $('#geofenceShapeType').value = 'circle';
     clearPolygonDraft();
     updateShapeFields();

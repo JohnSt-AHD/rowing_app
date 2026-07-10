@@ -1,4 +1,5 @@
 const store = require('./lib/ingest-store');
+const { requireOrg } = require('./lib/require-org');
 
 const DELETE_ALL_CONFIRM = 'DELETE ALL RNZ DATA';
 
@@ -13,15 +14,15 @@ module.exports = async function handler(req, res) {
     return res.status(204).end();
   }
 
-  if (!store.checkAuth(req)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
+  const org = await requireOrg(req, res);
+  if (!org) return;
 
   if (req.method === 'GET') {
     if (req.query?.storage === 'stats') {
-      const stats = await store.getStorageStats();
+      const stats = await store.getStorageStats(org.id);
       return res.status(200).json({
         ok: true,
+        org: org.slug,
         persisted: store.hasDb(),
         stats,
         security: store.getDataSecurityInfo(),
@@ -29,9 +30,10 @@ module.exports = async function handler(req, res) {
     }
 
     if (req.query?.list === 'devices') {
-      const devices = await store.listHistoryDevices();
+      const devices = await store.listHistoryDevices(org.id);
       return res.status(200).json({
         ok: true,
+        org: org.slug,
         persisted: store.hasDb(),
         devices,
       });
@@ -39,7 +41,7 @@ module.exports = async function handler(req, res) {
 
     if (req.query?.list === 'sessions') {
       const uniqueId = req.query?.uniqueId || null;
-      const sessions = await store.listSessionsHistory(uniqueId);
+      const sessions = await store.listSessionsHistory(org.id, uniqueId);
       return res.status(200).json({
         ok: true,
         persisted: store.hasDb(),
@@ -58,7 +60,7 @@ module.exports = async function handler(req, res) {
       const sessionId = req.query?.sessionId;
       let payload = null;
       if (sessionId) {
-        payload = await store.getDashboardHistoryBySession(String(sessionId));
+        payload = await store.getDashboardHistoryBySession(org.id, String(sessionId));
       } else {
         const from = req.query?.from;
         const to = req.query?.to;
@@ -70,6 +72,7 @@ module.exports = async function handler(req, res) {
           });
         }
         payload = await store.getDashboardHistory(
+          org.id,
           String(uniqueId),
           String(from),
           String(to),
@@ -101,7 +104,13 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    const positions = await store.getRouteHistory(deviceId, uniqueId, from, to);
+    const positions = await store.getRouteHistory(
+      org.id,
+      deviceId,
+      uniqueId,
+      from,
+      to,
+    );
     return res.status(200).json(positions);
   }
 
@@ -143,7 +152,7 @@ module.exports = async function handler(req, res) {
       if (!sessionId) {
         return res.status(400).json({ ok: false, error: 'sessionId required' });
       }
-      const result = await store.deleteStoredSession(String(sessionId));
+      const result = await store.deleteStoredSession(org.id, String(sessionId));
       return res.status(200).json({ ok: true, action, result });
     }
 
@@ -152,7 +161,7 @@ module.exports = async function handler(req, res) {
       if (!uniqueId) {
         return res.status(400).json({ ok: false, error: 'uniqueId required' });
       }
-      const result = await store.deleteStoredDevice(String(uniqueId));
+      const result = await store.deleteStoredDevice(org.id, String(uniqueId));
       return res.status(200).json({ ok: true, action, result });
     }
 
@@ -167,6 +176,7 @@ module.exports = async function handler(req, res) {
         });
       }
       const result = await store.deleteStoredRange(
+        org.id,
         String(uniqueId),
         String(from),
         String(to),
@@ -181,7 +191,7 @@ module.exports = async function handler(req, res) {
           error: `confirm must be exactly: ${DELETE_ALL_CONFIRM}`,
         });
       }
-      const result = await store.deleteAllStoredData();
+      const result = await store.deleteAllStoredData(org.id);
       return res.status(200).json({ ok: true, action, result });
     }
 

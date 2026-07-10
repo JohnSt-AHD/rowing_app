@@ -57,6 +57,7 @@ export type NativeEconomyMode = {
   gpsIntervalMs: number;
   uploadIntervalMs: number;
   enableCapsize: boolean;
+  suppressRecording?: boolean;
 };
 
 export type NativeRecordingSetupStatus = {
@@ -81,6 +82,10 @@ export type NativeGeofenceZone = {
   enabled: boolean;
   economyIntervalSec: number;
   disableCapsize: boolean;
+  suppressRecording?: boolean;
+  autoStopOnEnter?: boolean;
+  autoStartOnExit?: boolean;
+  sessionDwellSec?: number;
 };
 
 export interface NativeCapsizeMonitorPlugin {

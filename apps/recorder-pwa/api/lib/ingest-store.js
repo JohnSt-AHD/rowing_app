@@ -1,6 +1,11 @@
 const db = require('./db');
 const { analyzeMotionWindow } = require('./motion-analysis');
 const { resolveOrg: resolveOrgFromRequest } = require('./org-auth');
+const { findSuppressRecordingAt } = require('./geofence');
+
+/** Last known GPS per org:device — used to suppress motion/HR while parked. */
+const lastGpsByDevice = globalThis.__rnzLastGpsByDevice ?? new Map();
+globalThis.__rnzLastGpsByDevice = lastGpsByDevice;
 
 function orgSessionKey(orgId, sessionId) {
   return `${orgId}:${sessionId}`;
@@ -742,6 +747,22 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   }
   metrics.droppedSamples += clean.dropped || 0;
 
+  const geofenceFilter = await filterSamplesInsideSuppressZones(
+    orgId,
+    scopedDevice,
+    clean.samples,
+  );
+  clean.samples = geofenceFilter.samples;
+  const geofenceDropped = geofenceFilter.dropped || 0;
+  if (geofenceDropped) metrics.droppedSamples += geofenceDropped;
+  if (!clean.samples.length) {
+    return {
+      received: 0,
+      dropped: (clean.dropped || 0) + geofenceDropped,
+      suppressedInGeofence: geofenceDropped,
+    };
+  }
+
   const key = orgSessionKey(orgId, sessionId);
   let row = sessions.get(key);
   if (!row) {
@@ -791,6 +812,7 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   const result = {
     received: clean.samples.length,
     dropped: clean.dropped || undefined,
+    suppressedInGeofence: geofenceDropped || undefined,
     total: row.samples.length,
     persisted,
     persistError,
@@ -813,6 +835,52 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
  * @param {number} orgId
  * @param {string} sessionId
  */
+/**
+ * Drop samples while the device is inside a suppress-recording boat-park zone.
+ * GPS samples update last-known position; motion/HR without GPS use that position.
+ */
+async function filterSamplesInsideSuppressZones(orgId, scopedDevice, samples) {
+  if (!Array.isArray(samples) || !samples.length) {
+    return { samples: [], dropped: 0 };
+  }
+  let geofences = [];
+  try {
+    if (db.hasDb()) geofences = await db.listGeofences(orgId);
+  } catch (err) {
+    console.error('[ingest-store] geofence list failed:', err);
+    return { samples, dropped: 0 };
+  }
+  if (!geofences.length) return { samples, dropped: 0 };
+
+  const suppressZones = geofences.filter((g) => g && g.suppressRecording !== false);
+  if (!suppressZones.length) return { samples, dropped: 0 };
+
+  let last = lastGpsByDevice.get(scopedDevice) || null;
+  const kept = [];
+  let dropped = 0;
+
+  for (const sample of samples) {
+    const fix = gpsFromSample(sample);
+    if (fix) {
+      last = { lat: fix.lat, lon: fix.lon, t: fix.t };
+      lastGpsByDevice.set(scopedDevice, last);
+    }
+    const lat = fix?.lat ?? last?.lat;
+    const lon = fix?.lon ?? last?.lon;
+    if (
+      Number.isFinite(lat) &&
+      Number.isFinite(lon) &&
+      findSuppressRecordingAt(lat, lon, suppressZones)
+    ) {
+      dropped++;
+      continue;
+    }
+    kept.push(sample);
+  }
+
+  return { samples: kept, dropped };
+}
+
 async function getSession(orgId, sessionId) {
   if (db.hasDb()) {
     try {

@@ -144,6 +144,7 @@ function normalizeGeofence(row) {
   const polygonCoords =
     shapeType === 'polygon' ? parsePolygonCoords(row.polygon_coords ?? row.polygonCoords) : [];
   const economyIntervalSec = economyIntervalSecFromInput(row);
+  const sessionDwellSec = sessionDwellSecFromInput(row);
   return {
     id: row.id,
     name: row.name,
@@ -158,9 +159,45 @@ function normalizeGeofence(row) {
     economyGpsIntervalSec: economyIntervalSec,
     economyUploadIntervalSec: economyIntervalSec,
     disableCapsize: row.disable_capsize !== false && row.disableCapsize !== false,
+    /** Drop GPS/telemetry while inside (server + phone). */
+    suppressRecording:
+      row.suppress_recording !== false && row.suppressRecording !== false,
+    /** End session after dwell inside zone. */
+    autoStopOnEnter: row.auto_stop_on_enter !== false && row.autoStopOnEnter !== false,
+    /** Start session after dwell outside zone (armed standby). */
+    autoStartOnExit: row.auto_start_on_exit !== false && row.autoStartOnExit !== false,
+    sessionDwellSec,
     createdAt: row.created_at ?? row.createdAt ?? null,
     updatedAt: row.updated_at ?? row.updatedAt ?? null,
   };
+}
+
+function sessionDwellSecFromInput(input) {
+  const v = Number(input?.sessionDwellSec ?? input?.session_dwell_sec);
+  if (Number.isFinite(v) && v >= 5) return Math.min(600, Math.max(5, Math.round(v)));
+  return 45;
+}
+
+function boolFromInput(input, camel, snake, defaultTrue = true) {
+  if (input == null) return defaultTrue;
+  if (Object.prototype.hasOwnProperty.call(input, camel)) {
+    return input[camel] !== false;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, snake)) {
+    return input[snake] !== false;
+  }
+  return defaultTrue;
+}
+
+/** Find a boat-park zone that suppresses recording at this point. */
+function findSuppressRecordingAt(lat, lon, geofences) {
+  if (!Array.isArray(geofences)) return null;
+  for (const g of geofences) {
+    if (!pointInGeofence(g, lat, lon)) continue;
+    if (g.suppressRecording === false) continue;
+    return g;
+  }
+  return null;
 }
 
 module.exports = {
@@ -173,6 +210,9 @@ module.exports = {
   polygonBoundingRadiusM,
   pointInGeofence,
   findBoatParkAt,
+  findSuppressRecordingAt,
   normalizeGeofence,
   economyIntervalSecFromInput,
+  sessionDwellSecFromInput,
+  boolFromInput,
 };

@@ -194,6 +194,10 @@ async function initSchema() {
   `;
   await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS shape_type TEXT NOT NULL DEFAULT 'circle'`;
   await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS polygon_coords JSONB`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS suppress_recording BOOLEAN NOT NULL DEFAULT true`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS auto_stop_on_enter BOOLEAN NOT NULL DEFAULT true`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS auto_start_on_exit BOOLEAN NOT NULL DEFAULT true`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS session_dwell_sec DOUBLE PRECISION NOT NULL DEFAULT 45`;
   await sql`
     CREATE TABLE IF NOT EXISTS rnz_regatta_messages (
       id SERIAL PRIMARY KEY,
@@ -1355,6 +1359,8 @@ const {
   polygonCentroid,
   polygonBoundingRadiusM,
   economyIntervalSecFromInput,
+  sessionDwellSecFromInput,
+  boolFromInput,
 } = require('./geofence');
 
 async function listGeofences(orgId) {
@@ -1364,6 +1370,7 @@ async function listGeofences(orgId) {
   const rows = await sql`
     SELECT id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
            economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
+           suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
            created_at, updated_at
     FROM rnz_geofences
     WHERE org_id = ${orgId}
@@ -1383,6 +1390,10 @@ async function createGeofence(orgId, body) {
   const economyGps = economyInterval;
   const economyUpload = economyInterval;
   const disableCapsize = body.disableCapsize !== false;
+  const suppressRecording = boolFromInput(body, 'suppressRecording', 'suppress_recording', true);
+  const autoStopOnEnter = boolFromInput(body, 'autoStopOnEnter', 'auto_stop_on_enter', true);
+  const autoStartOnExit = boolFromInput(body, 'autoStartOnExit', 'auto_start_on_exit', true);
+  const sessionDwellSec = sessionDwellSecFromInput(body);
   const enabled = body.enabled !== false;
   const shapeType =
     String(body.shapeType ?? 'circle').toLowerCase() === 'polygon' ? 'polygon' : 'circle';
@@ -1419,28 +1430,34 @@ async function createGeofence(orgId, body) {
       ? await sql`
     INSERT INTO rnz_geofences (
       org_id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
-      economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize
+      economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
+      suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec
     )
     VALUES (
       ${orgId}, ${name}, ${kind}, ${shapeType}, ${centerLat}, ${centerLon}, ${radiusM},
       ${JSON.stringify(polygonRing)}::jsonb, ${enabled},
-      ${economyGps}, ${economyUpload}, ${disableCapsize}
+      ${economyGps}, ${economyUpload}, ${disableCapsize},
+      ${suppressRecording}, ${autoStopOnEnter}, ${autoStartOnExit}, ${sessionDwellSec}
     )
     RETURNING id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
               economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
+              suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
               created_at, updated_at
   `
       : await sql`
     INSERT INTO rnz_geofences (
       org_id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
-      economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize
+      economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
+      suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec
     )
     VALUES (
       ${orgId}, ${name}, ${kind}, ${shapeType}, ${centerLat}, ${centerLon}, ${radiusM}, NULL, ${enabled},
-      ${economyGps}, ${economyUpload}, ${disableCapsize}
+      ${economyGps}, ${economyUpload}, ${disableCapsize},
+      ${suppressRecording}, ${autoStopOnEnter}, ${autoStartOnExit}, ${sessionDwellSec}
     )
     RETURNING id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
               economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
+              suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
               created_at, updated_at
   `;
   return normalizeGeofence(rows.rows[0]);
@@ -1464,6 +1481,40 @@ async function updateGeofenceSettings(orgId, id, body = {}) {
       : body.disableCapsize === false
         ? false
         : null;
+  const suppressRecording =
+    body.suppressRecording === true
+      ? true
+      : body.suppressRecording === false
+        ? false
+        : body.suppress_recording === true
+          ? true
+          : body.suppress_recording === false
+            ? false
+            : null;
+  const autoStopOnEnter =
+    body.autoStopOnEnter === true
+      ? true
+      : body.autoStopOnEnter === false
+        ? false
+        : body.auto_stop_on_enter === true
+          ? true
+          : body.auto_stop_on_enter === false
+            ? false
+            : null;
+  const autoStartOnExit =
+    body.autoStartOnExit === true
+      ? true
+      : body.autoStartOnExit === false
+        ? false
+        : body.auto_start_on_exit === true
+          ? true
+          : body.auto_start_on_exit === false
+            ? false
+            : null;
+  const sessionDwellSec =
+    body.sessionDwellSec != null || body.session_dwell_sec != null
+      ? sessionDwellSecFromInput(body)
+      : null;
   const name = body.name != null ? String(body.name).trim() : null;
 
   let centerLat = null;
@@ -1520,10 +1571,15 @@ async function updateGeofenceSettings(orgId, id, body = {}) {
       economy_gps_interval_sec = COALESCE(${economyInterval}, economy_gps_interval_sec),
       economy_upload_interval_sec = COALESCE(${economyInterval}, economy_upload_interval_sec),
       disable_capsize = COALESCE(${disableCapsize}, disable_capsize),
+      suppress_recording = COALESCE(${suppressRecording}, suppress_recording),
+      auto_stop_on_enter = COALESCE(${autoStopOnEnter}, auto_stop_on_enter),
+      auto_start_on_exit = COALESCE(${autoStartOnExit}, auto_start_on_exit),
+      session_dwell_sec = COALESCE(${sessionDwellSec}, session_dwell_sec),
       updated_at = NOW()
     WHERE org_id = ${orgId} AND id = ${n}
     RETURNING id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
               economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
+              suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
               created_at, updated_at
   `;
   if (!rows.rows.length) return null;

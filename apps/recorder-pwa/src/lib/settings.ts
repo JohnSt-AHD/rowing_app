@@ -119,6 +119,7 @@ export function settingsFromForm(form: HTMLFormElement): RecorderSettings {
     enableBackgroundRecording: fd.get('enableBackgroundRecording') === 'on',
     keepScreenOn: fd.get('keepScreenOn') === 'on',
     liveMapMode: fd.get('liveMapMode') === 'on',
+    geofenceSessionControl: fd.get('geofenceSessionControl') === 'on',
   });
   if (IS_NATIVE_APP) settings.enableBackgroundRecording = true;
   return settings;

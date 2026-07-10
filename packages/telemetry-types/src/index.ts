@@ -72,6 +72,11 @@ export type RecorderSettings = {
   keepScreenOn: boolean;
   /** Faster GPS uploads (~2.5 s) for live fleet map; uses more battery/cellular. */
   liveMapMode: boolean;
+  /**
+   * Arm geofence standby: auto-start when leaving boat park, auto-stop when entering.
+   * Best on native app with Always location.
+   */
+  geofenceSessionControl: boolean;
 };
 
 /** Production ingest API (Vercel). Used as default on phones and new installs. */
@@ -93,6 +98,7 @@ export const DEFAULT_SETTINGS: RecorderSettings = {
   enableBackgroundRecording: true,
   keepScreenOn: true,
   liveMapMode: false,
+  geofenceSessionControl: true,
 };
 
 export type SessionMeta = {

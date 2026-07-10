@@ -1,8 +1,9 @@
 const store = require('./lib/ingest-store');
+const { requireOrg } = require('./lib/require-org');
 const { validateMessageBody } = require('./lib/regatta-message');
 
 /**
- * GET /api/messages?deviceId= — active message for recorder (public)
+ * GET /api/messages?deviceId= — active message for recorder (org token required)
  * GET /api/messages — all active messages (dashboard, auth required)
  * POST /api/messages — send message to device (auth required)
  * DELETE /api/messages?deviceId= — clear active message (auth required)
@@ -17,23 +18,24 @@ module.exports = async function handler(req, res) {
 
   if (req.method === 'GET') {
     try {
+      const org = await requireOrg(req, res);
+      if (!org) return;
+
       const deviceId = req.query?.deviceId;
       if (deviceId) {
-        const message = await store.getActiveRegattaMessage(String(deviceId).trim());
+        const message = await store.getActiveRegattaMessage(org.id, String(deviceId).trim());
         return res.status(200).json({
           ok: true,
+          org: org.slug,
           persisted: store.hasDb(),
           message,
         });
       }
 
-      if (!store.checkAuth(req)) {
-        return res.status(401).json({ ok: false, error: 'Unauthorized' });
-      }
-
-      const messages = await store.listActiveRegattaMessages();
+      const messages = await store.listActiveRegattaMessages(org.id);
       return res.status(200).json({
         ok: true,
+        org: org.slug,
         persisted: store.hasDb(),
         messages,
       });
@@ -42,9 +44,8 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  if (!store.checkAuth(req)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
+  const org = await requireOrg(req, res);
+  if (!org) return;
 
   if (req.method === 'POST') {
     try {
@@ -52,6 +53,7 @@ module.exports = async function handler(req, res) {
       const validated = validateMessageBody(body);
       if (validated.allDevices) {
         const messages = await store.broadcastRegattaMessage(
+          org.id,
           validated.text,
           validated.deviceIds,
         );
@@ -68,7 +70,7 @@ module.exports = async function handler(req, res) {
           messages,
         });
       }
-      const message = await store.setRegattaMessage(validated.deviceId, validated.text);
+      const message = await store.setRegattaMessage(org.id, validated.deviceId, validated.text);
       if (!message) {
         return res.status(503).json({
           ok: false,
@@ -87,7 +89,7 @@ module.exports = async function handler(req, res) {
       if (!deviceId) {
         return res.status(400).json({ ok: false, error: 'deviceId required' });
       }
-      const cleared = await store.clearRegattaMessage(deviceId);
+      const cleared = await store.clearRegattaMessage(org.id, deviceId);
       if (!cleared) {
         return res.status(404).json({ ok: false, error: 'No active message for device' });
       }

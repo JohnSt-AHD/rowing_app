@@ -24,6 +24,11 @@ import {
 } from '../lib/native-capsize-monitor';
 import { resolveResumeCandidate } from '../lib/session-resume';
 import { startRecorder, type RecorderController } from '../session/recorder';
+import {
+  startGeofenceStandby,
+  type StandbyController,
+  type StandbyStatus,
+} from '../lib/geofence-standby';
 import { clearPendingOutbox, countPendingOutbox, getSession } from '../session/store';
 import { flushOutbox } from '../upload/sync';
 import { repairOversizedPendingOutbox } from '../session/store';
@@ -65,6 +70,8 @@ export function mountApp(root: HTMLElement): void {
   let capsizeActive = false;
   let backgroundStatus: BackgroundStatus = 'foreground';
   let controller: RecorderController | null = null;
+  let standby: StandbyController | null = null;
+  let standbyStatus: StandbyStatus | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   let sessionStartedAt: number | null = null;
   let hudTickTimer: ReturnType<typeof setInterval> | null = null;
@@ -311,7 +318,11 @@ export function mountApp(root: HTMLElement): void {
       } else if (stats.inBoatPark) {
         zoneEl.setAttribute('data-zone', 'boat_park');
         const zoneName = stats.boatParkName?.trim();
-        if (label) label.textContent = zoneName || 'Geofence zone';
+        if (label) {
+          label.textContent = stats.recordingSuppressed
+            ? `${zoneName || 'Geofence zone'} · paused`
+            : zoneName || 'Geofence zone';
+        }
         if (sub) sub.textContent = '';
       } else {
         zoneEl.setAttribute('data-zone', 'on_water');
@@ -392,7 +403,7 @@ export function mountApp(root: HTMLElement): void {
     let zone = '';
     if (recording && stats?.lastGps) {
       zone = stats.inBoatPark
-        ? stats.boatParkName?.trim() || 'Geofence zone'
+        ? `${stats.boatParkName?.trim() || 'Geofence zone'}${stats.recordingSuppressed ? ' · paused' : ''}`
         : 'On water';
     } else if (recording) {
       zone = 'Locating…';
@@ -494,9 +505,22 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function recordIdleHtml(): string {
+    const s = loadSettings();
+    const armed = Boolean(standby);
+    const standbyLine = armed
+      ? standbyStatus?.message || 'Geofence standby armed'
+      : s.geofenceSessionControl !== false
+        ? 'Geofence standby off — arm to auto-start when leaving the boat park'
+        : 'Geofence session control disabled in Settings';
     return `
       <section class="hub-panel actions actions--idle session-actions-panel">
         <button type="button" class="hub-btn hub-btn--primary hub-btn-lg" data-action="start">Start session</button>
+        ${
+          s.geofenceSessionControl !== false
+            ? `<button type="button" class="hub-btn ${armed ? 'hub-btn--danger' : 'hub-btn--ghost'} hub-btn-lg" data-action="toggle-standby">${armed ? 'Disarm geofence standby' : 'Arm geofence standby'}</button>`
+            : ''
+        }
+        <p class="poll-line session-standby-hint">${esc(standbyLine)}</p>
         <button type="button" class="hub-btn hub-btn--ghost" data-action="clear-session">Clear session</button>
         <button type="button" class="hub-btn" data-nav="settings">Settings</button>
       </section>
@@ -566,6 +590,10 @@ export function mountApp(root: HTMLElement): void {
               <label class="check"><input type="checkbox" name="enableBackgroundRecording" ${s.enableBackgroundRecording !== false ? 'checked' : ''} ${IS_NATIVE ? 'disabled' : ''} /> ${IS_NATIVE ? 'Always on in native app' : 'Allow background (best effort)'}</label>
               <label class="check"><input type="checkbox" name="keepScreenOn" ${s.keepScreenOn !== false ? 'checked' : ''} /> Keep screen on while recording</label>
             </fieldset>
+            <fieldset class="fieldset checks">
+              <legend>Geofence session control</legend>
+              <label class="check"><input type="checkbox" name="geofenceSessionControl" ${s.geofenceSessionControl !== false ? 'checked' : ''} /> Auto start/stop via boat-park geofences <span class="form-hint">(arm standby on Record screen; suppress recording inside park; auto-stop when re-entering)</span></label>
+            </fieldset>
             <button type="submit" class="hub-btn hub-btn--primary">Save settings</button>
             ${IS_NATIVE ? '<button type="button" class="hub-btn" data-action="phone-setup">Phone permissions &amp; battery</button>' : ''}
             <button type="button" class="hub-btn" data-action="clear-session">Clear session</button>
@@ -577,12 +605,60 @@ export function mountApp(root: HTMLElement): void {
     `;
   }
 
+  async function stopStandby(): Promise<void> {
+    standby?.stop();
+    standby = null;
+    standbyStatus = null;
+  }
+
+  async function armStandby(): Promise<void> {
+    if (recording || standby) return;
+    const s = loadSettings();
+    if (s.geofenceSessionControl === false) {
+      pushLog('Enable geofence session control in Settings first.');
+      return;
+    }
+    if (!s.deviceId.trim()) {
+      pushLog('Set Device ID in Settings before arming standby.');
+      return;
+    }
+    if (IS_NATIVE) {
+      try {
+        const p = await requestNativePermissions();
+        if (p.recordingSetup) {
+          for (const line of recordingSetupLogLines(p.recordingSetup)) {
+            pushLog(line);
+          }
+        }
+      } catch (e) {
+        pushLog(`Permissions error: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
+    standby = await startGeofenceStandby(s, {
+      onLog: (msg) => pushLog(msg, false),
+      onStatus: (st) => {
+        standbyStatus = st;
+        if (!recording && view === 'record') {
+          const hint = root.querySelector('.session-standby-hint');
+          if (hint) hint.textContent = st.message;
+        }
+      },
+      onAutoStart: async () => {
+        await stopStandby();
+        await beginRecording({ skipPermissions: true });
+      },
+    });
+    render();
+  }
+
   async function beginRecording(opts?: {
     resume?: SessionMeta;
     skipNativeStart?: boolean;
     skipPermissions?: boolean;
   }): Promise<void> {
     if (recording) return;
+    await stopStandby();
     const s = loadSettings();
     if (IS_NATIVE && !opts?.skipPermissions) {
       try {
@@ -627,6 +703,32 @@ export function mountApp(root: HTMLElement): void {
       },
       {
         onBackgroundPulse: () => void runSync(false),
+        onGeofenceAutoStop: () => {
+          void (async () => {
+            if (!recording) return;
+            pushLog('Auto-stopped — back inside boat-park geofence.');
+            if (syncTimer) clearInterval(syncTimer);
+            stopHudTimer();
+            sessionStartedAt = null;
+            speedAvg.clear();
+            strokeRateAvg.clear();
+            void exitStageFullscreen();
+            stopBackgroundSession();
+            await controller?.stop();
+            controller = null;
+            recording = false;
+            capsizeActive = false;
+            backgroundStatus = 'foreground';
+            clearRecordingActive();
+            await runSync(true);
+            const settingsNow = loadSettings();
+            if (settingsNow.geofenceSessionControl !== false) {
+              await armStandby();
+            } else {
+              render();
+            }
+          })();
+        },
       },
       {
         resume: opts?.resume,
@@ -774,6 +876,17 @@ export function mountApp(root: HTMLElement): void {
 
     root.querySelector('[data-action="start"]')?.addEventListener('click', () => {
       void beginRecording();
+    });
+
+    root.querySelector('[data-action="toggle-standby"]')?.addEventListener('click', () => {
+      if (standby) {
+        void stopStandby().then(() => {
+          pushLog('Geofence standby disarmed.');
+          render();
+        });
+      } else {
+        void armStandby();
+      }
     });
 
     root.querySelector('[data-action="stop"]')?.addEventListener('click', async () => {

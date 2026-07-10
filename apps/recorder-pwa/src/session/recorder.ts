@@ -59,6 +59,8 @@ export type RecorderStats = {
   inBoatPark?: boolean;
   /** Name of matched boat-park zone, if any. */
   boatParkName?: string | null;
+  /** True when telemetry is suppressed inside the zone. */
+  recordingSuppressed?: boolean;
   /** Active regatta control message for this device, if any. */
   regattaMessage?: { id: number; text: string } | null;
   /** Native foreground-service diagnostics (Android). */
@@ -76,6 +78,8 @@ export type RecorderController = {
 export type RecorderHooks = {
   /** Throttled while screen off — flush queue + upload. */
   onBackgroundPulse?: () => void;
+  /** Fired after dwell inside a zone with autoStopOnEnter. */
+  onGeofenceAutoStop?: (zone: GeofenceConfig) => void;
 };
 
 export type StartRecorderOptions = {
@@ -199,6 +203,9 @@ export async function startRecorder(
   let geofences: GeofenceConfig[] = [];
   let inBoatPark = false;
   let activeBoatPark: GeofenceConfig | null = null;
+  let recordingSuppressed = false;
+  let insideSinceMs: number | null = null;
+  let autoStopFired = false;
   let capsizeAllowed = true;
   let effectiveGpsIntervalMs = settings.gpsIntervalMs;
   let effectiveUploadIntervalMs = batchIntervalMs;
@@ -217,6 +224,7 @@ export async function startRecorder(
       effectiveGpsIntervalMs,
       effectiveUploadIntervalMs,
       capsizeAllowed ? '1' : '0',
+      recordingSuppressed ? '1' : '0',
     ].join('|');
 
   const syncNativeEconomyMode = () => {
@@ -229,6 +237,7 @@ export async function startRecorder(
       gpsIntervalMs: effectiveGpsIntervalMs,
       uploadIntervalMs: effectiveUploadIntervalMs,
       enableCapsize: capsizeAllowed,
+      suppressRecording: recordingSuppressed,
     });
     void setNativeLiveMapMode(!inBoatPark && Boolean(settings.liveMapMode));
   };
@@ -247,6 +256,10 @@ export async function startRecorder(
         enabled: g.enabled,
         economyIntervalSec: g.economyIntervalSec,
         disableCapsize: g.disableCapsize,
+        suppressRecording: g.suppressRecording,
+        autoStopOnEnter: g.autoStopOnEnter,
+        autoStartOnExit: g.autoStartOnExit,
+        sessionDwellSec: g.sessionDwellSec,
       })),
     );
   };
@@ -266,7 +279,9 @@ export async function startRecorder(
     const prevSignature = lastEconomySignature;
     inBoatPark = match != null;
     activeBoatPark = match;
+    recordingSuppressed = Boolean(match?.suppressRecording);
     if (match) {
+      if (!was) insideSinceMs = Date.now();
       const intervalMs = Math.max(1000, match.economyIntervalSec * 1000);
       effectiveGpsIntervalMs = intervalMs;
       effectiveUploadIntervalMs = intervalMs;
@@ -275,8 +290,12 @@ export async function startRecorder(
         match.name,
         String(match.economyIntervalSec),
         String(match.disableCapsize),
+        String(match.suppressRecording),
+        String(match.autoStopOnEnter),
       ].join('|');
     } else {
+      insideSinceMs = null;
+      autoStopFired = false;
       effectiveGpsIntervalMs = settings.gpsIntervalMs;
       effectiveUploadIntervalMs = batchIntervalMs;
       capsizeAllowed = true;
@@ -289,9 +308,13 @@ export async function startRecorder(
       onLog(
         modeChanged
           ? inBoatPark
-            ? `${match!.name}: boat park — every ${Math.round(effectiveGpsIntervalMs / 1000)}s${capsizeAllowed ? '' : ', capsize off'}.`
+            ? `${match!.name}: boat park — ${
+                recordingSuppressed
+                  ? 'recording paused'
+                  : `every ${Math.round(effectiveGpsIntervalMs / 1000)}s`
+              }${capsizeAllowed ? '' : ', capsize off'}.`
             : 'On water — full recording restored.'
-          : `${match!.name} config updated: every ${Math.round(effectiveGpsIntervalMs / 1000)}s${capsizeAllowed ? '' : ', capsize off'}.`,
+          : `${match!.name} config updated.`,
       );
       if (nativeCapsizeMonitorOn) {
         syncNativeEconomyMode();
@@ -302,6 +325,19 @@ export async function startRecorder(
         onCapsize?.(false);
       }
     }
+
+    if (
+      match &&
+      match.autoStopOnEnter &&
+      !autoStopFired &&
+      insideSinceMs != null &&
+      Date.now() - insideSinceMs >= Math.max(5000, match.sessionDwellSec * 1000)
+    ) {
+      autoStopFired = true;
+      onLog(`${match.name}: auto-stopping session (inside geofence).`);
+      hooks?.onGeofenceAutoStop?.(match);
+    }
+
     emit();
   };
 
@@ -401,6 +437,7 @@ export async function startRecorder(
   };
 
   const queueSample = (sample: TelemetrySample) => {
+    if (recordingSuppressed) return;
     batch.push(sample);
     const cap =
       inBoatPark && effectiveUploadIntervalMs > settings.uploadBatchMs
@@ -411,6 +448,13 @@ export async function startRecorder(
   };
 
   const queueGpsSample = (sample: TelemetrySample) => {
+    if (recordingSuppressed) {
+      if (inBoatPark) {
+        sample.derived = { ...sample.derived, inBoatPark: true };
+      }
+      // Still track position for geofence / HUD, but do not upload.
+      return;
+    }
     const now = Date.now();
     if (inBoatPark && now - lastGpsQueuedAt < effectiveGpsIntervalMs) return;
     lastGpsQueuedAt = now;
@@ -756,6 +800,7 @@ export async function startRecorder(
       ...stats,
       inBoatPark,
       boatParkName: activeBoatPark?.name ?? null,
+      recordingSuppressed,
     }),
     flush: () => pushBatch(),
     async connectHr() {

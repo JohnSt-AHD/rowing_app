@@ -130,7 +130,8 @@ public class CapsizeMonitorPlugin extends Plugin {
             active != null && active,
             gpsIntervalMs != null ? gpsIntervalMs.longValue() : 30000L,
             uploadIntervalMs != null ? uploadIntervalMs.longValue() : 30000L,
-            enableCapsize == null || enableCapsize);
+            enableCapsize == null || enableCapsize,
+            call.getBoolean("suppressRecording", false));
         call.resolve();
     }
 

@@ -136,6 +136,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private boolean enableMotion = true;
     private long gpsIntervalMs = 1000L;
     private boolean economyActive = false;
+    private boolean suppressRecordingActive = false;
     private long economyGpsIntervalMs = 30_000L;
     private long economyUploadIntervalMs = 30_000L;
     private boolean liveMapActive = false;
@@ -438,7 +439,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                             + "|"
                             + GeofenceHelper.economyIntervalSec(match)
                             + "|"
-                            + GeofenceHelper.disableCapsize(match);
+                            + GeofenceHelper.disableCapsize(match)
+                            + "|"
+                            + GeofenceHelper.suppressRecording(match);
         } else {
             signature = "";
         }
@@ -447,18 +450,22 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (match != null) {
             long intervalMs =
                     Math.max(1000L, (long) GeofenceHelper.economyIntervalSec(match) * 1000L);
+            boolean suppress = GeofenceHelper.suppressRecording(match);
             setEconomyMode(
                     getApplicationContext(),
                     true,
                     intervalMs,
                     intervalMs,
-                    !GeofenceHelper.disableCapsize(match));
+                    !GeofenceHelper.disableCapsize(match),
+                    suppress);
             Log.i(
                     TAG,
                     "Native geofence active: "
                             + match.optString("name", "?")
                             + " gpsUploadMs="
-                            + intervalMs);
+                            + intervalMs
+                            + " suppress="
+                            + suppress);
         } else {
             loadSessionFlagsFromPrefs();
             setEconomyMode(
@@ -466,7 +473,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                     false,
                     gpsIntervalMs,
                     UPLOAD_FLUSH_INTERVAL_MS,
-                    true);
+                    true,
+                    false);
             Log.i(TAG, "Native geofence cleared — user GPS interval restored");
         }
     }
@@ -842,6 +850,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void offerIngestSample(JSONObject sample, boolean flushNow) {
+        loadEconomyFromPrefs();
+        if (suppressRecordingActive) return;
         ingestBuffer.put(sample);
         maybeAutoFlushIngest(flushNow);
     }
@@ -967,6 +977,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void enqueueGpsSample(Location location, long t, boolean flushNow) {
+        loadEconomyFromPrefs();
+        if (suppressRecordingActive) {
+            // Keep location cache for geofence checks; do not upload while in suppress zone.
+            return;
+        }
         try {
             JSONObject sample = new JSONObject();
             sample.put("t", t);
@@ -1286,6 +1301,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void loadEconomyFromPrefs() {
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
         economyActive = p.getBoolean("economyActive", false);
+        suppressRecordingActive = p.getBoolean("suppressRecordingActive", false);
         economyGpsIntervalMs = Math.max(1000L, p.getLong("economyGpsIntervalMs", 30_000L));
         economyUploadIntervalMs = Math.max(1000L, p.getLong("economyUploadIntervalMs", 30_000L));
         enableCapsizeDetection = p.getBoolean("enableCapsizeDetection", true);
@@ -1688,9 +1704,20 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             long gpsInterval,
             long uploadInterval,
             boolean enableCapsize) {
+        setEconomyMode(ctx, active, gpsInterval, uploadInterval, enableCapsize, false);
+    }
+
+    public static void setEconomyMode(
+            Context ctx,
+            boolean active,
+            long gpsInterval,
+            long uploadInterval,
+            boolean enableCapsize,
+            boolean suppressRecording) {
         ctx.getSharedPreferences(PREFS, MODE_PRIVATE)
             .edit()
             .putBoolean("economyActive", active)
+            .putBoolean("suppressRecordingActive", active && suppressRecording)
             .putLong("economyGpsIntervalMs", Math.max(1000L, gpsInterval))
             .putLong("economyUploadIntervalMs", Math.max(1000L, uploadInterval))
             .putBoolean("enableCapsizeDetection", enableCapsize)

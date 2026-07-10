@@ -74,6 +74,18 @@ final class GeofenceHelper {
         return g.optBoolean("disable_capsize", true);
     }
 
+    static boolean suppressRecording(JSONObject g) {
+        if (g == null) return true;
+        if (g.has("suppressRecording")) return g.optBoolean("suppressRecording", true);
+        return g.optBoolean("suppress_recording", true);
+    }
+
+    static boolean autoStopOnEnter(JSONObject g) {
+        if (g == null) return true;
+        if (g.has("autoStopOnEnter")) return g.optBoolean("autoStopOnEnter", true);
+        return g.optBoolean("auto_stop_on_enter", true);
+    }
+
     private static boolean pointInCircle(
             double lat, double lon, double centerLat, double centerLon, double radiusM) {
         if (!Double.isFinite(centerLat)

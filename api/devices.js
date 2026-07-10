@@ -1,4 +1,5 @@
 const store = require('./lib/ingest-store');
+const { requireOrg } = require('./lib/require-org');
 
 module.exports = async function handler(req, res) {
   store.cors(res);
@@ -11,9 +12,8 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  if (!store.checkAuth(req)) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
+  const org = await requireOrg(req, res);
+  if (!org) return;
 
   const windowSec = Math.min(
     300,
@@ -24,7 +24,7 @@ module.exports = async function handler(req, res) {
     Math.max(5, Number(req.query?.onlineSec) || 30),
   );
 
-  const payload = await store.listDevices({
+  const payload = await store.listDevices(org.id, {
     windowMs: windowSec * 1000,
     onlineMs: onlineSec * 1000,
   });
