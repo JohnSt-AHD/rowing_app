@@ -20,7 +20,7 @@ export function startBackgroundGpsWatcher(
 
   void BackgroundGeolocation.addWatcher(
     {
-      backgroundMessage: 'Recording rowing session — open app to view.',
+      backgroundMessage: 'CrewSight GPS active — keep the app for live tracking.',
       backgroundTitle: 'CrewSight',
       requestPermissions: true,
       stale: false,
@@ -42,8 +42,13 @@ export function startBackgroundGpsWatcher(
       if (now - lastEmit < intervalMs) return;
       lastEmit = now;
 
+      const fixMs =
+        typeof location.time === 'number' && Number.isFinite(location.time)
+          ? location.time
+          : now;
+
       onReading({
-        t: now,
+        t: fixMs,
         lat: location.latitude,
         lon: location.longitude,
         acc: location.accuracy,

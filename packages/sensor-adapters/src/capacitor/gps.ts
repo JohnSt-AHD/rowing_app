@@ -36,22 +36,22 @@ function startForegroundGpsWatcher(
         hdg: c.heading ?? undefined,
         alt: c.altitude ?? undefined,
       };
+      onReading(last);
     },
   ).then((id) => {
     watchId = id;
   });
 
+  // Always request a fresh fix — never replay stale coords with Date.now().
   timer = setInterval(() => {
     if (stopped) return;
-    if (last) {
-      onReading({ ...last, t: Date.now() });
-      return;
-    }
     void Geolocation.getCurrentPosition({
       enableHighAccuracy: true,
       timeout: 15000,
+      maximumAge: Math.min(2000, Math.max(0, intervalMs)),
     })
       .then((pos) => {
+        if (stopped) return;
         const c = pos.coords;
         last = {
           t: pos.timestamp ?? Date.now(),
@@ -62,9 +62,14 @@ function startForegroundGpsWatcher(
           hdg: c.heading ?? undefined,
           alt: c.altitude ?? undefined,
         };
-        if (last) onReading({ ...last, t: Date.now() });
+        onReading(last);
       })
-      .catch((e) => onError?.(e instanceof Error ? e.message : String(e)));
+      .catch((e) => {
+        onError?.(e instanceof Error ? e.message : String(e));
+        if (last && Date.now() - last.t < intervalMs * 2) {
+          onReading(last);
+        }
+      });
   }, intervalMs);
 
   return {

@@ -1503,15 +1503,33 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   const limits = predictLimitsForMode(predictMode);
   const trackOpts = { maxTrackSpeedMps: limits.maxTrackSpeedMps };
   const rowingWindowMs = Math.min(staleMs, 120000);
-  const telemetryWindowMs = Math.max(rowingWindowMs, 30 * 60 * 1000);
+  // Keep map polls light — 30min × all devices was timing out on Vercel (Failed to fetch).
+  const telemetryWindowMs = Math.min(rowingWindowMs, 3 * 60 * 1000);
   const now = Date.now();
+  const HEAVY_MS = 8000;
+
+  const withTimeout = (promise, label) =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`${label} timeout`)), HEAVY_MS);
+      }),
+    ]);
 
   if (db.hasDb()) {
     try {
       const registryTimes = await db.getDeviceRegistryTimes(orgId);
       const registryPositions = await db.getRegistryMapPositions(orgId, onlineMs, staleMs);
-      const dbPositions = await db.getMapPositions(orgId, onlineMs, staleMs);
-      const byDevice = await db.fetchRecentSamplesByDevice(orgId, telemetryWindowMs);
+
+      let byDevice = new Map();
+      try {
+        byDevice = await withTimeout(
+          db.fetchRecentSamplesByDevice(orgId, telemetryWindowMs),
+          'fetchRecentSamples',
+        );
+      } catch (err) {
+        console.warn('[ingest-store] map samples path skipped:', err?.message || err);
+      }
 
       const fromRecentRaw = [];
       for (const entry of byDevice.values()) {
@@ -1529,8 +1547,8 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
         );
       }
 
+      // Prefer registry + recent samples — skip DISTINCT ON full-table scan (was causing timeouts).
       const rawMerged = mergeMapPositionsByFixMs([
-        dbPositions,
         fromRecentRaw,
         getRawMemoryMapPositions(orgId, onlineMs, now),
         registryPositions,
