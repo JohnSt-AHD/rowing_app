@@ -393,32 +393,38 @@ async function ensureOrgsBootstrapped() {
     defaultOrgId = first.rows[0]?.id;
   }
 
-  if (defaultOrgId) {
+  // One-time backfill only — scanning rnz_samples on every cold start caused 504s.
+  const orgBackfillMig = await sql`
+    SELECT 1 AS ok FROM rnz_schema_migrations WHERE id = 'org_id_null_backfill_v1' LIMIT 1
+  `;
+  if (defaultOrgId && !orgBackfillMig.rows.length) {
     await sql`UPDATE rnz_devices SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
     await sql`UPDATE rnz_sessions SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
     await sql`UPDATE rnz_samples SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
     await sql`UPDATE rnz_geofences SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
     await sql`UPDATE rnz_regatta_messages SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
     await sql`UPDATE rnz_idempotency SET org_id = ${defaultOrgId} WHERE org_id IS NULL`;
+    await sql`ALTER TABLE rnz_devices ALTER COLUMN org_id SET NOT NULL`.catch(() => {});
+    await sql`ALTER TABLE rnz_sessions ALTER COLUMN org_id SET NOT NULL`.catch(() => {});
+    await sql`ALTER TABLE rnz_samples ALTER COLUMN org_id SET NOT NULL`.catch(() => {});
+    await sql`ALTER TABLE rnz_devices DROP CONSTRAINT IF EXISTS rnz_devices_unique_id_key`;
+    await sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_rnz_devices_org_unique
+        ON rnz_devices (org_id, unique_id)
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_rnz_samples_org_time
+        ON rnz_samples (org_id, unique_id, t_ms DESC)
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_rnz_geofences_org
+        ON rnz_geofences (org_id, name)
+    `;
+    await sql`
+      INSERT INTO rnz_schema_migrations (id) VALUES ('org_id_null_backfill_v1')
+      ON CONFLICT (id) DO NOTHING
+    `;
   }
-
-  await sql`ALTER TABLE rnz_devices ALTER COLUMN org_id SET NOT NULL`.catch(() => {});
-  await sql`ALTER TABLE rnz_sessions ALTER COLUMN org_id SET NOT NULL`.catch(() => {});
-  await sql`ALTER TABLE rnz_samples ALTER COLUMN org_id SET NOT NULL`.catch(() => {});
-
-  await sql`ALTER TABLE rnz_devices DROP CONSTRAINT IF EXISTS rnz_devices_unique_id_key`;
-  await sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_rnz_devices_org_unique
-      ON rnz_devices (org_id, unique_id)
-  `;
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_rnz_samples_org_time
-      ON rnz_samples (org_id, unique_id, t_ms DESC)
-  `;
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_rnz_geofences_org
-      ON rnz_geofences (org_id, name)
-  `;
 
   orgBootstrapDone = true;
 }
