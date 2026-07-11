@@ -14,7 +14,7 @@
     "api/snapshot.js": { "maxDuration": 20 },
     "api/history.js": { "maxDuration": 60 },
     "api/map-positions.js": { "maxDuration": 20 },
-    "api/capsize-clear.js": { "maxDuration": 10 },
+    "api/capsize-clear.js": { "maxDuration": 20 },
     "api/geofences.js": { "maxDuration": 15 },
     "api/timing-lines.js": { "maxDuration": 15 },
     "api/messages.js": { "maxDuration": 15 },
