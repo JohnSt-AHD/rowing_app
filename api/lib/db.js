@@ -748,20 +748,30 @@ async function getRoutePositions(orgId, deviceRef, fromIso, toIso) {
 }
 
 async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
-  const sql = await getSql();
-  const cutoff = Date.now() - onlineMs;
-  const rows = await sql`
-    SELECT DISTINCT ON (s.device_ref)
-      s.id, s.device_ref, s.unique_id, s.t_ms, s.latitude, s.longitude, s.accuracy, s.speed, s.course, s.compass_deg, s.altitude, s.hr, s.ax, s.ay, s.az,
-      s.stroke_rate, s.capsize, s.tilt_deg,
-      d.last_seen_at
-    FROM rnz_samples s
-    JOIN rnz_devices d ON d.id = s.device_ref AND d.org_id = s.org_id
-    WHERE s.org_id = ${orgId}
-      AND s.latitude IS NOT NULL AND s.longitude IS NOT NULL
-    ORDER BY s.device_ref, s.t_ms DESC
-  `;
-  return rows.rows.map(rowToTraccarPosition);
+  const registry = await getRegistryMapPositions(orgId, onlineMs, Math.max(onlineMs, 3600_000));
+  return registry.map((p, idx) =>
+    rowToTraccarPosition({
+      id: idx + 1,
+      device_ref: idx + 1,
+      unique_id: p.deviceId,
+      t_ms: p.fixMs,
+      latitude: p.latitude,
+      longitude: p.longitude,
+      accuracy: p.accuracy,
+      speed: null,
+      course: null,
+      compass_deg: null,
+      altitude: null,
+      hr: p.hr,
+      ax: null,
+      ay: null,
+      az: null,
+      stroke_rate: null,
+      capsize: false,
+      tilt_deg: null,
+      last_seen_at: new Date(p.fixMs).toISOString(),
+    }),
+  );
 }
 
 /**

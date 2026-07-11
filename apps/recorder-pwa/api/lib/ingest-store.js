@@ -1031,7 +1031,6 @@ async function listDevices(orgId, opts = {}) {
   const onlineMs = opts.onlineMs ?? 30000;
   const now = Date.now();
   const hasPostgres = db.hasDb();
-  const HEAVY_MS = 8000;
 
   /** @type {Map<string, object>} */
   const byDevice = listDevicesFromMemory({ orgId, windowMs, onlineMs });
@@ -1043,12 +1042,13 @@ async function listDevices(orgId, opts = {}) {
 
   if (hasPostgres) {
     try {
+      // Registry-only for live polls. Do NOT scan rnz_samples here; those
+      // queries can outlive request handling and trigger Vercel 504s.
       const [registryGps, registryTimes] = await Promise.all([
         db.getRegistryGpsByDevice(orgId),
         db.getDeviceRegistryTimes(orgId),
       ]);
 
-      // Fast path: seed from device registry GPS (no sample table scan).
       for (const [deviceId, regFix] of registryGps) {
         const patched = applyRegistryGpsToDevice(
           buildDeviceEntry(
@@ -1108,47 +1108,6 @@ async function listDevices(orgId, opts = {}) {
         );
       }
 
-      // Optional enrich for stroke/HR — short window only (30min scans timed out on Vercel).
-      const fetchMs = Math.min(Math.max(windowMs, 2 * 60 * 1000), 3 * 60 * 1000);
-      try {
-        const fromDb = await Promise.race([
-          db.fetchRecentSamplesByDevice(orgId, fetchMs),
-          new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('fetchRecentSamples timeout')), HEAVY_MS);
-          }),
-        ]);
-        for (const entry of fromDb.values()) {
-          const built = buildDeviceEntry(
-            orgId,
-            entry,
-            windowMs,
-            onlineMs,
-            now,
-            registryTimes.get(entry.deviceId),
-          );
-          const prev = byDevice.get(entry.deviceId);
-          const patched = applyRegistryGpsToDevice(
-            built,
-            registryGps.get(entry.deviceId),
-            now,
-          );
-          if (!prev || patched.lastSeenMs >= prev.lastSeenMs) {
-            byDevice.set(entry.deviceId, patched);
-          }
-        }
-      } catch (err) {
-        console.warn(
-          '[ingest-store] listDevices samples skipped:',
-          err?.message || err,
-        );
-      }
-
-      for (const [deviceId, dev] of byDevice) {
-        const regFix = registryGps.get(deviceId);
-        if (regFix) {
-          byDevice.set(deviceId, applyRegistryGpsToDevice(dev, regFix, now));
-        }
-      }
       warning = null;
     } catch (err) {
       console.error('[ingest-store] listDevices DB failed:', err);
@@ -1527,7 +1486,7 @@ async function clearCapsizeAlert(orgId, deviceId) {
 function samplesByDeviceForWindow(orgId, windowMs) {
   const now = Date.now();
   const cutoff = now - windowMs;
-  /** @type {Map<string, { samples: Sample[] }>} */
+  /** @type {Map<string, { deviceId: string, athleteId: string|null, samples: Sample[], lastSeenMs: number }>} */
   const byDevice = new Map();
   for (const row of sessions.values()) {
     if (row.orgId !== orgId) continue;
@@ -1535,7 +1494,12 @@ function samplesByDeviceForWindow(orgId, windowMs) {
     if (!samples.length) continue;
     const prev = byDevice.get(row.deviceId);
     if (!prev || row.updatedAt > prev.lastSeenMs) {
-      byDevice.set(row.deviceId, { samples, lastSeenMs: row.updatedAt });
+      byDevice.set(row.deviceId, {
+        deviceId: row.deviceId,
+        athleteId: row.athleteId || null,
+        samples,
+        lastSeenMs: row.updatedAt,
+      });
     }
   }
   return byDevice;
@@ -1547,72 +1511,31 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   const limits = predictLimitsForMode(predictMode);
   const trackOpts = { maxTrackSpeedMps: limits.maxTrackSpeedMps };
   const rowingWindowMs = Math.min(staleMs, 120000);
-  // Keep map polls light — 30min × all devices was timing out on Vercel (Failed to fetch).
+  // Keep map polls light - 30min x all devices was timing out on Vercel (Failed to fetch).
   const telemetryWindowMs = Math.min(rowingWindowMs, 3 * 60 * 1000);
   const now = Date.now();
-  const HEAVY_MS = 8000;
-
-  const withTimeout = (promise, label) =>
-    Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`${label} timeout`)), HEAVY_MS);
-      }),
-    ]);
+  const telemetryByDevice = samplesByDeviceForWindow(orgId, telemetryWindowMs);
+  const rowingByDevice = rowingMetricsByDevice(orgId, telemetryByDevice, rowingWindowMs);
 
   if (db.hasDb()) {
     try {
       const registryTimes = await db.getDeviceRegistryTimes(orgId);
       const registryPositions = await db.getRegistryMapPositions(orgId, onlineMs, staleMs);
 
-      let byDevice = new Map();
-      try {
-        byDevice = await withTimeout(
-          db.fetchRecentSamplesByDevice(orgId, telemetryWindowMs),
-          'fetchRecentSamples',
-        );
-      } catch (err) {
-        console.warn('[ingest-store] map samples path skipped:', err?.message || err);
-      }
-
-      const fromRecentRaw = [];
-      for (const entry of byDevice.values()) {
-        const lastGps = latestGpsFromSamples(entry.samples || []);
-        if (!lastGps) continue;
-        fromRecentRaw.push(
-          buildRawMapPositionFromFix({
-            deviceId: entry.deviceId,
-            fix: lastGps,
-            lastSeenMs: entry.lastSeenMs,
-            online: now - entry.lastSeenMs <= onlineMs,
-            now,
-            athleteId: entry.athleteId,
-          }),
-        );
-      }
-
-      // Prefer registry + recent samples — skip DISTINCT ON full-table scan (was causing timeouts).
       const rawMerged = mergeMapPositionsByFixMs([
-        fromRecentRaw,
         getRawMemoryMapPositions(orgId, onlineMs, now),
         registryPositions,
       ]);
-      warmGpsTracksFromSamplesByDevice(orgId, byDevice, trackOpts);
+      warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
       const positions = attachSmoothMapCoords(rawMerged, predictMode, orgId);
 
-      attachRowingToMapPositions(
-        positions,
-        rowingMetricsByDevice(orgId, byDevice, rowingWindowMs),
-      );
-      attachTelemetryToMapPositions(orgId, positions, byDevice, rowingWindowMs);
+      attachRowingToMapPositions(positions, rowingByDevice);
+      attachTelemetryToMapPositions(orgId, positions, telemetryByDevice, rowingWindowMs);
       return enrichMapPositionsDisplayAge(positions, now, registryTimes);
     } catch (err) {
       console.error('[ingest-store] getMapPositions DB failed:', err);
     }
   }
-
-  const telemetryByDevice = samplesByDeviceForWindow(orgId, telemetryWindowMs);
-  const rowingByDevice = rowingMetricsByDevice(orgId, telemetryByDevice, rowingWindowMs);
 
   const rawMerged = mergeMapPositionsByFixMs([
     getRawMemoryMapPositions(orgId, onlineMs, now),

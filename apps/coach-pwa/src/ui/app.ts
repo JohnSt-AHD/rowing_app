@@ -78,6 +78,7 @@ export function mountApp(root: HTMLElement): void {
   let devices: FleetDevice[] = [];
   let positions: MapPosition[] = [];
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let pollInFlight = false;
   let map: L.Map | null = null;
   let markersLayer: L.LayerGroup | null = null;
   /** @type {Map<string, L.Marker>} */
@@ -97,7 +98,8 @@ export function mountApp(root: HTMLElement): void {
   }
 
   async function pollLive() {
-    if (!settings.apiBaseUrl) return;
+    if (!settings.apiBaseUrl || pollInFlight) return;
+    pollInFlight = true;
     try {
       const settled = await Promise.allSettled([
         fetchDevices(settings),
@@ -169,6 +171,8 @@ export function mountApp(root: HTMLElement): void {
           : msg,
         true,
       );
+    } finally {
+      pollInFlight = false;
     }
   }
 
@@ -540,7 +544,7 @@ export function mountApp(root: HTMLElement): void {
 
   function startPollTimer() {
     stopPollTimer();
-    pollTimer = setInterval(() => void pollLive(), 1000);
+    pollTimer = setInterval(() => void pollLive(), 2000);
   }
 
   function stopPollTimer() {
