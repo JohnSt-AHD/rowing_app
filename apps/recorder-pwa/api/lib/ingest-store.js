@@ -130,9 +130,10 @@ function setCapsizeClear(deviceId) {
 function raiseStickyCapsizeAlert(orgId, deviceId) {
   const key = orgDeviceKey(orgId, deviceId);
   const prev = stickyCapsizeByDevice.get(key);
+  // New event after clear gets a fresh atMs so clients can re-alert.
   stickyCapsizeByDevice.set(key, {
     active: true,
-    atMs: prev?.atMs ?? Date.now(),
+    atMs: prev?.active ? (prev.atMs ?? Date.now()) : Date.now(),
   });
 }
 
@@ -1730,10 +1731,9 @@ function getMetrics() {
   };
 }
 
-/** Attach live capsize state to Traccar-shaped snapshot positions (RowSafe / overlay). */
-async function enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs) {
+/** Attach sticky capsize state to Traccar-shaped snapshot positions (RowSafe / overlay). */
+async function enrichTraccarSnapshotCapsize(orgId, snapshot, _onlineMs) {
   if (!snapshot?.positions?.length) return snapshot;
-  const rowingWindowMs = Math.min(Math.max(onlineMs, 60000), 120000);
   const capsizeAlerts = getStickyCapsizeAlerts(orgId);
   if (db.hasDb()) {
     try {
@@ -1743,26 +1743,19 @@ async function enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs) {
       console.error('[ingest-store] snapshot capsize alert list failed:', err);
     }
   }
-  let byDevice;
-  if (db.hasDb()) {
-    try {
-      byDevice = await db.fetchRecentSamplesByDevice(orgId, rowingWindowMs);
-    } catch (err) {
-      console.error('[ingest-store] snapshot capsize enrich failed:', err);
-      return snapshot;
-    }
-  } else {
-    byDevice = samplesByDeviceForWindow(orgId, rowingWindowMs);
-  }
-  const rowingByDevice = rowingMetricsByDevice(orgId, byDevice, rowingWindowMs);
+  if (!capsizeAlerts.size) return snapshot;
   const deviceById = new Map((snapshot.devices || []).map((d) => [d.id, d]));
   for (const p of snapshot.positions) {
     const dev = deviceById.get(p.deviceId);
     const uid = String(dev?.uniqueId || dev?.name || p.deviceName || '');
-    const rowing = rowingByDevice.get(uid);
-    if (!rowing?.capsize && !capsizeAlerts.has(uid)) continue;
-    p.attributes = { ...(p.attributes || {}), capsize: true, alarm: 'capsize' };
-    if (rowing?.tiltDeg != null) p.attributes.tiltDeg = rowing.tiltDeg;
+    const alert = capsizeAlerts.get(uid);
+    if (!alert) continue;
+    p.attributes = {
+      ...(p.attributes || {}),
+      capsize: true,
+      alarm: 'capsize',
+      capsizeAlertAt: alert.atMs ?? null,
+    };
   }
   return snapshot;
 }
