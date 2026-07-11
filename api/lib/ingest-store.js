@@ -801,7 +801,14 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
       suppressedInGeofence: geofenceDropped,
     };
   }
-  const hasCapsizeAlert = clean.samples.some(sampleHasCapsize);
+  const hasCapsizeAlert = clean.samples.some((sample) => {
+    if (!sampleHasCapsize(sample)) return false;
+    const t = Number(sample.t);
+    const clearAt = getCapsizeClearAt(scopedDevice);
+    const orgClearAt = getCapsizeClearAt(orgDeviceKey(orgId, '*'));
+    const latestClear = Math.max(clearAt || 0, orgClearAt || 0);
+    return !latestClear || (Number.isFinite(t) && t > latestClear);
+  });
   if (hasCapsizeAlert) raiseStickyCapsizeAlert(orgId, deviceId);
 
   const key = orgSessionKey(orgId, sessionId);
@@ -1188,12 +1195,17 @@ async function listDevices(orgId, opts = {}) {
         const dev = byDevice.get(deviceId);
         if (!dev) continue;
         const rowing = dev.rowing || {};
+        // Monitor capsize is sticky-only (forceCapsizeAlertsOnDevices). Do not
+        // re-light from latest sample or Clear alert cannot stick.
         dev.rowing = {
           ...rowing,
-          capsize: Boolean(tel.capsize) || Boolean(rowing.capsize),
+          capsize: false,
           tiltDeg: tel.tiltDeg ?? rowing.tiltDeg ?? null,
           strokeRate: tel.strokeRate ?? rowing.strokeRate ?? null,
         };
+      }
+      for (const dev of byDevice.values()) {
+        if (dev.rowing) dev.rowing.capsize = false;
       }
       forceCapsizeAlertsOnDevices(
         byDevice,
@@ -1210,6 +1222,9 @@ async function listDevices(orgId, opts = {}) {
       storage = 'memory';
       warning = `Database read failed: ${err.message}`;
     }
+  }
+  for (const dev of byDevice.values()) {
+    if (dev.rowing) dev.rowing.capsize = false;
   }
   forceCapsizeAlertsOnDevices(
     byDevice,
@@ -1586,6 +1601,8 @@ async function clearCapsizeAlert(orgId, deviceId) {
     if (db.hasDb()) await db.clearCapsizeAlertDb(orgId, id);
     return { cleared: [id], clearedAt: now };
   }
+
+  // Fast path: do not call listDevices here (can 504 and leave alerts uncleared).
   const cleared = new Set();
   if (db.hasDb()) {
     try {
@@ -1596,14 +1613,9 @@ async function clearCapsizeAlert(orgId, deviceId) {
     }
   }
   for (const id of getStickyCapsizeAlerts(orgId).keys()) cleared.add(String(id));
-  const snapshot = await listDevices(orgId, {
-    windowMs: 120000,
-    onlineMs: 24 * 60 * 60 * 1000,
-  });
-  for (const d of snapshot.devices || []) {
-    if (d.rowing?.capsize) cleared.add(String(d.deviceId));
-  }
   for (const id of cleared) setCapsizeClear(orgDeviceKey(orgId, id));
+  // Also mark a global org clear time for any device that might still stream tip samples.
+  setCapsizeClear(orgDeviceKey(orgId, '*'));
   clearStickyCapsizeAlert(orgId);
   if (db.hasDb()) await db.clearCapsizeAlertDb(orgId);
   return { cleared: [...cleared], clearedAt: now };
@@ -1663,10 +1675,12 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       attachRowingToMapPositions(positions, rowingByDevice);
       for (const p of positions) {
         const tel = rowingTel.get(p.deviceId);
-        if (!tel) continue;
-        p.capsize = Boolean(p.capsize) || Boolean(tel.capsize);
-        p.strokeRate = tel.strokeRate ?? p.strokeRate ?? null;
-        p.tiltDeg = tel.tiltDeg ?? p.tiltDeg ?? null;
+        // Monitor/map capsize is sticky-only.
+        p.capsize = false;
+        if (tel) {
+          p.strokeRate = tel.strokeRate ?? p.strokeRate ?? null;
+          p.tiltDeg = tel.tiltDeg ?? p.tiltDeg ?? null;
+        }
       }
       forceCapsizeAlertsOnPositions(positions, dbCapsizeAlerts);
       forceCapsizeAlertsOnPositions(positions, getStickyCapsizeAlerts(orgId));
