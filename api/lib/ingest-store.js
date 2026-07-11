@@ -76,6 +76,10 @@ globalThis.__rnzIngestSessions = sessions;
 /** @type {Map<string, number>} */
 const capsizeClearAt = globalThis.__rnzCapsizeClearAt ?? new Map();
 globalThis.__rnzCapsizeClearAt = capsizeClearAt;
+/** Sticky monitor capsize alerts for non-DB / same-instance operation. */
+/** @type {Map<string, { active: true, atMs: number }>} */
+const stickyCapsizeByDevice = globalThis.__rnzStickyCapsizeByDevice ?? new Map();
+globalThis.__rnzStickyCapsizeByDevice = stickyCapsizeByDevice;
 /** @type {Map<string, GpsSmoothState>} */
 const gpsTracks = globalThis.__rnzGpsTracks ?? new Map();
 globalThis.__rnzGpsTracks = gpsTracks;
@@ -121,6 +125,36 @@ function getCapsizeClearAt(deviceId) {
 
 function setCapsizeClear(deviceId) {
   capsizeClearAt.set(String(deviceId), Date.now());
+}
+
+function raiseStickyCapsizeAlert(orgId, deviceId) {
+  const key = orgDeviceKey(orgId, deviceId);
+  const prev = stickyCapsizeByDevice.get(key);
+  stickyCapsizeByDevice.set(key, {
+    active: true,
+    atMs: prev?.atMs ?? Date.now(),
+  });
+}
+
+function clearStickyCapsizeAlert(orgId, deviceId) {
+  if (deviceId) {
+    stickyCapsizeByDevice.delete(orgDeviceKey(orgId, deviceId));
+    return;
+  }
+  const prefix = `${orgId}:`;
+  for (const key of [...stickyCapsizeByDevice.keys()]) {
+    if (key.startsWith(prefix)) stickyCapsizeByDevice.delete(key);
+  }
+}
+
+function getStickyCapsizeAlerts(orgId) {
+  const prefix = `${orgId}:`;
+  const out = new Map();
+  for (const [key, alert] of stickyCapsizeByDevice) {
+    if (!key.startsWith(prefix) || !alert?.active) continue;
+    out.set(key.slice(prefix.length), alert);
+  }
+  return out;
 }
 
 /**
@@ -767,6 +801,8 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
       suppressedInGeofence: geofenceDropped,
     };
   }
+  const hasCapsizeAlert = clean.samples.some(sampleHasCapsize);
+  if (hasCapsizeAlert) raiseStickyCapsizeAlert(orgId, deviceId);
 
   const key = orgSessionKey(orgId, sessionId);
   let row = sessions.get(key);
@@ -994,6 +1030,37 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
   };
 }
 
+function forceCapsizeAlertsOnDevices(byDevice, alerts, orgId, windowMs, onlineMs, now) {
+  if (!alerts?.size) return;
+  for (const [deviceId, alert] of alerts) {
+    const id = String(deviceId);
+    let dev = byDevice.get(id);
+    if (!dev) {
+      const seenAt = alert?.atMs && Number.isFinite(alert.atMs) ? alert.atMs : now;
+      dev = buildDeviceEntry(
+        orgId,
+        {
+          deviceId: id,
+          athleteId: null,
+          sessionId: '',
+          samples: [],
+          lastSeenMs: seenAt,
+          firstSeenMs: seenAt,
+        },
+        windowMs,
+        onlineMs,
+        now,
+      );
+      byDevice.set(id, dev);
+    }
+    dev.rowing = {
+      ...(dev.rowing || {}),
+      capsize: true,
+    };
+    dev.capsizeAlertAtMs = alert?.atMs ?? null;
+  }
+}
+
 /**
  * @param {{ orgId: number, windowMs?: number, onlineMs?: number }} [opts]
  */
@@ -1051,10 +1118,11 @@ async function listDevices(orgId, opts = {}) {
     try {
       // Registry-only for live polls. Do NOT scan rnz_samples here; those
       // queries can outlive request handling and trigger Vercel 504s.
-      const [registryGps, registryTimes, rowingTel] = await Promise.all([
+      const [registryGps, registryTimes, rowingTel, dbCapsizeAlerts] = await Promise.all([
         db.getRegistryGpsByDevice(orgId),
         db.getDeviceRegistryTimes(orgId),
         db.getLatestRowingTelemetry(orgId, Math.max(windowMs, 120000)),
+        db.getCapsizeAlerts(orgId),
       ]);
 
       for (const [deviceId, regFix] of registryGps) {
@@ -1127,6 +1195,14 @@ async function listDevices(orgId, opts = {}) {
           strokeRate: tel.strokeRate ?? rowing.strokeRate ?? null,
         };
       }
+      forceCapsizeAlertsOnDevices(
+        byDevice,
+        dbCapsizeAlerts,
+        orgId,
+        windowMs,
+        onlineMs,
+        now,
+      );
 
       warning = null;
     } catch (err) {
@@ -1135,6 +1211,14 @@ async function listDevices(orgId, opts = {}) {
       warning = `Database read failed: ${err.message}`;
     }
   }
+  forceCapsizeAlertsOnDevices(
+    byDevice,
+    getStickyCapsizeAlerts(orgId),
+    orgId,
+    windowMs,
+    onlineMs,
+    now,
+  );
 
   const devices = [...byDevice.values()].sort(
     (a, b) => b.lastSeenMs - a.lastSeenMs,
@@ -1436,6 +1520,14 @@ function attachRowingToMapPositions(positions, rowingByDevice) {
   return positions;
 }
 
+function forceCapsizeAlertsOnPositions(positions, alerts) {
+  if (!alerts?.size) return positions;
+  for (const p of positions) {
+    if (alerts.has(p.deviceId)) p.capsize = true;
+  }
+  return positions;
+}
+
 /**
  * @param {object[]} positions
  * @param {Map<string, { samples: Sample[] }>} byDevice
@@ -1488,18 +1580,33 @@ function rowingMetricsByDevice(orgId, byDevice, windowMs) {
 async function clearCapsizeAlert(orgId, deviceId) {
   const now = Date.now();
   if (deviceId) {
-    setCapsizeClear(orgDeviceKey(orgId, deviceId));
-    return { cleared: [String(deviceId)], clearedAt: now };
+    const id = String(deviceId);
+    setCapsizeClear(orgDeviceKey(orgId, id));
+    clearStickyCapsizeAlert(orgId, id);
+    if (db.hasDb()) await db.clearCapsizeAlertDb(orgId, id);
+    return { cleared: [id], clearedAt: now };
   }
+  const cleared = new Set();
+  if (db.hasDb()) {
+    try {
+      const dbAlerts = await db.getCapsizeAlerts(orgId);
+      for (const id of dbAlerts.keys()) cleared.add(String(id));
+    } catch (err) {
+      console.error('[ingest-store] DB capsize alert list failed:', err);
+    }
+  }
+  for (const id of getStickyCapsizeAlerts(orgId).keys()) cleared.add(String(id));
   const snapshot = await listDevices(orgId, {
     windowMs: 120000,
     onlineMs: 24 * 60 * 60 * 1000,
   });
-  const capsized = (snapshot.devices || [])
-    .filter((d) => d.rowing?.capsize)
-    .map((d) => d.deviceId);
-  for (const id of capsized) setCapsizeClear(orgDeviceKey(orgId, id));
-  return { cleared: capsized, clearedAt: now };
+  for (const d of snapshot.devices || []) {
+    if (d.rowing?.capsize) cleared.add(String(d.deviceId));
+  }
+  for (const id of cleared) setCapsizeClear(orgDeviceKey(orgId, id));
+  clearStickyCapsizeAlert(orgId);
+  if (db.hasDb()) await db.clearCapsizeAlertDb(orgId);
+  return { cleared: [...cleared], clearedAt: now };
 }
 
 /** Recent motion samples per device (in-memory ingest). */
@@ -1539,9 +1646,12 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
 
   if (db.hasDb()) {
     try {
-      const registryTimes = await db.getDeviceRegistryTimes(orgId);
-      const registryPositions = await db.getRegistryMapPositions(orgId, onlineMs, staleMs);
-      const rowingTel = await db.getLatestRowingTelemetry(orgId, Math.min(staleMs, 120000));
+      const [registryTimes, registryPositions, rowingTel, dbCapsizeAlerts] = await Promise.all([
+        db.getDeviceRegistryTimes(orgId),
+        db.getRegistryMapPositions(orgId, onlineMs, staleMs),
+        db.getLatestRowingTelemetry(orgId, Math.min(staleMs, 120000)),
+        db.getCapsizeAlerts(orgId),
+      ]);
 
       const rawMerged = mergeMapPositionsByFixMs([
         getRawMemoryMapPositions(orgId, onlineMs, now),
@@ -1558,6 +1668,8 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
         p.strokeRate = tel.strokeRate ?? p.strokeRate ?? null;
         p.tiltDeg = tel.tiltDeg ?? p.tiltDeg ?? null;
       }
+      forceCapsizeAlertsOnPositions(positions, dbCapsizeAlerts);
+      forceCapsizeAlertsOnPositions(positions, getStickyCapsizeAlerts(orgId));
       attachTelemetryToMapPositions(orgId, positions, telemetryByDevice, rowingWindowMs);
       return enrichMapPositionsDisplayAge(positions, now, registryTimes);
     } catch (err) {
@@ -1579,6 +1691,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       tiltDeg: rowing.tiltDeg ?? null,
     };
   });
+  forceCapsizeAlertsOnPositions(mapped, getStickyCapsizeAlerts(orgId));
   return enrichMapPositionsDisplayAge(
     attachTelemetryToMapPositions(orgId, mapped, telemetryByDevice, rowingWindowMs),
     now,
@@ -1607,6 +1720,15 @@ function getMetrics() {
 async function enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs) {
   if (!snapshot?.positions?.length) return snapshot;
   const rowingWindowMs = Math.min(Math.max(onlineMs, 60000), 120000);
+  const capsizeAlerts = getStickyCapsizeAlerts(orgId);
+  if (db.hasDb()) {
+    try {
+      const dbAlerts = await db.getCapsizeAlerts(orgId);
+      for (const [id, alert] of dbAlerts) capsizeAlerts.set(id, alert);
+    } catch (err) {
+      console.error('[ingest-store] snapshot capsize alert list failed:', err);
+    }
+  }
   let byDevice;
   if (db.hasDb()) {
     try {
@@ -1624,9 +1746,9 @@ async function enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs) {
     const dev = deviceById.get(p.deviceId);
     const uid = String(dev?.uniqueId || dev?.name || p.deviceName || '');
     const rowing = rowingByDevice.get(uid);
-    if (!rowing?.capsize) continue;
+    if (!rowing?.capsize && !capsizeAlerts.has(uid)) continue;
     p.attributes = { ...(p.attributes || {}), capsize: true, alarm: 'capsize' };
-    if (rowing.tiltDeg != null) p.attributes.tiltDeg = rowing.tiltDeg;
+    if (rowing?.tiltDeg != null) p.attributes.tiltDeg = rowing.tiltDeg;
   }
   return snapshot;
 }
@@ -1736,6 +1858,9 @@ function purgeOrgMemory(orgId) {
   for (const key of [...capsizeClearAt.keys()]) {
     if (key.startsWith(prefix)) capsizeClearAt.delete(key);
   }
+  for (const key of [...stickyCapsizeByDevice.keys()]) {
+    if (key.startsWith(prefix)) stickyCapsizeByDevice.delete(key);
+  }
   for (const key of [...gpsTracks.keys()]) {
     if (key.startsWith(prefix)) gpsTracks.delete(key);
   }
@@ -1769,6 +1894,7 @@ async function deleteStoredDevice(orgId, uniqueId) {
   const result = await db.deleteDeviceData(orgId, uniqueId);
   purgeMemoryDevice(orgId, uniqueId);
   capsizeClearAt.delete(orgDeviceKey(orgId, uniqueId));
+  stickyCapsizeByDevice.delete(orgDeviceKey(orgId, uniqueId));
   return result;
 }
 

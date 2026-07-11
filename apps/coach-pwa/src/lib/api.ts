@@ -71,6 +71,17 @@ export async function fetchMapPositions(settings: CoachSettings): Promise<MapPos
     );
 }
 
+export async function clearCapsizeAlert(settings: CoachSettings, deviceId?: string) {
+  const url = `${apiBase(settings)}/api/capsize-clear`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { ...authHeaders(settings), 'Content-Type': 'application/json' },
+    body: JSON.stringify(deviceId ? { deviceId } : {}),
+  });
+  if (!res.ok) throw new Error(`Clear capsize ${res.status}`);
+  return res.json();
+}
+
 export type SessionSummary = {
   session_id: string;
   unique_id: string;

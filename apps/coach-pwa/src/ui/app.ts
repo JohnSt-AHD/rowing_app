@@ -11,6 +11,7 @@ import {
   registerLiveDevice,
 } from '../lib/live-speed-buffer';
 import {
+  clearCapsizeAlert,
   fetchDevices,
   fetchMapPositions,
   type FleetDevice,
@@ -91,6 +92,19 @@ export function mountApp(root: HTMLElement): void {
 
   const capsizeCount = () =>
     devices.filter((d) => d.rowing?.capsize || positions.some((p) => p.deviceId === d.deviceId && p.capsize)).length;
+
+  const capsizeBannerText = (count: number) =>
+    `${count} CAPSIZE — check crew now. Stays until acknowledged.`;
+
+  async function acknowledgeCapsizeAlerts() {
+    try {
+      await clearCapsizeAlert(settings);
+      setStatus('Capsize alert acknowledged');
+      await pollLive();
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e), true);
+    }
+  }
 
   function playCapsizeAlarm() {
     const now = Date.now();
@@ -512,7 +526,8 @@ export function mountApp(root: HTMLElement): void {
     const banner = root.querySelector('[data-capsize-banner]') as HTMLElement | null;
     if (banner) {
       banner.hidden = caps === 0;
-      if (caps > 0) banner.textContent = `${caps} CAPSIZE — check crew now`;
+      const text = banner.querySelector('[data-capsize-text]');
+      if (text) text.textContent = caps > 0 ? capsizeBannerText(caps) : '';
     }
     if (caps > 0) playCapsizeAlarm();
     const active = activeLiveDevices();
@@ -610,7 +625,10 @@ export function mountApp(root: HTMLElement): void {
             </div>
           </div>
         </header>
-        <div class="capsize-banner" data-capsize-banner role="alert" ${caps > 0 ? '' : 'hidden'}>${caps > 0 ? `${caps} CAPSIZE — check crew now` : ''}</div>
+        <div class="capsize-banner" data-capsize-banner role="alert" ${caps > 0 ? '' : 'hidden'}>
+          <span data-capsize-text>${caps > 0 ? capsizeBannerText(caps) : ''}</span>
+          <button type="button" class="capsize-banner__clear" data-capsize-clear>Acknowledge / clear</button>
+        </div>
         ${tab === 'live'
           ? `<div class="coach-monitor-bar ${monitoring ? 'monitoring' : ''}">
           <div class="status-line ${monitoring ? 'on' : ''}">
@@ -668,6 +686,7 @@ export function mountApp(root: HTMLElement): void {
     });
     root.querySelector('[data-start-monitor]')?.addEventListener('click', () => void onStartMonitoring());
     root.querySelector('[data-stop-monitor]')?.addEventListener('click', () => void onStopMonitoring());
+    root.querySelector('[data-capsize-clear]')?.addEventListener('click', () => void acknowledgeCapsizeAlerts());
     root.querySelectorAll('[data-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const next = (btn as HTMLElement).dataset.tab as Tab;

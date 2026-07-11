@@ -157,6 +157,8 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_lon DOUBLE PRECISION`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_accuracy DOUBLE PRECISION`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_ingest_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_active BOOLEAN NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_at TIMESTAMPTZ`;
   await sql`
     CREATE INDEX IF NOT EXISTS idx_rnz_samples_unique_time
       ON rnz_samples (unique_id, t_ms DESC)
@@ -650,6 +652,53 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
   `;
 }
 
+async function raiseCapsizeAlert(orgId, uniqueId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  await sql`
+    UPDATE rnz_devices
+    SET capsize_alert_active = true,
+        capsize_alert_at = COALESCE(capsize_alert_at, NOW())
+    WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
+  `;
+}
+
+async function clearCapsizeAlertDb(orgId, uniqueId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  if (uniqueId) {
+    await sql`
+      UPDATE rnz_devices
+      SET capsize_alert_active = false, capsize_alert_at = NULL
+      WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
+    `;
+    return;
+  }
+  await sql`
+    UPDATE rnz_devices
+    SET capsize_alert_active = false, capsize_alert_at = NULL
+    WHERE org_id = ${orgId} AND capsize_alert_active = true
+  `;
+}
+
+async function getCapsizeAlerts(orgId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const rows = await sql`
+    SELECT unique_id, capsize_alert_at
+    FROM rnz_devices
+    WHERE org_id = ${orgId} AND capsize_alert_active = true
+  `;
+  const map = new Map();
+  for (const row of rows.rows) {
+    map.set(String(row.unique_id), {
+      active: true,
+      atMs: row.capsize_alert_at ? new Date(row.capsize_alert_at).getTime() : null,
+    });
+  }
+  return map;
+}
+
 async function persistBatch(orgId, sessionId, deviceId, athleteId, samples) {
   if (!hasDb() || !samples.length) return false;
   await ensureOrgsBootstrapped();
@@ -657,6 +706,9 @@ async function persistBatch(orgId, sessionId, deviceId, athleteId, samples) {
   await upsertSession(orgId, sessionId, dev.id, deviceId, athleteId);
   await insertSamples(orgId, sessionId, dev.id, deviceId, samples);
   await updateDeviceLatestGps(orgId, deviceId, samples);
+  if (samples.some((sample) => sample?.derived?.capsize === true)) {
+    await raiseCapsizeAlert(orgId, deviceId);
+  }
   return true;
 }
 
@@ -2049,6 +2101,9 @@ module.exports = {
   listOrgs,
   resolveMemoryOrgFromToken,
   persistBatch,
+  raiseCapsizeAlert,
+  clearCapsizeAlertDb,
+  getCapsizeAlerts,
   fetchRecentSamplesByDevice,
   getLatestRowingTelemetry,
   getDeviceIngestTimes,
