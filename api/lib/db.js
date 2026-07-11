@@ -829,28 +829,40 @@ async function getRoutePositions(orgId, deviceRef, fromIso, toIso) {
 }
 
 async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
-  const registry = await getRegistryMapPositions(orgId, onlineMs, Math.max(onlineMs, 3600_000));
-  return registry.map((p, idx) =>
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const now = Date.now();
+  const staleCutoff = now - Math.max(onlineMs, 3600_000);
+  const rows = await sql`
+    SELECT id, unique_id, last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
+    FROM rnz_devices
+    WHERE org_id = ${orgId}
+      AND last_gps_t_ms IS NOT NULL
+      AND last_lat IS NOT NULL
+      AND last_lon IS NOT NULL
+      AND last_gps_t_ms >= ${staleCutoff}
+  `;
+  // deviceId must match listRegistryDevices().id so RowSafe can join positions[d.id].
+  return rows.rows.map((row) =>
     rowToTraccarPosition({
-      id: idx + 1,
-      device_ref: idx + 1,
-      unique_id: p.deviceId,
-      t_ms: p.fixMs,
-      latitude: p.latitude,
-      longitude: p.longitude,
-      accuracy: p.accuracy,
+      id: Number(row.id),
+      device_ref: Number(row.id),
+      unique_id: row.unique_id,
+      t_ms: Number(row.last_gps_t_ms),
+      latitude: row.last_lat,
+      longitude: row.last_lon,
+      accuracy: row.last_gps_accuracy,
       speed: null,
       course: null,
       compass_deg: null,
       altitude: null,
-      hr: p.hr,
+      hr: null,
       ax: null,
       ay: null,
       az: null,
       stroke_rate: null,
       capsize: false,
       tilt_deg: null,
-      last_seen_at: new Date(p.fixMs).toISOString(),
     }),
   );
 }
