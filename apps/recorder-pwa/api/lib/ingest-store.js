@@ -1816,6 +1816,16 @@ async function listSessionsHistory(orgId, uniqueId) {
   }
 }
 
+async function getLogbook(orgId, opts = {}) {
+  if (!db.hasDb()) return { timeZone: opts.timeZone || 'Pacific/Auckland', days: [] };
+  try {
+    return await db.getLogbook(orgId, opts);
+  } catch (err) {
+    console.error('[ingest-store] getLogbook failed:', err);
+    throw err;
+  }
+}
+
 async function listHistoryDevices(orgId) {
   if (!db.hasDb()) return [];
   try {
@@ -1976,6 +1986,7 @@ module.exports = {
   parsePredictMode,
   getRouteHistory,
   listSessionsHistory,
+  getLogbook,
   listHistoryDevices,
   getDashboardHistory,
   getDashboardHistoryBySession,

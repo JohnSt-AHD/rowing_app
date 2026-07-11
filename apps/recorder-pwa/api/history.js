@@ -49,6 +49,32 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    if (req.query?.list === 'logbook') {
+      if (!store.hasDb()) {
+        return res.status(503).json({
+          ok: false,
+          error: 'No database — add POSTGRES_URL on Vercel for logbook history.',
+        });
+      }
+      const days = req.query?.days;
+      const timeZone = req.query?.tz || req.query?.timeZone || 'Pacific/Auckland';
+      try {
+        const logbook = await store.getLogbook(org.id, { days, timeZone });
+        return res.status(200).json({
+          ok: true,
+          persisted: true,
+          org: org.slug,
+          ...logbook,
+        });
+      } catch (err) {
+        console.error('[history] logbook failed:', err);
+        return res.status(500).json({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     if (req.query?.format === 'dashboard') {
       if (!store.hasDb()) {
         return res.status(503).json({
@@ -91,7 +117,7 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({
         ok: false,
         error:
-          'from and to required (ISO 8601), or list=sessions / format=dashboard / storage=stats',
+          'from and to required (ISO 8601), or list=sessions / list=logbook / format=dashboard / storage=stats',
       });
     }
 
@@ -204,3 +230,4 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+module.exports.maxDuration = 30;

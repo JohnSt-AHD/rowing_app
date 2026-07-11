@@ -1166,6 +1166,169 @@ async function listSessions(orgId, uniqueId, limit = 100) {
   return rows.rows;
 }
 
+function logbookDayKey(ms, timeZone) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(ms));
+}
+
+/**
+ * Day-grouped session log for RowSafe (distance, duration, capsize).
+ * @param {number} orgId
+ * @param {{ days?: number, timeZone?: string }} [opts]
+ */
+async function getLogbook(orgId, opts = {}) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const days = Math.min(Math.max(Number(opts.days) || 45, 1), 120);
+  const timeZone = String(opts.timeZone || 'Pacific/Auckland');
+  const cutoff = new Date(Date.now() - days * 86400000);
+
+  const rows = await sql`
+    WITH recent_sessions AS (
+      SELECT
+        s.session_id,
+        s.unique_id,
+        s.athlete_id,
+        s.started_at,
+        s.ended_at,
+        s.updated_at,
+        COALESCE(NULLIF(d.name, ''), s.unique_id) AS device_name
+      FROM rnz_sessions s
+      LEFT JOIN rnz_devices d
+        ON d.org_id = s.org_id AND d.unique_id = s.unique_id
+      WHERE s.org_id = ${orgId}
+        AND s.started_at >= ${cutoff}
+      ORDER BY s.started_at DESC
+      LIMIT 400
+    ),
+    gps AS (
+      SELECT
+        sm.session_id,
+        sm.t_ms,
+        sm.latitude,
+        sm.longitude,
+        LAG(sm.latitude) OVER (PARTITION BY sm.session_id ORDER BY sm.t_ms) AS prev_lat,
+        LAG(sm.longitude) OVER (PARTITION BY sm.session_id ORDER BY sm.t_ms) AS prev_lon,
+        LAG(sm.t_ms) OVER (PARTITION BY sm.session_id ORDER BY sm.t_ms) AS prev_t
+      FROM rnz_samples sm
+      INNER JOIN recent_sessions rs ON rs.session_id = sm.session_id
+      WHERE sm.org_id = ${orgId}
+        AND sm.latitude IS NOT NULL
+        AND sm.longitude IS NOT NULL
+    ),
+    dist AS (
+      SELECT
+        session_id,
+        COALESCE(SUM(
+          CASE
+            WHEN prev_lat IS NULL OR prev_lon IS NULL THEN NULL
+            WHEN prev_t IS NULL OR (t_ms - prev_t) > 30000 THEN NULL
+            WHEN (
+              6371000 * 2 * ASIN(LEAST(1.0, SQRT(
+                POWER(SIN(RADIANS(latitude - prev_lat) / 2), 2) +
+                COS(RADIANS(prev_lat)) * COS(RADIANS(latitude)) *
+                POWER(SIN(RADIANS(longitude - prev_lon) / 2), 2)
+              )))
+            ) > 200 THEN NULL
+            ELSE (
+              6371000 * 2 * ASIN(LEAST(1.0, SQRT(
+                POWER(SIN(RADIANS(latitude - prev_lat) / 2), 2) +
+                COS(RADIANS(prev_lat)) * COS(RADIANS(latitude)) *
+                POWER(SIN(RADIANS(longitude - prev_lon) / 2), 2)
+              )))
+            )
+          END
+        ), 0)::double precision AS distance_m,
+        MIN(t_ms) AS first_t_ms,
+        MAX(t_ms) AS last_t_ms
+      FROM gps
+      GROUP BY session_id
+    ),
+    caps AS (
+      SELECT
+        sm.session_id,
+        BOOL_OR(sm.capsize IS TRUE) AS had_capsize
+      FROM rnz_samples sm
+      INNER JOIN recent_sessions rs ON rs.session_id = sm.session_id
+      WHERE sm.org_id = ${orgId}
+      GROUP BY sm.session_id
+    )
+    SELECT
+      rs.session_id,
+      rs.unique_id,
+      rs.athlete_id,
+      rs.started_at,
+      rs.ended_at,
+      rs.updated_at,
+      rs.device_name,
+      COALESCE(dist.distance_m, 0) AS distance_m,
+      dist.first_t_ms,
+      dist.last_t_ms,
+      COALESCE(caps.had_capsize, false) AS had_capsize
+    FROM recent_sessions rs
+    LEFT JOIN dist ON dist.session_id = rs.session_id
+    LEFT JOIN caps ON caps.session_id = rs.session_id
+    ORDER BY rs.started_at DESC
+  `;
+
+  /** @type {Map<string, object>} */
+  const byDay = new Map();
+  for (const row of rows.rows) {
+    const startMs = row.first_t_ms != null
+      ? Number(row.first_t_ms)
+      : new Date(row.started_at).getTime();
+    const endMs = row.last_t_ms != null
+      ? Number(row.last_t_ms)
+      : row.ended_at
+        ? new Date(row.ended_at).getTime()
+        : row.updated_at
+          ? new Date(row.updated_at).getTime()
+          : startMs;
+    const day = logbookDayKey(Number.isFinite(startMs) ? startMs : Date.now(), timeZone);
+    const distanceM = Math.max(0, Number(row.distance_m) || 0);
+    const onWaterMs = Math.max(0, (Number.isFinite(endMs) ? endMs : startMs) - startMs);
+    const hadCapsize = row.had_capsize === true;
+    const session = {
+      sessionId: String(row.session_id),
+      uniqueId: String(row.unique_id),
+      crew: String(row.device_name || row.unique_id),
+      athleteId: row.athlete_id || null,
+      startedAt: new Date(Number.isFinite(startMs) ? startMs : row.started_at).toISOString(),
+      endedAt: new Date(Number.isFinite(endMs) ? endMs : startMs).toISOString(),
+      capsize: hadCapsize,
+      distanceM: Math.round(distanceM),
+      onWaterMs,
+    };
+    let dayRow = byDay.get(day);
+    if (!dayRow) {
+      dayRow = {
+        date: day,
+        sessionCount: 0,
+        capsizeCount: 0,
+        distanceM: 0,
+        onWaterMs: 0,
+        sessions: [],
+      };
+      byDay.set(day, dayRow);
+    }
+    dayRow.sessionCount += 1;
+    if (hadCapsize) dayRow.capsizeCount += 1;
+    dayRow.distanceM += session.distanceM;
+    dayRow.onWaterMs += onWaterMs;
+    dayRow.sessions.push(session);
+  }
+
+  const daysOut = [...byDay.values()].sort((a, b) => (a.date < b.date ? 1 : -1));
+  for (const day of daysOut) {
+    day.sessions.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+  }
+  return { timeZone, days: daysOut };
+}
+
 /**
  * @param {import('@vercel/postgres').QueryResultRow[]} rows
  */
@@ -2140,6 +2303,7 @@ module.exports = {
   listRegistryDevices,
   listHistoryDevicesDetailed,
   listSessions,
+  getLogbook,
   getSessionFromDb,
   getDashboardHistory,
   getDashboardHistoryBySession,
