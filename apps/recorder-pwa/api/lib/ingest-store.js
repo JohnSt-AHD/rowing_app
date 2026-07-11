@@ -190,6 +190,11 @@ function gpsFromSample(sample, { forTrack = false } = {}) {
   return { t, lat, lon, acc, spd, hdg, compass };
 }
 
+function sampleHasCapsize(sample) {
+  const d = sample?.derived || {};
+  return d.capsize === true || sample?.capsize === true;
+}
+
 /** Prefer compass bow heading; fall back to GPS course when moving. */
 function resolveMapHeading(fix) {
   if (!fix) return null;
@@ -872,8 +877,10 @@ async function filterSamplesInsideSuppressZones(orgId, scopedDevice, samples) {
       Number.isFinite(lon) &&
       findSuppressRecordingAt(lat, lon, suppressZones)
     ) {
-      dropped++;
-      continue;
+      if (!sampleHasCapsize(sample)) {
+        dropped++;
+        continue;
+      }
     }
     kept.push(sample);
   }
@@ -1044,9 +1051,10 @@ async function listDevices(orgId, opts = {}) {
     try {
       // Registry-only for live polls. Do NOT scan rnz_samples here; those
       // queries can outlive request handling and trigger Vercel 504s.
-      const [registryGps, registryTimes] = await Promise.all([
+      const [registryGps, registryTimes, rowingTel] = await Promise.all([
         db.getRegistryGpsByDevice(orgId),
         db.getDeviceRegistryTimes(orgId),
+        db.getLatestRowingTelemetry(orgId, Math.max(windowMs, 120000)),
       ]);
 
       for (const [deviceId, regFix] of registryGps) {
@@ -1106,6 +1114,18 @@ async function listDevices(orgId, opts = {}) {
             times,
           ),
         );
+      }
+
+      for (const [deviceId, tel] of rowingTel) {
+        const dev = byDevice.get(deviceId);
+        if (!dev) continue;
+        const rowing = dev.rowing || {};
+        dev.rowing = {
+          ...rowing,
+          capsize: Boolean(tel.capsize) || Boolean(rowing.capsize),
+          tiltDeg: tel.tiltDeg ?? rowing.tiltDeg ?? null,
+          strokeRate: tel.strokeRate ?? rowing.strokeRate ?? null,
+        };
       }
 
       warning = null;
@@ -1521,6 +1541,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
     try {
       const registryTimes = await db.getDeviceRegistryTimes(orgId);
       const registryPositions = await db.getRegistryMapPositions(orgId, onlineMs, staleMs);
+      const rowingTel = await db.getLatestRowingTelemetry(orgId, Math.min(staleMs, 120000));
 
       const rawMerged = mergeMapPositionsByFixMs([
         getRawMemoryMapPositions(orgId, onlineMs, now),
@@ -1530,6 +1551,13 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       const positions = attachSmoothMapCoords(rawMerged, predictMode, orgId);
 
       attachRowingToMapPositions(positions, rowingByDevice);
+      for (const p of positions) {
+        const tel = rowingTel.get(p.deviceId);
+        if (!tel) continue;
+        p.capsize = Boolean(p.capsize) || Boolean(tel.capsize);
+        p.strokeRate = tel.strokeRate ?? p.strokeRate ?? null;
+        p.tiltDeg = tel.tiltDeg ?? p.tiltDeg ?? null;
+      }
       attachTelemetryToMapPositions(orgId, positions, telemetryByDevice, rowingWindowMs);
       return enrichMapPositionsDisplayAge(positions, now, registryTimes);
     } catch (err) {

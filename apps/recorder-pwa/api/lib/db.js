@@ -852,6 +852,30 @@ async function fetchRecentSamplesByDevice(orgId, windowMs) {
   return byDevice;
 }
 
+async function getLatestRowingTelemetry(orgId, windowMs = 120000) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const cutoff = Date.now() - windowMs;
+  const rows = await sql`
+    SELECT DISTINCT ON (unique_id)
+      unique_id, t_ms, capsize, tilt_deg, stroke_rate
+    FROM rnz_samples
+    WHERE org_id = ${orgId}
+      AND t_ms >= ${cutoff}
+    ORDER BY unique_id, t_ms DESC
+  `;
+  const map = new Map();
+  for (const row of rows.rows) {
+    map.set(String(row.unique_id), {
+      t: Number(row.t_ms),
+      capsize: row.capsize === true,
+      tiltDeg: row.tilt_deg != null ? Number(row.tilt_deg) : null,
+      strokeRate: row.stroke_rate != null ? Number(row.stroke_rate) : null,
+    });
+  }
+  return map;
+}
+
 /**
  * Server ingest times per device (telemetry + last GPS batch).
  * @returns {Promise<Map<string, { lastSeenMs: number, lastGpsIngestMs: number|null }>>}
@@ -2026,6 +2050,7 @@ module.exports = {
   resolveMemoryOrgFromToken,
   persistBatch,
   fetchRecentSamplesByDevice,
+  getLatestRowingTelemetry,
   getDeviceIngestTimes,
   getDeviceRegistryTimes,
   getMapPositions,

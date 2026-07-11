@@ -87,9 +87,39 @@ export function mountApp(root: HTMLElement): void {
   let mapFollowFleet = loadMapFollowPref();
   let mapTickUnsub: (() => void) | null = null;
   let historyPanel: HistoryPanel | null = null;
+  let lastAlarmAt = 0;
 
   const capsizeCount = () =>
     devices.filter((d) => d.rowing?.capsize || positions.some((p) => p.deviceId === d.deviceId && p.capsize)).length;
+
+  function playCapsizeAlarm() {
+    const now = Date.now();
+    if (now - lastAlarmAt < 8000) return;
+    lastAlarmAt = now;
+
+    try {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      const audioCtx = new AudioCtx();
+      if (audioCtx.state === 'suspended') void audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      const start = audioCtx.currentTime;
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(660, start);
+      gain.gain.setValueAtTime(0.12, start);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.9);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(start);
+      osc.stop(start + 0.9);
+      osc.onended = () => void audioCtx.close();
+    } catch {
+      /* Browsers may block audio until the user has interacted with the app. */
+    }
+  }
 
   async function refreshMonitoringStatus() {
     const st = await getNativeMonitoringStatus();
@@ -484,6 +514,7 @@ export function mountApp(root: HTMLElement): void {
       banner.hidden = caps === 0;
       if (caps > 0) banner.textContent = `${caps} CAPSIZE — check crew now`;
     }
+    if (caps > 0) playCapsizeAlarm();
     const active = activeLiveDevices();
     const expanded = expandedDeviceIds();
     const list = root.querySelector('[data-device-list]');
