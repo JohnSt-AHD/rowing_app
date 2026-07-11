@@ -1031,6 +1031,7 @@ async function listDevices(orgId, opts = {}) {
   const onlineMs = opts.onlineMs ?? 30000;
   const now = Date.now();
   const hasPostgres = db.hasDb();
+  const HEAVY_MS = 8000;
 
   /** @type {Map<string, object>} */
   const byDevice = listDevicesFromMemory({ orgId, windowMs, onlineMs });
@@ -1042,33 +1043,13 @@ async function listDevices(orgId, opts = {}) {
 
   if (hasPostgres) {
     try {
-      const fetchMs = Math.max(windowMs, 30 * 60 * 1000);
-      const [fromDb, registryGps, registryTimes] = await Promise.all([
-        db.fetchRecentSamplesByDevice(orgId, fetchMs),
+      const [registryGps, registryTimes] = await Promise.all([
         db.getRegistryGpsByDevice(orgId),
         db.getDeviceRegistryTimes(orgId),
       ]);
-      for (const entry of fromDb.values()) {
-        const built = buildDeviceEntry(
-          orgId,
-          entry,
-          windowMs,
-          onlineMs,
-          now,
-          registryTimes.get(entry.deviceId),
-        );
-        const prev = byDevice.get(entry.deviceId);
-        const patched = applyRegistryGpsToDevice(
-          built,
-          registryGps.get(entry.deviceId),
-          now,
-        );
-        if (!prev || patched.lastSeenMs > prev.lastSeenMs) {
-          byDevice.set(entry.deviceId, patched);
-        }
-      }
+
+      // Fast path: seed from device registry GPS (no sample table scan).
       for (const [deviceId, regFix] of registryGps) {
-        if (byDevice.has(deviceId)) continue;
         const patched = applyRegistryGpsToDevice(
           buildDeviceEntry(
             orgId,
@@ -1086,7 +1067,10 @@ async function listDevices(orgId, opts = {}) {
                   },
                 },
               ],
-              lastSeenMs: regFix.t,
+              lastSeenMs: Math.max(
+                regFix.t,
+                registryTimes.get(deviceId)?.lastSeenMs ?? 0,
+              ),
               firstSeenMs: regFix.t,
             },
             windowMs,
@@ -1099,6 +1083,66 @@ async function listDevices(orgId, opts = {}) {
         );
         byDevice.set(deviceId, patched);
       }
+
+      for (const [deviceId, times] of registryTimes) {
+        if (byDevice.has(deviceId)) continue;
+        const lastSeenMs = times.lastSeenMs || 0;
+        if (!lastSeenMs) continue;
+        byDevice.set(
+          deviceId,
+          buildDeviceEntry(
+            orgId,
+            {
+              deviceId,
+              athleteId: null,
+              sessionId: '',
+              samples: [],
+              lastSeenMs,
+              firstSeenMs: lastSeenMs,
+            },
+            windowMs,
+            onlineMs,
+            now,
+            times,
+          ),
+        );
+      }
+
+      // Optional enrich for stroke/HR — short window only (30min scans timed out on Vercel).
+      const fetchMs = Math.min(Math.max(windowMs, 2 * 60 * 1000), 3 * 60 * 1000);
+      try {
+        const fromDb = await Promise.race([
+          db.fetchRecentSamplesByDevice(orgId, fetchMs),
+          new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('fetchRecentSamples timeout')), HEAVY_MS);
+          }),
+        ]);
+        for (const entry of fromDb.values()) {
+          const built = buildDeviceEntry(
+            orgId,
+            entry,
+            windowMs,
+            onlineMs,
+            now,
+            registryTimes.get(entry.deviceId),
+          );
+          const prev = byDevice.get(entry.deviceId);
+          const patched = applyRegistryGpsToDevice(
+            built,
+            registryGps.get(entry.deviceId),
+            now,
+          );
+          if (!prev || patched.lastSeenMs >= prev.lastSeenMs) {
+            byDevice.set(entry.deviceId, patched);
+          }
+        }
+      } catch (err) {
+        console.warn(
+          '[ingest-store] listDevices samples skipped:',
+          err?.message || err,
+        );
+      }
+
       for (const [deviceId, dev] of byDevice) {
         const regFix = registryGps.get(deviceId);
         if (regFix) {

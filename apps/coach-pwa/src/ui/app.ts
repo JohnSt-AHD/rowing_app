@@ -99,16 +99,64 @@ export function mountApp(root: HTMLElement): void {
   async function pollLive() {
     if (!settings.apiBaseUrl) return;
     try {
-      const [dev, pos] = await Promise.all([
+      const settled = await Promise.allSettled([
         fetchDevices(settings),
         fetchMapPositions(settings),
       ]);
-      devices = mergeCoachDevicesWithMap(dev, pos);
+      const devResult = settled[0];
+      const posResult = settled[1];
+      const errors: string[] = [];
+
+      const pos =
+        posResult.status === 'fulfilled' ? posResult.value : ([] as MapPosition[]);
+      if (posResult.status === 'rejected') {
+        const msg =
+          posResult.reason instanceof Error
+            ? posResult.reason.message
+            : String(posResult.reason);
+        errors.push(`Map: ${msg}`);
+      }
+
+      let dev: FleetDevice[] = [];
+      if (devResult.status === 'fulfilled') {
+        dev = mergeCoachDevicesWithMap(devResult.value, pos);
+      } else {
+        const msg =
+          devResult.reason instanceof Error
+            ? devResult.reason.message
+            : String(devResult.reason);
+        errors.push(`Devices: ${msg}`);
+        // Still show map markers if devices list failed.
+        dev = mergeCoachDevicesWithMap([], pos);
+      }
+
+      devices = dev;
       positions = pos;
       syncMapTracks(pos);
       recordLiveSpeedSamples(pos);
       updateLivePanel();
       updateMap();
+
+      if (errors.length && !pos.length && !dev.length) {
+        const joined = errors.join(' · ');
+        const network = /failed to fetch|networkerror|load failed|aborted|timeout/i.test(
+          joined,
+        );
+        setStatus(
+          network
+            ? 'Failed to fetch — API timed out or unreachable (check ingest token / Vercel)'
+            : joined,
+          true,
+        );
+        return;
+      }
+      if (errors.length) {
+        setStatus(
+          `Partial update · ${devices.length} device(s) — ${errors.join(' · ')}`,
+          true,
+        );
+        return;
+      }
       setStatus(`Updated · ${devices.length} device(s)`, false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
