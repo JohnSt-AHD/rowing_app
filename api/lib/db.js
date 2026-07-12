@@ -660,14 +660,14 @@ async function raiseCapsizeAlert(orgId, uniqueId, sampleTms) {
     sampleTms != null && Number.isFinite(Number(sampleTms))
       ? Number(sampleTms)
       : Date.now();
-  // Fresh capsize_alert_at after clear so RowSafe can treat it as a new event.
+  // Bump capsize_alert_at on each new capsize sample so RowSafe can re-alert after acknowledge.
   await sql`
     UPDATE rnz_devices
     SET capsize_alert_active = true,
-        capsize_alert_at = CASE
-          WHEN capsize_alert_active = true THEN COALESCE(capsize_alert_at, NOW())
-          ELSE NOW()
-        END
+        capsize_alert_at = GREATEST(
+          COALESCE(capsize_alert_at, to_timestamp(${t} / 1000.0)),
+          to_timestamp(${t} / 1000.0)
+        )
     WHERE org_id = ${orgId}
       AND unique_id = ${String(uniqueId)}
       AND (

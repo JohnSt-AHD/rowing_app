@@ -127,13 +127,15 @@ function setCapsizeClear(deviceId) {
   capsizeClearAt.set(String(deviceId), Date.now());
 }
 
-function raiseStickyCapsizeAlert(orgId, deviceId) {
+function raiseStickyCapsizeAlert(orgId, deviceId, eventMs) {
   const key = orgDeviceKey(orgId, deviceId);
   const prev = stickyCapsizeByDevice.get(key);
-  // New event after clear gets a fresh atMs so clients can re-alert.
+  const t = Number.isFinite(Number(eventMs)) ? Number(eventMs) : Date.now();
+  const prevAt = prev?.active && Number.isFinite(prev.atMs) ? prev.atMs : null;
+  // Bump atMs on each new capsize sample so RowSafe can re-alert after acknowledge.
   stickyCapsizeByDevice.set(key, {
     active: true,
-    atMs: prev?.active ? (prev.atMs ?? Date.now()) : Date.now(),
+    atMs: prevAt != null ? Math.max(prevAt, t) : t,
   });
 }
 
@@ -802,15 +804,17 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
       suppressedInGeofence: geofenceDropped,
     };
   }
-  const hasCapsizeAlert = clean.samples.some((sample) => {
-    if (!sampleHasCapsize(sample)) return false;
+  let maxCapsizeT = null;
+  for (const sample of clean.samples) {
+    if (!sampleHasCapsize(sample)) continue;
     const t = Number(sample.t);
     const clearAt = getCapsizeClearAt(scopedDevice);
     const orgClearAt = getCapsizeClearAt(orgDeviceKey(orgId, '*'));
     const latestClear = Math.max(clearAt || 0, orgClearAt || 0);
-    return !latestClear || (Number.isFinite(t) && t > latestClear);
-  });
-  if (hasCapsizeAlert) raiseStickyCapsizeAlert(orgId, deviceId);
+    if (latestClear && Number.isFinite(t) && t <= latestClear) continue;
+    if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
+  }
+  if (maxCapsizeT != null) raiseStickyCapsizeAlert(orgId, deviceId, maxCapsizeT);
 
   const key = orgSessionKey(orgId, sessionId);
   let row = sessions.get(key);
