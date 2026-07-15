@@ -37,6 +37,11 @@ import {
   resolveGpsDisplayAge,
   displayGpsAgeSec,
 } from '../lib/gps-age';
+import {
+  QUIET_HOURS_MESSAGE,
+  isQuietHours,
+  onQuietHoursChange,
+} from '../lib/quiet-hours';
 
 type Tab = 'live' | 'history' | 'settings';
 
@@ -80,6 +85,8 @@ export function mountApp(root: HTMLElement): void {
   let positions: MapPosition[] = [];
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let pollInFlight = false;
+  let quietHoursActive = isQuietHours();
+  let quietHoursUnsub: (() => void) | null = null;
   let map: L.Map | null = null;
   let markersLayer: L.LayerGroup | null = null;
   /** @type {Map<string, L.Marker>} */
@@ -142,6 +149,11 @@ export function mountApp(root: HTMLElement): void {
   }
 
   async function pollLive() {
+    if (isQuietHours()) {
+      quietHoursActive = true;
+      setStatus(QUIET_HOURS_MESSAGE);
+      return;
+    }
     if (!settings.apiBaseUrl || pollInFlight) return;
     pollInFlight = true;
     try {
@@ -551,14 +563,51 @@ export function mountApp(root: HTMLElement): void {
       render();
       return;
     }
+    monitoring = true;
+    if (isQuietHours()) {
+      quietHoursActive = true;
+      serviceRunning = false;
+      stopPollTimer();
+      stopMapTick();
+      setStatus(QUIET_HOURS_MESSAGE);
+      render();
+      return;
+    }
     if (IS_NATIVE) {
       await startNativeMonitoring(settings.apiBaseUrl, settings.ingestToken);
     }
-    monitoring = true;
     serviceRunning = IS_NATIVE;
     startPollTimer();
     startMapTick();
     render();
+    void pollLive();
+  }
+
+  async function applyQuietHours(paused: boolean) {
+    quietHoursActive = paused;
+    const banner = root.querySelector('[data-quiet-hours-banner]') as HTMLElement | null;
+    if (banner) {
+      banner.hidden = !paused;
+      banner.setAttribute('aria-hidden', paused ? 'false' : 'true');
+    }
+    if (paused) {
+      stopPollTimer();
+      stopMapTick();
+      if (IS_NATIVE && serviceRunning) {
+        await stopNativeMonitoring();
+        serviceRunning = false;
+      }
+      setStatus(QUIET_HOURS_MESSAGE);
+      return;
+    }
+    if (!monitoring) return;
+    settings = loadSettings();
+    if (IS_NATIVE && settings.apiBaseUrl) {
+      await startNativeMonitoring(settings.apiBaseUrl, settings.ingestToken);
+      serviceRunning = true;
+    }
+    startPollTimer();
+    startMapTick();
     void pollLive();
   }
 
@@ -590,6 +639,7 @@ export function mountApp(root: HTMLElement): void {
 
   function startPollTimer() {
     stopPollTimer();
+    if (isQuietHours()) return;
     pollTimer = setInterval(() => void pollLive(), 2000);
   }
 
@@ -625,18 +675,27 @@ export function mountApp(root: HTMLElement): void {
             </div>
           </div>
         </header>
+        <div
+          class="quiet-hours-banner"
+          data-quiet-hours-banner
+          role="status"
+          ${quietHoursActive ? '' : 'hidden'}
+          aria-hidden="${quietHoursActive ? 'false' : 'true'}"
+        >${QUIET_HOURS_MESSAGE}</div>
         <div class="capsize-banner" data-capsize-banner role="alert" ${caps > 0 ? '' : 'hidden'}>
           <span data-capsize-text>${caps > 0 ? capsizeBannerText(caps) : ''}</span>
           <button type="button" class="capsize-banner__clear" data-capsize-clear>Acknowledge / clear</button>
         </div>
         ${tab === 'live'
-          ? `<div class="coach-monitor-bar ${monitoring ? 'monitoring' : ''}">
-          <div class="status-line ${monitoring ? 'on' : ''}">
-            ${monitoring
-              ? serviceRunning
-                ? '● Monitoring fleet (background active)'
-                : '● Monitoring (foreground poll only)'
-              : 'Monitoring off — no background alerts'}
+          ? `<div class="coach-monitor-bar ${monitoring && !quietHoursActive ? 'monitoring' : ''}">
+          <div class="status-line ${monitoring && !quietHoursActive ? 'on' : ''}">
+            ${quietHoursActive
+              ? QUIET_HOURS_MESSAGE
+              : monitoring
+                ? serviceRunning
+                  ? '● Monitoring fleet (background active)'
+                  : '● Monitoring (foreground poll only)'
+                : 'Monitoring off — no background alerts'}
           </div>
           ${monitoring
             ? `<button type="button" class="coach-btn coach-btn--danger" data-stop-monitor>Stop monitoring</button>`
@@ -730,18 +789,35 @@ export function mountApp(root: HTMLElement): void {
     }
   }
 
+  quietHoursUnsub = onQuietHoursChange((paused) => {
+    void applyQuietHours(paused).then(() => {
+      if (tab === 'live') render();
+    });
+  });
+
   void (async () => {
     await refreshMonitoringStatus();
-    if (monitoring) {
+    quietHoursActive = isQuietHours();
+    if (monitoring && !quietHoursActive) {
       startPollTimer();
       startMapTick();
+      void pollLive();
+    } else if (quietHoursActive) {
+      stopPollTimer();
+      stopMapTick();
+      setStatus(QUIET_HOURS_MESSAGE);
     }
     render();
-    void pollLive();
   })();
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && monitoring) void pollLive();
+    if (
+      document.visibilityState === 'visible' &&
+      monitoring &&
+      !isQuietHours()
+    ) {
+      void pollLive();
+    }
   });
 }
 

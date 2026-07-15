@@ -263,6 +263,21 @@
   font-size: 0.85rem;
 }
 
+.quiet-hours-banner[hidden] {
+  display: none !important;
+}
+
+.quiet-hours-banner {
+  margin: 0.5rem clamp(12px, 4vw, 20px) 0;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #fde68a;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  text-align: center;
+  font-weight: 700;
+}
+
 .capsize-banner {
   background: #ef4444;
   color: #fff;

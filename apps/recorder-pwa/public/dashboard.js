@@ -1287,6 +1287,17 @@ function renderDevice(d) {
 }
 
 async function poll() {
+  const quiet = window.CrewSightQuietHours;
+  if (quiet?.isQuietHours?.()) {
+    quiet.setBannerVisible?.('quietHoursBanner', true);
+    const status = $('#pollStatus');
+    if (status) {
+      status.textContent = quiet.MESSAGE || 'Monitoring paused overnight';
+      status.classList.remove('err');
+    }
+    return;
+  }
+
   const pollStarted = performance.now();
   const status = $('#pollStatus');
   const grid = $('#devicesGrid');
@@ -1399,14 +1410,50 @@ async function poll() {
 }
 
 let timer = null;
+let quietHoursUnsub = null;
+
+function stopPolling() {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
 
 function startPolling() {
   savePrefs();
-  if (timer) clearInterval(timer);
+  stopPolling();
   updateRefreshRateLabel();
+  const quiet = window.CrewSightQuietHours;
+  if (quiet?.isQuietHours?.()) {
+    quiet.setBannerVisible?.('quietHoursBanner', true);
+    const status = $('#pollStatus');
+    if (status) {
+      status.textContent = quiet.MESSAGE || 'Monitoring paused overnight';
+      status.classList.remove('err');
+    }
+    return;
+  }
+  quiet?.setBannerVisible?.('quietHoursBanner', false);
   void poll();
   const ms = Number($('#pollMs')?.value || 2000);
   timer = setInterval(() => void poll(), ms);
+}
+
+function wireQuietHours() {
+  const quiet = window.CrewSightQuietHours;
+  if (!quiet?.onQuietHoursChange) return;
+  if (quietHoursUnsub) quietHoursUnsub();
+  quietHoursUnsub = quiet.onQuietHoursChange((paused) => {
+    quiet.setBannerVisible?.('quietHoursBanner', paused);
+    if (paused) {
+      stopPolling();
+      const status = $('#pollStatus');
+      if (status) {
+        status.textContent = quiet.MESSAGE || 'Monitoring paused overnight';
+        status.classList.remove('err');
+      }
+    } else {
+      startPolling();
+    }
+  });
 }
 
 function init() {
@@ -1509,7 +1556,7 @@ function init() {
     startPolling();
   });
 
-  startPolling();
+  wireQuietHours();
 
   if (typeof window.initDashboardHistory === 'function') {
     window.initDashboardHistory();

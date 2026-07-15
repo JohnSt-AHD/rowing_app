@@ -51,6 +51,15 @@
     </nav>
 
     <div class="ahd-app-wrap">
+      <div
+        class="quiet-hours-banner"
+        id="quietHoursBanner"
+        hidden
+        role="status"
+        aria-hidden="true"
+      >
+        Monitoring paused overnight
+      </div>
       <div class="capsize-alert-bar" id="capsizeAlertBar" hidden role="alert" aria-hidden="true">
         <div class="capsize-alert-bar__main">
           <strong>Capsize alert</strong>
@@ -762,6 +771,7 @@
       integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
       crossorigin=""
     ></script>
+    <script src="/quiet-hours.js"></script>
     <script src="/rowing-speed.js"></script>
     <script src="/dashboard-history.js"></script>
     <script src="/dashboard-data-manage.js"></script>
