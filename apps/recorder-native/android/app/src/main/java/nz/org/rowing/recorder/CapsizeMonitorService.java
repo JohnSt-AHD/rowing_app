@@ -43,6 +43,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -114,6 +115,23 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final String PULSE_LAST_FUSED_DELIVERY_WALL_MS = "pulseLastFusedDeliveryWallMs";
     private static final String PULSE_LATEST_GPS_CACHED_WALL_MS = "pulseLatestGpsCachedWallMs";
     private static final String PULSE_INGEST_BUFFER_COUNT = "pulseIngestBufferCount";
+    /** Low-rate GPS while geofence standby is armed (matches web standby). */
+    private static final long STANDBY_GPS_INTERVAL_MS = 5000L;
+    /** Ignore stale fixes for standby dwell (matches geofence-standby.ts). */
+    private static final long STANDBY_MAX_FIX_AGE_MS = 20_000L;
+    private static final long STANDBY_DWELL_TICK_MS = 1000L;
+
+    private boolean standbyMode;
+    private long standbyOutsideSinceMs;
+    private long standbyLastFreshFixMs;
+    private String standbyInsideZoneName = "";
+    private boolean standbyAutoStartTriggered;
+    private final Runnable standbyDwellRunnable =
+            () -> {
+                if (!standbyMode || standbyAutoStartTriggered) return;
+                tryStandbyAutoStart();
+                scheduleStandbyDwellTick();
+            };
 
     private SensorManager sensorManager;
     private Sensor accelerometer;
@@ -256,11 +274,21 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     public int onStartCommand(Intent intent, int flags, int startId) {
         promoteDeviceProtectedSessionPrefs();
         boolean bootResume = intent != null && intent.getBooleanExtra("bootResume", false);
-        if (intent != null && !bootResume) {
+        boolean standbyResume =
+                intent != null && intent.getBooleanExtra("standbyResume", false);
+        if (intent != null && !bootResume && !standbyResume) {
             saveConfigFromIntent(intent);
         }
         loadSessionFlagsFromPrefs();
+        loadStandbyFlagsFromPrefs();
         loadUprightFromPrefs();
+
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        boolean recordingActive = prefs.getBoolean("recordingActive", false);
+        if (standbyMode && !recordingActive) {
+            return startStandbyCommand(bootResume || standbyResume);
+        }
+
         ingestBuffer = new JSONArray();
         lastIngestFlushMs = 0L;
         lastSuccessfulUploadMs = 0L;
@@ -275,7 +303,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         startForegroundWithTypes();
         clearBootResumeNotification();
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putInt(BOOT_RETRY_COUNT_KEY, 0).apply();
-        mirrorRecordingPrefsToDeviceProtected(getApplicationContext());
+        mirrorSessionPrefsToDeviceProtected(getApplicationContext());
         acquireWakeLock();
         if (enableMotion || (enableGps && compassAvailable)) {
             registerSensors();
@@ -307,8 +335,41 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return START_STICKY;
     }
 
+    private int startStandbyCommand(boolean resumed) {
+        startForegroundWithTypes();
+        clearBootResumeNotification();
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putInt(BOOT_RETRY_COUNT_KEY, 0).apply();
+        mirrorSessionPrefsToDeviceProtected(getApplicationContext());
+        acquireWakeLock();
+        enableGps = true;
+        enableMotion = false;
+        economyActive = false;
+        suppressRecordingActive = false;
+        standbyAutoStartTriggered = false;
+        if (enableGps) {
+            restoreCachedGpsIfNeeded();
+            lastFusedDeliveryWallMs = System.currentTimeMillis();
+            registerLocation();
+            Location loc = latestGpsLocation;
+            if (loc != null) {
+                handleStandbyLocation(loc);
+            }
+        }
+        scheduleStandbyDwellTick();
+        Log.i(
+                TAG,
+                (resumed ? "Boot-resumed " : "")
+                        + "Native geofence standby armed gpsIntervalMs="
+                        + STANDBY_GPS_INTERVAL_MS);
+        return START_STICKY;
+    }
+
+        return START_STICKY;
+    }
+
     @Override
     public void onDestroy() {
+        mainHandler.removeCallbacks(standbyDwellRunnable);
         if (runningInstance != null && runningInstance.get() == this) {
             runningInstance.clear();
         }
@@ -330,8 +391,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         Context app = getApplicationContext();
         if (shouldResumeAfterBoot(app)) {
-            Log.i(TAG, "Service stopped with active session — scheduling resume");
-            mirrorRecordingPrefsToDeviceProtected(app);
+            Log.i(TAG, "Service stopped with active session/standby — scheduling resume");
+            mirrorSessionPrefsToDeviceProtected(app);
             scheduleBootResumeRetry(app);
         }
         super.onDestroy();
@@ -341,8 +402,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     public void onTaskRemoved(Intent rootIntent) {
         Context app = getApplicationContext();
         if (shouldResumeAfterBoot(app)) {
-            Log.i(TAG, "Task removed with active session — requesting resume");
-            mirrorRecordingPrefsToDeviceProtected(app);
+            Log.i(TAG, "Task removed with active session/standby — requesting resume");
+            mirrorSessionPrefsToDeviceProtected(app);
             if (!tryStartBootService(app)) {
                 scheduleBootResumeRetry(app);
             }
@@ -415,6 +476,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastFusedDeliveryWallMs = System.currentTimeMillis();
         savePulseDiagnostics();
         cacheGpsLocation(location);
+        if (standbyMode) {
+            handleStandbyLocation(location);
+            return;
+        }
         addFixToGpsWindow(location);
         maybeApplyGeofenceEconomy(location.getLatitude(), location.getLongitude());
     }
@@ -840,11 +905,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void scheduleIngestFlush() {
+        if (standbyMode) return;
         mainHandler.removeCallbacks(ingestFlushRunnable);
         mainHandler.postDelayed(ingestFlushRunnable, effectiveUploadFlushMs());
     }
 
     private void scheduleHeartbeat() {
+        if (standbyMode) return;
         mainHandler.removeCallbacks(heartbeatRunnable);
         mainHandler.postDelayed(heartbeatRunnable, HEARTBEAT_INTERVAL_MS);
     }
@@ -1273,6 +1340,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .putBoolean("enableMotion", intent.getBooleanExtra("enableMotion", true))
                 .putLong("gpsIntervalMs", intent.getLongExtra("gpsIntervalMs", 1000L))
                 .putBoolean("recordingActive", true)
+                .putBoolean("standbyArmed", false)
+                .putBoolean("standbyAutoStartTriggered", false)
+                .putBoolean("autoStartedSession", false)
                 .putInt(BOOT_RETRY_COUNT_KEY, 0)
                 .putInt("uploadSeq", 0)
                 .putInt("uploadOkCount", 0)
@@ -1315,8 +1385,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return economyActive ? economyGpsIntervalMs : gpsIntervalMs;
     }
 
-    /** Fused/legacy update rate — collect fixes every 500ms for window averaging. */
+    /** Fused/legacy update rate — standby uses low-rate polling. */
     private long locationTrackingIntervalMs() {
+        if (standbyMode) return STANDBY_GPS_INTERVAL_MS;
         return GPS_COLLECT_INTERVAL_MS;
     }
 
@@ -1425,6 +1496,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         ctx.getSharedPreferences(PREFS, MODE_PRIVATE)
             .edit()
             .putBoolean("recordingActive", false)
+            .putBoolean("standbyArmed", false)
+            .putBoolean("standbyAutoStartTriggered", false)
+            .putBoolean("autoStartedSession", false)
             .putBoolean("economyActive", false)
             .putInt(BOOT_RETRY_COUNT_KEY, 0)
             .apply();
@@ -1444,10 +1518,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private static SharedPreferences resolvePrefsForResume(Context ctx) {
         SharedPreferences ce = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        if (hasActiveSessionPrefs(ce)) return ce;
+        if (hasActiveSessionPrefs(ce) || hasStandbyPrefs(ce)) return ce;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             SharedPreferences de = deviceProtectedPrefs(ctx);
-            if (hasActiveSessionPrefs(de)) return de;
+            if (hasActiveSessionPrefs(de) || hasStandbyPrefs(de)) return de;
         }
         return ce;
     }
@@ -1490,29 +1564,81 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .putString(PENDING_BATCHES_KEY, src.getString(PENDING_BATCHES_KEY, "[]"));
     }
 
-    private static void mirrorRecordingPrefsToDeviceProtected(Context ctx) {
+    private static SharedPreferences.Editor copyStandbyResumeFields(
+            SharedPreferences.Editor ed, SharedPreferences src) {
+        return ed.putBoolean("standbyArmed", true)
+                .putString("deviceId", src.getString("deviceId", ""))
+                .putString("ingestUrl", src.getString("ingestUrl", ""))
+                .putString("ingestToken", src.getString("ingestToken", ""))
+                .putString("athleteId", src.getString("athleteId", ""))
+                .putBoolean("enableGps", src.getBoolean("enableGps", false))
+                .putBoolean("standbySavedEnableMotion", src.getBoolean("standbySavedEnableMotion", true))
+                .putLong("standbySavedGpsIntervalMs", src.getLong("standbySavedGpsIntervalMs", 1000L))
+                .putLong("standbyArmedAt", src.getLong("standbyArmedAt", 0L))
+                .putLong("standbyOutsideSinceMs", src.getLong("standbyOutsideSinceMs", 0L))
+                .putLong("standbyLastFreshFixMs", src.getLong("standbyLastFreshFixMs", 0L))
+                .putString("standbyInsideZoneName", src.getString("standbyInsideZoneName", ""))
+                .putBoolean("standbyAutoStartTriggered", src.getBoolean("standbyAutoStartTriggered", false));
+    }
+
+    private static void mirrorSessionPrefsToDeviceProtected(Context ctx) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return;
         SharedPreferences ce = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         SharedPreferences de = deviceProtectedPrefs(ctx);
-        if (!ce.getBoolean("recordingActive", false)) {
+        boolean recordingActive = ce.getBoolean("recordingActive", false);
+        boolean standbyArmed = ce.getBoolean("standbyArmed", false);
+        if (!recordingActive && !standbyArmed) {
             de.edit().clear().apply();
             return;
         }
-        copySessionResumeFields(de.edit(), ce).apply();
+        SharedPreferences.Editor ed = de.edit();
+        if (recordingActive) {
+            copySessionResumeFields(ed, ce);
+        } else {
+            ed.putBoolean("recordingActive", false);
+        }
+        if (standbyArmed) {
+            copyStandbyResumeFields(ed, ce);
+        } else {
+            ed.putBoolean("standbyArmed", false);
+        }
+        ed.apply();
+    }
+
+    /** @deprecated use {@link #mirrorSessionPrefsToDeviceProtected(Context)} */
+    private static void mirrorRecordingPrefsToDeviceProtected(Context ctx) {
+        mirrorSessionPrefsToDeviceProtected(ctx);
     }
 
     private void promoteDeviceProtectedSessionPrefs() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return;
         SharedPreferences ce = getSharedPreferences(PREFS, MODE_PRIVATE);
-        if (hasActiveSessionPrefs(ce)) return;
+        if (hasActiveSessionPrefs(ce) || hasStandbyPrefs(ce)) return;
         SharedPreferences de =
                 createDeviceProtectedStorageContext().getSharedPreferences(PREFS, MODE_PRIVATE);
-        if (!hasActiveSessionPrefs(de)) return;
-        copySessionResumeFields(ce.edit(), de).apply();
+        if (hasActiveSessionPrefs(de)) {
+            copySessionResumeFields(ce.edit(), de).apply();
+            return;
+        }
+        if (hasStandbyPrefs(de)) {
+            copyStandbyResumeFields(ce.edit(), de).apply();
+        }
+    }
+
+    private static boolean hasStandbyPrefs(SharedPreferences p) {
+        if (!p.getBoolean("standbyArmed", false)) return false;
+        if (p.getBoolean("recordingActive", false)) return false;
+        String deviceId = p.getString("deviceId", "");
+        String ingestUrl = p.getString("ingestUrl", "");
+        return deviceId != null
+                && !deviceId.isEmpty()
+                && ingestUrl != null
+                && !ingestUrl.isEmpty();
     }
 
     public static boolean shouldResumeAfterBoot(Context ctx) {
-        return hasActiveSessionPrefs(resolvePrefsForResume(ctx));
+        SharedPreferences p = resolvePrefsForResume(ctx);
+        return hasActiveSessionPrefs(p) || hasStandbyPrefs(p);
     }
 
     public static void requestBootResume(Context ctx) {
@@ -1560,7 +1686,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     public static void scheduleBootResumeRetry(Context ctx) {
         SharedPreferences p = resolvePrefsForResume(ctx);
-        if (!hasActiveSessionPrefs(p)) return;
+        if (!hasActiveSessionPrefs(p) && !hasStandbyPrefs(p)) return;
         int count = p.getInt(BOOT_RETRY_COUNT_KEY, 0);
         boolean persistent = count >= MAX_BOOT_RESUME_RETRIES;
         if (persistent) {
@@ -1620,6 +1746,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             NotificationManager nm = ctx.getSystemService(NotificationManager.class);
             if (nm != null) nm.createNotificationChannel(ch);
         }
+        SharedPreferences p = resolvePrefsForResume(ctx);
+        boolean standbyOnly = hasStandbyPrefs(p) && !hasActiveSessionPrefs(p);
         Intent launch = new Intent(ctx, BootResumeLauncherActivity.class);
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pi =
@@ -1630,8 +1758,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification notification =
                 new NotificationCompat.Builder(ctx, CHANNEL_ID)
-                        .setContentTitle("CrewSight session recording")
-                        .setContentText("Tap to resume GPS after restart")
+                        .setContentTitle(
+                                standbyOnly ? "CrewSight geofence standby" : "CrewSight session recording")
+                        .setContentText(
+                                standbyOnly
+                                        ? "Tap to restore standby GPS after restart"
+                                        : "Tap to resume GPS after restart")
                         .setSmallIcon(R.drawable.ic_stat_rowing_shell)
                         .setContentIntent(pi)
                         .setAutoCancel(true)
@@ -2032,8 +2164,399 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (nm != null) nm.createNotificationChannel(alertCh);
     }
 
+    private void loadStandbyFlagsFromPrefs() {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        standbyMode = p.getBoolean("standbyArmed", false) && !p.getBoolean("recordingActive", false);
+        standbyOutsideSinceMs = p.getLong("standbyOutsideSinceMs", 0L);
+        standbyLastFreshFixMs = p.getLong("standbyLastFreshFixMs", 0L);
+        standbyInsideZoneName = p.getString("standbyInsideZoneName", "");
+        standbyAutoStartTriggered = p.getBoolean("standbyAutoStartTriggered", false);
+    }
+
+    private void persistStandbyState() {
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putBoolean("standbyArmed", standbyMode)
+                .putLong("standbyOutsideSinceMs", standbyOutsideSinceMs)
+                .putLong("standbyLastFreshFixMs", standbyLastFreshFixMs)
+                .putString("standbyInsideZoneName", standbyInsideZoneName != null ? standbyInsideZoneName : "")
+                .putBoolean("standbyAutoStartTriggered", standbyAutoStartTriggered)
+                .apply();
+        mirrorSessionPrefsToDeviceProtected(getApplicationContext());
+    }
+
+    private void scheduleStandbyDwellTick() {
+        if (!standbyMode) return;
+        mainHandler.removeCallbacks(standbyDwellRunnable);
+        mainHandler.postDelayed(standbyDwellRunnable, STANDBY_DWELL_TICK_MS);
+    }
+
+    private void handleStandbyLocation(Location location) {
+        if (!standbyMode || standbyAutoStartTriggered || location == null) return;
+        long now = System.currentTimeMillis();
+        long fixMs = ingestTimeMs(location);
+        long fixAge = now - fixMs;
+        if (fixAge > STANDBY_MAX_FIX_AGE_MS) {
+            updateStandbyNotification("GPS stale — waiting for fresh fix…");
+            return;
+        }
+        standbyLastFreshFixMs = fixMs;
+        boolean inside =
+                GeofenceHelper.isInsideAutoStartBlockingZone(
+                        getApplicationContext(), location.getLatitude(), location.getLongitude());
+        if (inside) {
+            standbyOutsideSinceMs = 0L;
+            standbyInsideZoneName =
+                    GeofenceHelper.autoStartBlockingZoneName(
+                            getApplicationContext(), location.getLatitude(), location.getLongitude());
+            updateStandbyNotification("In " + standbyInsideZoneName + " — leave park to auto-start");
+        } else {
+            if (standbyOutsideSinceMs <= 0L) {
+                standbyOutsideSinceMs = now;
+            }
+            long dwellMs = GeofenceHelper.standbyDwellMs(getApplicationContext());
+            long elapsed = now - standbyOutsideSinceMs;
+            if (elapsed < dwellMs) {
+                int left = (int) Math.ceil((dwellMs - elapsed) / 1000.0);
+                updateStandbyNotification("Outside park — auto-start in " + left + "s");
+            } else {
+                updateStandbyNotification("Starting session…");
+            }
+            tryStandbyAutoStart();
+        }
+        persistStandbyState();
+    }
+
+    private void tryStandbyAutoStart() {
+        if (!standbyMode || standbyAutoStartTriggered) return;
+        long now = System.currentTimeMillis();
+        if (standbyOutsideSinceMs <= 0L) return;
+        if (now - standbyLastFreshFixMs > STANDBY_MAX_FIX_AGE_MS) return;
+        long dwellMs = GeofenceHelper.standbyDwellMs(getApplicationContext());
+        if (now - standbyOutsideSinceMs < dwellMs) return;
+        standbyAutoStartTriggered = true;
+        persistStandbyState();
+        triggerNativeAutoStart();
+    }
+
+    private void triggerNativeAutoStart() {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String deviceId = p.getString("deviceId", "");
+        String ingestUrl = p.getString("ingestUrl", "");
+        if (deviceId == null || deviceId.isEmpty() || ingestUrl == null || ingestUrl.isEmpty()) {
+            Log.e(TAG, "Auto-start aborted — missing ingest config");
+            standbyAutoStartTriggered = false;
+            persistStandbyState();
+            return;
+        }
+        String sessionId = UUID.randomUUID().toString();
+        long startedAt = System.currentTimeMillis();
+        boolean restoreMotion = p.getBoolean("standbySavedEnableMotion", true);
+        long restoreGpsInterval = Math.max(500L, p.getLong("standbySavedGpsIntervalMs", 1000L));
+        p.edit()
+                .putString("sessionId", sessionId)
+                .putBoolean("recordingActive", true)
+                .putBoolean("standbyArmed", false)
+                .putBoolean("standbyAutoStartTriggered", false)
+                .putBoolean("autoStartedSession", true)
+                .putLong("recordingStartedAt", startedAt)
+                .putBoolean("enableGps", true)
+                .putBoolean("enableMotion", restoreMotion)
+                .putLong("gpsIntervalMs", restoreGpsInterval)
+                .putBoolean("economyActive", false)
+                .putBoolean("suppressRecordingActive", false)
+                .putBoolean("liveMapActive", false)
+                .putInt("uploadSeq", 0)
+                .putInt("uploadOkCount", 0)
+                .putInt("uploadFailCount", 0)
+                .putInt(HEARTBEAT_GPS_COUNT_KEY, 0)
+                .putString(PENDING_BATCHES_KEY, "[]")
+                .apply();
+        mirrorSessionPrefsToDeviceProtected(getApplicationContext());
+        Log.i(TAG, "Geofence auto-start — new session " + sessionId.substring(0, 8));
+        enterRecordingModeFromStandby();
+        uploadExecutor.execute(() -> enqueueSessionStartSample(startedAt));
+        updateRecordingNotification("Session auto-started — GPS tracking active");
+    }
+
+    private void enterRecordingModeFromStandby() {
+        standbyMode = false;
+        standbyOutsideSinceMs = 0L;
+        standbyInsideZoneName = "";
+        standbyAutoStartTriggered = false;
+        mainHandler.removeCallbacks(standbyDwellRunnable);
+        loadSessionFlagsFromPrefs();
+        ingestBuffer = new JSONArray();
+        lastIngestFlushMs = 0L;
+        lastSuccessfulUploadMs = 0L;
+        lastBatteryReportMs = 0L;
+        lastGpsUploadWallMs = 0L;
+        lastGpsSampleOfferedMs = 0L;
+        lastUploadedFixTimeMs = 0L;
+        lastUploadedGpsBucket = -1L;
+        lastStaleGpsPiggybackWallMs = 0L;
+        gpsWindowBuffer.clear();
+        lastWindowCollectWallMs = 0L;
+        lastNativeGeofenceSignature = "";
+        if (enableMotion || (enableGps && compassAvailable)) {
+            registerSensors();
+        }
+        if (enableGps) {
+            registerLocation();
+            scheduleGpsFlush();
+            tickScheduledGpsUpload();
+        }
+        schedulePendingFlush();
+        scheduleIngestFlush();
+        scheduleHeartbeat();
+    }
+
+    private void enterStandbyModeFromRecording() {
+        uploadExecutor.execute(this::flushIngestBufferNow);
+        mainHandler.removeCallbacks(heartbeatRunnable);
+        mainHandler.removeCallbacks(ingestFlushRunnable);
+        mainHandler.removeCallbacks(pendingFlushRunnable);
+        mainHandler.removeCallbacks(gpsFlushRunnable);
+        unregisterSensor();
+        standbyMode = true;
+        standbyAutoStartTriggered = false;
+        standbyOutsideSinceMs = 0L;
+        standbyInsideZoneName = "";
+        enableMotion = false;
+        economyActive = false;
+        suppressRecordingActive = false;
+        capsizeActive = false;
+        cancelAlertNotification();
+        ingestBuffer = new JSONArray();
+        gpsWindowBuffer.clear();
+        persistStandbyState();
+        if (enableGps) {
+            registerLocation();
+            Location loc = latestGpsLocation;
+            if (loc != null) {
+                handleStandbyLocation(loc);
+            }
+        }
+        scheduleStandbyDwellTick();
+        updateStandbyNotification("Armed — waiting for GPS…");
+        Log.i(TAG, "Transitioned recording → geofence standby");
+    }
+
+    private void updateStandbyNotification(String detail) {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm == null) return;
+        Intent launch = new Intent(this, MainActivity.class);
+        PendingIntent pi =
+                PendingIntent.getActivity(
+                        this,
+                        0,
+                        launch,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification notification =
+                new NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setContentTitle("CrewSight standby")
+                        .setContentText(detail)
+                        .setSmallIcon(R.drawable.ic_stat_rowing_shell)
+                        .setContentIntent(pi)
+                        .setOngoing(true)
+                        .setPriority(NotificationCompat.PRIORITY_LOW)
+                        .build();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int types = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+            if (Build.VERSION.SDK_INT >= 34) {
+                types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+            }
+            ServiceCompat.startForeground(this, NOTIF_ID_FOREGROUND, notification, types);
+        } else {
+            startForeground(NOTIF_ID_FOREGROUND, notification);
+        }
+    }
+
+    private void updateRecordingNotification(String detail) {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm == null) return;
+        Intent launch = new Intent(this, MainActivity.class);
+        PendingIntent pi =
+                PendingIntent.getActivity(
+                        this,
+                        0,
+                        launch,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification notification =
+                new NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setContentTitle("CrewSight session recording")
+                        .setContentText(detail)
+                        .setSmallIcon(R.drawable.ic_stat_rowing_shell)
+                        .setContentIntent(pi)
+                        .setOngoing(true)
+                        .setPriority(NotificationCompat.PRIORITY_LOW)
+                        .build();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int types = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+            if (Build.VERSION.SDK_INT >= 34) {
+                types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+            }
+            ServiceCompat.startForeground(this, NOTIF_ID_FOREGROUND, notification, types);
+        } else {
+            startForeground(NOTIF_ID_FOREGROUND, notification);
+        }
+    }
+
+    public static void armGeofenceStandby(
+            Context ctx,
+            String deviceId,
+            String ingestUrl,
+            String ingestToken,
+            String athleteId,
+            boolean enableGps,
+            boolean enableMotion,
+            long gpsIntervalMs) {
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, MODE_PRIVATE);
+        p.edit()
+                .putString("deviceId", deviceId != null ? deviceId : "")
+                .putString("ingestUrl", ingestUrl != null ? ingestUrl : "")
+                .putString("ingestToken", ingestToken != null ? ingestToken : "")
+                .putString("athleteId", athleteId != null ? athleteId : "")
+                .putBoolean("enableGps", enableGps)
+                .putBoolean("standbySavedEnableMotion", enableMotion)
+                .putLong("standbySavedGpsIntervalMs", Math.max(500L, gpsIntervalMs))
+                .putBoolean("recordingActive", false)
+                .putBoolean("standbyArmed", true)
+                .putLong("standbyArmedAt", System.currentTimeMillis())
+                .putLong("standbyOutsideSinceMs", 0L)
+                .putLong("standbyLastFreshFixMs", 0L)
+                .putString("standbyInsideZoneName", "")
+                .putBoolean("standbyAutoStartTriggered", false)
+                .putBoolean("autoStartedSession", false)
+                .apply();
+        mirrorSessionPrefsToDeviceProtected(ctx);
+        CapsizeMonitorService inst = runningInstance != null ? runningInstance.get() : null;
+        if (inst != null && !p.getBoolean("recordingActive", false)) {
+            inst.mainHandler.post(inst::enterStandbyModeFromRecording);
+            return;
+        }
+        Intent intent = new Intent(ctx, CapsizeMonitorService.class);
+        intent.putExtra("standbyResume", true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ctx.startForegroundService(intent);
+        } else {
+            ctx.startService(intent);
+        }
+    }
+
+    public static void transitionToStandby(Context ctx) {
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, MODE_PRIVATE);
+        p.edit()
+                .putBoolean("recordingActive", false)
+                .putBoolean("standbyArmed", true)
+                .putLong("standbyArmedAt", System.currentTimeMillis())
+                .putLong("standbyOutsideSinceMs", 0L)
+                .putLong("standbyLastFreshFixMs", 0L)
+                .putString("standbyInsideZoneName", "")
+                .putBoolean("standbyAutoStartTriggered", false)
+                .putBoolean("autoStartedSession", false)
+                .putBoolean("standbySavedEnableMotion", p.getBoolean("enableMotion", true))
+                .putLong("standbySavedGpsIntervalMs", Math.max(500L, p.getLong("gpsIntervalMs", 1000L)))
+                .apply();
+        mirrorSessionPrefsToDeviceProtected(ctx);
+        CapsizeMonitorService inst = runningInstance != null ? runningInstance.get() : null;
+        if (inst != null) {
+            inst.mainHandler.post(inst::enterStandbyModeFromRecording);
+            return;
+        }
+        Intent intent = new Intent(ctx, CapsizeMonitorService.class);
+        intent.putExtra("standbyResume", true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ctx.startForegroundService(intent);
+        } else {
+            ctx.startService(intent);
+        }
+    }
+
+    public static void disarmGeofenceStandby(Context ctx) {
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, MODE_PRIVATE);
+        boolean recordingActive = p.getBoolean("recordingActive", false);
+        p.edit()
+                .putBoolean("standbyArmed", false)
+                .putLong("standbyOutsideSinceMs", 0L)
+                .putBoolean("standbyAutoStartTriggered", false)
+                .apply();
+        mirrorSessionPrefsToDeviceProtected(ctx);
+        CapsizeMonitorService inst = runningInstance != null ? runningInstance.get() : null;
+        if (inst != null && !recordingActive) {
+            inst.stopSelf();
+        }
+    }
+
+    public static JSONObject getStandbyStatus(Context ctx) throws Exception {
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, MODE_PRIVATE);
+        JSONObject ret = new JSONObject();
+        boolean armed = p.getBoolean("standbyArmed", false) && !p.getBoolean("recordingActive", false);
+        ret.put("armed", armed);
+        if (!armed) {
+            ret.put("inside", false);
+            ret.put("zoneName", JSONObject.NULL);
+            ret.put("message", "Standby off");
+            ret.put("outsideDwellRemainingSec", JSONObject.NULL);
+            return ret;
+        }
+        long outsideSince = p.getLong("standbyOutsideSinceMs", 0L);
+        long lastFresh = p.getLong("standbyLastFreshFixMs", 0L);
+        String zoneName = p.getString("standbyInsideZoneName", "");
+        boolean inside = outsideSince <= 0L && zoneName != null && !zoneName.isEmpty();
+        ret.put("inside", inside);
+        ret.put("zoneName", inside && zoneName != null && !zoneName.isEmpty() ? zoneName : JSONObject.NULL);
+        long now = System.currentTimeMillis();
+        if (now - lastFresh > STANDBY_MAX_FIX_AGE_MS) {
+            ret.put("message", "GPS stale — waiting for fresh fix…");
+            ret.put("outsideDwellRemainingSec", JSONObject.NULL);
+            return ret;
+        }
+        if (inside) {
+            ret.put("message", "In " + zoneName + " — leave park to auto-start");
+            ret.put("outsideDwellRemainingSec", JSONObject.NULL);
+            return ret;
+        }
+        if (outsideSince <= 0L) {
+            ret.put("message", "Armed — waiting for GPS…");
+            ret.put("outsideDwellRemainingSec", JSONObject.NULL);
+            return ret;
+        }
+        long dwellMs = GeofenceHelper.standbyDwellMs(ctx);
+        long elapsed = now - outsideSince;
+        if (elapsed < dwellMs) {
+            int left = (int) Math.ceil((dwellMs - elapsed) / 1000.0);
+            ret.put("message", "Outside park — auto-start in " + left + "s");
+            ret.put("outsideDwellRemainingSec", left);
+        } else {
+            ret.put("message", "Starting session…");
+            ret.put("outsideDwellRemainingSec", 0);
+        }
+        return ret;
+    }
+
     private Notification buildForegroundNotification() {
         Intent launch = new Intent(this, MainActivity.class);
+        if (standbyMode) {
+            String detail =
+                    standbyInsideZoneName != null && !standbyInsideZoneName.isEmpty()
+                            ? "In " + standbyInsideZoneName + " — leave park to auto-start"
+                            : "Leave boat park to auto-start session";
+            PendingIntent pi =
+                    PendingIntent.getActivity(
+                            this,
+                            0,
+                            launch,
+                            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            return new NotificationCompat.Builder(this, CHANNEL_ID)
+                    .setContentTitle("CrewSight standby")
+                    .setContentText(detail)
+                    .setSmallIcon(R.drawable.ic_stat_rowing_shell)
+                    .setContentIntent(pi)
+                    .setOngoing(true)
+                    .setPriority(NotificationCompat.PRIORITY_LOW)
+                    .build();
+        }
         PendingIntent pi =
             PendingIntent.getActivity(
                 this, 0, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);

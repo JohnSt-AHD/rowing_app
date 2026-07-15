@@ -17,10 +17,30 @@ export type NativeCapsizeMonitorConfig = {
 export type NativeActiveSession = {
   active: boolean;
   serviceRunning: boolean;
+  standbyArmed?: boolean;
+  autoStartedSession?: boolean;
   sessionId?: string;
   deviceId?: string;
   athleteId?: string;
   startedAt?: number;
+};
+
+export type NativeStandbyStatus = {
+  armed: boolean;
+  inside: boolean;
+  zoneName: string | null;
+  message: string;
+  outsideDwellRemainingSec: number | null;
+};
+
+export type NativeGeofenceStandbyConfig = {
+  deviceId: string;
+  ingestUrl: string;
+  ingestToken?: string;
+  athleteId?: string;
+  enableGps?: boolean;
+  enableMotion?: boolean;
+  gpsIntervalMs?: number;
 };
 
 export type NativeRecordingPulse = {
@@ -101,6 +121,10 @@ export interface NativeCapsizeMonitorPlugin {
   checkRecordingSetup(): Promise<NativeRecordingSetupStatus>;
   prepareRecording(): Promise<NativeRecordingSetupStatus>;
   getPulse(): Promise<NativeRecordingPulse>;
+  armGeofenceStandby(config: NativeGeofenceStandbyConfig): Promise<void>;
+  transitionToStandby(): Promise<void>;
+  disarmGeofenceStandby(): Promise<void>;
+  getStandbyStatus(): Promise<NativeStandbyStatus>;
 }
 
 const CapsizeMonitor = registerPlugin<NativeCapsizeMonitorPlugin>('CapsizeMonitor');
@@ -225,6 +249,54 @@ export async function prepareNativeRecordingSetup(): Promise<NativeRecordingSetu
   if (!IS_NATIVE) return null;
   try {
     return await CapsizeMonitor.prepareRecording();
+  } catch {
+    return null;
+  }
+}
+
+export async function armNativeGeofenceStandby(
+  config: NativeGeofenceStandbyConfig,
+): Promise<boolean> {
+  if (!IS_NATIVE) return false;
+  try {
+    await CapsizeMonitor.armGeofenceStandby({
+      deviceId: config.deviceId,
+      ingestUrl: config.ingestUrl,
+      ingestToken: config.ingestToken ?? '',
+      athleteId: config.athleteId ?? '',
+      enableGps: config.enableGps ?? true,
+      enableMotion: config.enableMotion ?? true,
+      gpsIntervalMs: config.gpsIntervalMs ?? 1000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function transitionToNativeGeofenceStandby(): Promise<boolean> {
+  if (!IS_NATIVE) return false;
+  try {
+    await CapsizeMonitor.transitionToStandby();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function disarmNativeGeofenceStandby(): Promise<void> {
+  if (!IS_NATIVE) return;
+  try {
+    await CapsizeMonitor.disarmGeofenceStandby();
+  } catch {
+    /* optional */
+  }
+}
+
+export async function getNativeStandbyStatus(): Promise<NativeStandbyStatus | null> {
+  if (!IS_NATIVE) return null;
+  try {
+    return await CapsizeMonitor.getStandbyStatus();
   } catch {
     return null;
   }

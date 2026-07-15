@@ -16,12 +16,19 @@ import {
 import { requestNativePermissions } from '@rowing/sensor-adapters';
 import type { SessionMeta } from '@rowing/telemetry-types';
 import {
+  armNativeGeofenceStandby,
+  disarmNativeGeofenceStandby,
   getNativeActiveSession,
+  getNativeStandbyStatus,
   prepareNativeRecordingSetup,
   recordingSetupLogLines,
   setNativeLiveMapMode,
+  setNativeGeofences,
   stopNativeCapsizeMonitor,
+  transitionToNativeGeofenceStandby,
+  type NativeStandbyStatus,
 } from '../lib/native-capsize-monitor';
+import { fetchGeofences } from '../lib/geofence-service';
 import { resolveResumeCandidate } from '../lib/session-resume';
 import { startRecorder, type RecorderController } from '../session/recorder';
 import {
@@ -72,6 +79,7 @@ export function mountApp(root: HTMLElement): void {
   let controller: RecorderController | null = null;
   let standby: StandbyController | null = null;
   let standbyStatus: StandbyStatus | null = null;
+  let nativeStandbyPollTimer: ReturnType<typeof setInterval> | null = null;
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   let sessionStartedAt: number | null = null;
   let hudTickTimer: ReturnType<typeof setInterval> | null = null;
@@ -204,6 +212,7 @@ export function mountApp(root: HTMLElement): void {
     }
     clearRecordingActive();
     if (IS_NATIVE) {
+      await stopStandby();
       await stopNativeCapsizeMonitor();
     }
     const n = await clearPendingOutbox();
@@ -605,10 +614,125 @@ export function mountApp(root: HTMLElement): void {
     `;
   }
 
-  async function stopStandby(): Promise<void> {
-    standby?.stop();
+  function clearStandbyUi(): void {
+    if (nativeStandbyPollTimer) {
+      clearInterval(nativeStandbyPollTimer);
+      nativeStandbyPollTimer = null;
+    }
+    if (!IS_NATIVE) {
+      standby?.stop();
+    }
     standby = null;
     standbyStatus = null;
+  }
+
+  async function stopStandby(): Promise<void> {
+    clearStandbyUi();
+    if (IS_NATIVE) {
+      const native = await getNativeActiveSession();
+      if (native?.standbyArmed && !native.active) {
+        await disarmNativeGeofenceStandby();
+      }
+    }
+  }
+
+  function applyStandbyStatus(st: StandbyStatus | NativeStandbyStatus): void {
+    standbyStatus = {
+      armed: st.armed,
+      inside: st.inside,
+      zoneName: st.zoneName,
+      message: st.message,
+    };
+    if (!recording && view === 'record') {
+      const hint = root.querySelector('.session-standby-hint');
+      if (hint) hint.textContent = st.message;
+      const btn = root.querySelector('[data-action="toggle-standby"]');
+      if (btn) {
+        btn.textContent = 'Disarm geofence standby';
+        btn.classList.add('hub-btn--danger');
+        btn.classList.remove('hub-btn--ghost');
+      }
+    }
+  }
+
+  async function syncGeofencesToNative(s: ReturnType<typeof loadSettings>): Promise<void> {
+    if (!IS_NATIVE) return;
+    try {
+      const list = await fetchGeofences(s.ingestUrl, s.ingestToken, true, 8000);
+      await setNativeGeofences(
+        list.map((g) => ({
+          name: g.name,
+          kind: g.kind,
+          shapeType: g.shapeType,
+          centerLat: g.centerLat,
+          centerLon: g.centerLon,
+          radiusM: g.radiusM,
+          polygonCoords: g.polygonCoords,
+          enabled: g.enabled,
+          economyIntervalSec: g.economyIntervalSec,
+          disableCapsize: g.disableCapsize,
+          suppressRecording: g.suppressRecording,
+          autoStopOnEnter: g.autoStopOnEnter,
+          autoStartOnExit: g.autoStartOnExit,
+          sessionDwellSec: g.sessionDwellSec,
+        })),
+      );
+    } catch (e) {
+      pushLog(
+        `Geofence sync failed: ${e instanceof Error ? e.message : String(e)}`,
+        false,
+      );
+    }
+  }
+
+  function startNativeStandbyPoll(): void {
+    if (!IS_NATIVE || nativeStandbyPollTimer) return;
+    nativeStandbyPollTimer = setInterval(() => {
+      void (async () => {
+        const native = await getNativeActiveSession();
+        if (native?.active && !recording) {
+          await tryAutoResume('Native geofence auto-started session — restoring controls…');
+          return;
+        }
+        const st = await getNativeStandbyStatus();
+        if (st?.armed) {
+          applyStandbyStatus(st);
+        } else if (!recording && nativeStandbyPollTimer) {
+          clearInterval(nativeStandbyPollTimer);
+          nativeStandbyPollTimer = null;
+          standbyStatus = null;
+          render();
+        }
+      })();
+    }, 2000);
+  }
+
+  async function adoptNativeStandbyUi(message?: string): Promise<void> {
+    standby = {
+      stop: () => {
+        void stopStandby();
+      },
+      getStatus: () =>
+        standbyStatus ?? {
+          armed: true,
+          inside: false,
+          zoneName: null,
+          message: message ?? 'Geofence standby armed',
+        },
+    };
+    const st = await getNativeStandbyStatus();
+    if (st?.armed) {
+      applyStandbyStatus(st);
+    } else if (message) {
+      standbyStatus = {
+        armed: true,
+        inside: false,
+        zoneName: null,
+        message,
+      };
+    }
+    startNativeStandbyPoll();
+    render();
   }
 
   async function armStandby(): Promise<void> {
@@ -647,6 +771,23 @@ export function mountApp(root: HTMLElement): void {
         pushLog(`Permissions error: ${e instanceof Error ? e.message : String(e)}`);
         return;
       }
+      await syncGeofencesToNative(s);
+      const ok = await armNativeGeofenceStandby({
+        deviceId: s.deviceId,
+        ingestUrl: s.ingestUrl,
+        ingestToken: s.ingestToken,
+        athleteId: s.athleteId,
+        enableGps: s.enableGps,
+        enableMotion: s.enableMotion,
+        gpsIntervalMs: s.gpsIntervalMs,
+      });
+      if (!ok) {
+        pushLog('Could not arm native geofence standby.');
+        return;
+      }
+      pushLog('Native geofence standby armed — auto-start after leaving park.');
+      await adoptNativeStandbyUi('Armed — waiting for GPS…');
+      return;
     }
     try {
       standby = await startGeofenceStandby(s, {
@@ -686,7 +827,7 @@ export function mountApp(root: HTMLElement): void {
     skipPermissions?: boolean;
   }): Promise<void> {
     if (recording) return;
-    await stopStandby();
+    clearStandbyUi();
     const s = loadSettings();
     if (IS_NATIVE && !opts?.skipPermissions) {
       try {
@@ -736,12 +877,32 @@ export function mountApp(root: HTMLElement): void {
             if (!recording) return;
             pushLog('Auto-stopped — back inside boat-park geofence.');
             if (syncTimer) clearInterval(syncTimer);
+            syncTimer = null;
             stopHudTimer();
             sessionStartedAt = null;
             speedAvg.clear();
             strokeRateAvg.clear();
             void exitStageFullscreen();
             stopBackgroundSession();
+            const settingsNow = loadSettings();
+            if (IS_NATIVE && settingsNow.geofenceSessionControl !== false) {
+              await controller?.stopForGeofenceStandby();
+              controller = null;
+              recording = false;
+              capsizeActive = false;
+              backgroundStatus = 'foreground';
+              clearRecordingActive();
+              await runSync(true);
+              const transitioned = await transitionToNativeGeofenceStandby();
+              if (transitioned) {
+                pushLog('Native standby armed — auto-start when leaving boat park.');
+                await adoptNativeStandbyUi('In boat park — leave to auto-start');
+              } else {
+                pushLog('Could not arm native standby — arm manually on Record screen.');
+                render();
+              }
+              return;
+            }
             await controller?.stop();
             controller = null;
             recording = false;
@@ -749,7 +910,6 @@ export function mountApp(root: HTMLElement): void {
             backgroundStatus = 'foreground';
             clearRecordingActive();
             await runSync(true);
-            const settingsNow = loadSettings();
             if (settingsNow.geofenceSessionControl !== false) {
               await armStandby();
             } else {
@@ -845,7 +1005,9 @@ export function mountApp(root: HTMLElement): void {
       pushLog(
         candidate.serviceRunning
           ? reason ??
-              'Restoring recording session (background service still running)…'
+              (native?.autoStartedSession
+                ? 'Restoring auto-started recording session…'
+                : 'Restoring recording session (background service still running)…')
           : 'Resuming recording session after restart…',
         false,
       );
@@ -964,8 +1126,18 @@ export function mountApp(root: HTMLElement): void {
   });
   if (IS_NATIVE) {
     const onForegroundResume = () => {
-      if (document.visibilityState !== 'visible' || recording) return;
-      void tryAutoResume('Recording still active — restoring session controls…');
+      if (document.visibilityState !== 'visible') return;
+      if (recording) return;
+      void (async () => {
+        const native = await getNativeActiveSession();
+        if (native?.active) {
+          await tryAutoResume('Recording still active — restoring session controls…');
+          return;
+        }
+        if (native?.standbyArmed) {
+          await adoptNativeStandbyUi();
+        }
+      })();
     };
     document.addEventListener('visibilitychange', onForegroundResume);
 
@@ -973,6 +1145,11 @@ export function mountApp(root: HTMLElement): void {
       await new Promise<void>((resolve) => {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       });
+      const native = await getNativeActiveSession();
+      if (native?.standbyArmed && !native.active) {
+        await adoptNativeStandbyUi('Geofence standby active — leave park to auto-start');
+        return;
+      }
       await tryAutoResume();
     })();
   } else {

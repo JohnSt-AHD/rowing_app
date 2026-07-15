@@ -86,6 +86,46 @@ final class GeofenceHelper {
         return g.optBoolean("auto_stop_on_enter", false);
     }
 
+    static boolean autoStartOnExit(JSONObject g) {
+        if (g == null) return false;
+        if (g.has("autoStartOnExit")) return g.optBoolean("autoStartOnExit", false);
+        return g.optBoolean("auto_start_on_exit", false);
+    }
+
+    static int sessionDwellSec(JSONObject g) {
+        if (g == null) return 45;
+        int v = g.optInt("sessionDwellSec", -1);
+        if (v < 0) v = g.optInt("session_dwell_sec", -1);
+        if (v >= 5) return Math.min(600, Math.max(5, v));
+        return 45;
+    }
+
+    /** Dwell before auto-start — mirrors geofence-standby.ts (min 5s). */
+    static long standbyDwellMs(Context ctx) {
+        JSONArray geofences = loadGeofences(ctx);
+        for (int i = 0; i < geofences.length(); i++) {
+            JSONObject g = geofences.optJSONObject(i);
+            if (g != null && g.optBoolean("enabled", true) && autoStartOnExit(g)) {
+                return Math.max(5000L, (long) sessionDwellSec(g) * 1000L);
+            }
+        }
+        return 45_000L;
+    }
+
+    /** True when inside a boat-park zone that blocks auto-start until exit. */
+    static boolean isInsideAutoStartBlockingZone(Context ctx, double lat, double lon) {
+        JSONObject match = findBoatParkAt(ctx, lat, lon);
+        return match != null && autoStartOnExit(match);
+    }
+
+    static String autoStartBlockingZoneName(Context ctx, double lat, double lon) {
+        JSONObject match = findBoatParkAt(ctx, lat, lon);
+        if (match != null && autoStartOnExit(match)) {
+            return match.optString("name", "boat park");
+        }
+        return "";
+    }
+
     private static boolean pointInCircle(
             double lat, double lon, double centerLat, double centerLon, double radiusM) {
         if (!Double.isFinite(centerLat)

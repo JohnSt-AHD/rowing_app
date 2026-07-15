@@ -54,6 +54,7 @@ public class CapsizeMonitorPlugin extends Plugin {
         SharedPreferences p =
             getContext().getSharedPreferences(CapsizeMonitorService.PREFS, android.content.Context.MODE_PRIVATE);
         boolean serviceRunning = CapsizeMonitorService.isServiceRunning();
+        boolean standbyArmed = p.getBoolean("standbyArmed", false) && !p.getBoolean("recordingActive", false);
         boolean recordingActive = p.getBoolean("recordingActive", false);
         String sessionId = p.getString("sessionId", "");
         String deviceId = p.getString("deviceId", "");
@@ -62,11 +63,13 @@ public class CapsizeMonitorPlugin extends Plugin {
                 && !sessionId.isEmpty()
                 && deviceId != null
                 && !deviceId.isEmpty();
-        boolean active = serviceRunning || (recordingActive && hasSession);
+        boolean active = recordingActive && hasSession && !standbyArmed;
 
         JSObject ret = new JSObject();
         ret.put("active", active);
         ret.put("serviceRunning", serviceRunning);
+        ret.put("standbyArmed", standbyArmed);
+        ret.put("autoStartedSession", p.getBoolean("autoStartedSession", false));
         if (active) {
             ret.put("sessionId", sessionId);
             ret.put("deviceId", deviceId);
@@ -77,6 +80,48 @@ public class CapsizeMonitorPlugin extends Plugin {
             }
         }
         call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void armGeofenceStandby(PluginCall call) {
+        String deviceId = call.getString("deviceId");
+        String ingestUrl = call.getString("ingestUrl");
+        if (deviceId == null || ingestUrl == null) {
+            call.reject("deviceId and ingestUrl are required");
+            return;
+        }
+        CapsizeMonitorService.armGeofenceStandby(
+                getContext(),
+                deviceId,
+                ingestUrl,
+                call.getString("ingestToken", ""),
+                call.getString("athleteId", ""),
+                call.getBoolean("enableGps", true),
+                call.getBoolean("enableMotion", true),
+                call.getLong("gpsIntervalMs", 1000L));
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void transitionToStandby(PluginCall call) {
+        CapsizeMonitorService.transitionToStandby(getContext());
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void disarmGeofenceStandby(PluginCall call) {
+        CapsizeMonitorService.disarmGeofenceStandby(getContext());
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getStandbyStatus(PluginCall call) {
+        try {
+            JSONObject data = CapsizeMonitorService.getStandbyStatus(getContext());
+            call.resolve(jsonObjectToJSObject(data));
+        } catch (Exception e) {
+            call.reject("getStandbyStatus failed: " + e.getMessage());
+        }
     }
 
     @PluginMethod

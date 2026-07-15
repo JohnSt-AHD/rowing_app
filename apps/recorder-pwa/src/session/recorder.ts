@@ -70,6 +70,8 @@ export type RecorderStats = {
 export type RecorderController = {
   sessionId: string;
   stop: () => Promise<void>;
+  /** Stop WebView recorder but keep native service for geofence standby. */
+  stopForGeofenceStandby: () => Promise<void>;
   getStats: () => RecorderStats;
   flush: () => Promise<void>;
   connectHr: () => Promise<void>;
@@ -826,6 +828,19 @@ export async function startRecorder(
         (m) => onLog(`HR: ${m}`),
       );
       if (hrMonitor) onLog(`Connected: ${hrMonitor.name}`);
+    },
+    async stopForGeofenceStandby() {
+      stopped = true;
+      if (nativeCapsizeMonitorOn) {
+        await setNativeLiveMapMode(false);
+      }
+      if (batchTimer) clearInterval(batchTimer);
+      await pushBatch();
+      for (const s of stoppers) await s();
+      if (hrMonitor) await hrMonitor.disconnect();
+      meta.endedAt = Date.now();
+      await saveSession(meta);
+      onLog('Session stopped — native standby armed.');
     },
     async stop() {
       stopped = true;
