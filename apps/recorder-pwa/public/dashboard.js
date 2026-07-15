@@ -468,7 +468,8 @@ function fmtAgoSec(sec) {
   if (sec == null || !Number.isFinite(sec)) return '—';
   if (sec < 60) return `${sec}s ago`;
   if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
-  return `${Math.round(sec / 3600)}h ago`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h ago`;
+  return `${Math.round(sec / 86400)}d ago`;
 }
 
 function fmtBatteryPct(pct) {
@@ -517,7 +518,7 @@ function deviceSummaryLine(d) {
   if (d.battery?.pct != null) parts.push(`${fmtBatteryPct(d.battery.pct)} bat`);
   if (d.rowing?.capsize) parts.push('CAPSIZE');
   else if (d.rowing?.strokeRateValid) parts.push(`${fmtSpm(d.rowing.strokeRate)}`);
-  parts.push(`seen ${d.lastSeenAgoSec}s ago`);
+  parts.push(`seen ${fmtAgoSec(d.lastSeenAgoSec)}`);
   return parts.join(' · ');
 }
 
@@ -872,7 +873,7 @@ function popupHtml(p) {
     p.speed != null && p.speed >= 0.25 && window.RowingSpeed
       ? `<br>Pace: ${window.RowingSpeed.formatPaceWithPrognostic(p.speed, p.deviceId, p.athleteId, { suffix: true })}`
       : '';
-  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${p.lastSeenAgoSec}s ago${smoothNote}${compareNote}${hb}${bat}${pace}${hr}${spm}${tilt}${cap}</div>`;
+  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${fmtAgoSec(p.lastSeenAgoSec)}${smoothNote}${compareNote}${hb}${bat}${pace}${hr}${spm}${tilt}${cap}</div>`;
 }
 
 function updateMap(positions) {
@@ -1261,7 +1262,7 @@ function renderDevice(d) {
       <div class="meta-row">
         <span>Ingest <strong>${fmtHz(d.ingestRateHz)}</strong></span>
         <span>Total samples <strong>${d.totalSamples}</strong></span>
-        <span>Last seen <strong>${d.lastSeenAgoSec}s ago</strong></span>
+        <span>Last seen <strong>${fmtAgoSec(d.lastSeenAgoSec)}</strong></span>
       </div>
       ${coords ? `<div class="coords">${coords}${(() => {
         const disp = gpsDisplayAge(gps);
