@@ -833,36 +833,71 @@ async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
   await ensureOrgsBootstrapped();
   const now = Date.now();
   const staleCutoff = now - Math.max(onlineMs, 3600_000);
+  const telCutoff = now - Math.max(onlineMs, 120_000);
   const rows = await sql`
-    SELECT id, unique_id, last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
-    FROM rnz_devices
-    WHERE org_id = ${orgId}
-      AND last_gps_t_ms IS NOT NULL
-      AND last_lat IS NOT NULL
-      AND last_lon IS NOT NULL
-      AND last_gps_t_ms >= ${staleCutoff}
+    SELECT DISTINCT ON (d.id)
+      COALESCE(s.id, d.id) AS id,
+      d.id AS device_ref,
+      d.unique_id,
+      COALESCE(s.t_ms, d.last_gps_t_ms) AS t_ms,
+      COALESCE(s.latitude, d.last_lat) AS latitude,
+      COALESCE(s.longitude, d.last_lon) AS longitude,
+      COALESCE(s.accuracy, d.last_gps_accuracy) AS accuracy,
+      s.speed,
+      s.course,
+      s.compass_deg,
+      s.altitude,
+      s.hr,
+      s.ax,
+      s.ay,
+      s.az,
+      s.stroke_rate,
+      s.capsize,
+      s.tilt_deg,
+      s.battery_pct,
+      s.heartbeat
+    FROM rnz_devices d
+    LEFT JOIN LATERAL (
+      SELECT *
+      FROM rnz_samples
+      WHERE org_id = ${orgId}
+        AND unique_id = d.unique_id
+        AND latitude IS NOT NULL
+        AND longitude IS NOT NULL
+        AND t_ms >= ${telCutoff}
+      ORDER BY t_ms DESC
+      LIMIT 1
+    ) s ON TRUE
+    WHERE d.org_id = ${orgId}
+      AND d.last_gps_t_ms IS NOT NULL
+      AND d.last_lat IS NOT NULL
+      AND d.last_lon IS NOT NULL
+      AND d.last_gps_t_ms >= ${staleCutoff}
+    ORDER BY d.id, s.t_ms DESC NULLS LAST
   `;
   // deviceId must match listRegistryDevices().id so RowSafe can join positions[d.id].
   return rows.rows.map((row) =>
     rowToTraccarPosition({
       id: Number(row.id),
-      device_ref: Number(row.id),
+      device_ref: Number(row.device_ref),
       unique_id: row.unique_id,
-      t_ms: Number(row.last_gps_t_ms),
-      latitude: row.last_lat,
-      longitude: row.last_lon,
-      accuracy: row.last_gps_accuracy,
-      speed: null,
-      course: null,
-      compass_deg: null,
-      altitude: null,
-      hr: null,
-      ax: null,
-      ay: null,
-      az: null,
-      stroke_rate: null,
-      capsize: false,
-      tilt_deg: null,
+      t_ms: Number(row.t_ms),
+      latitude: row.latitude,
+      longitude: row.longitude,
+      accuracy: row.accuracy,
+      speed: row.speed,
+      course: row.course,
+      compass_deg: row.compass_deg,
+      altitude: row.altitude,
+      hr: row.hr,
+      ax: row.ax,
+      ay: row.ay,
+      az: row.az,
+      stroke_rate: row.stroke_rate,
+      capsize: row.capsize === true,
+      tilt_deg: row.tilt_deg,
+      battery_pct: row.battery_pct,
+      heartbeat: row.heartbeat === true,
     }),
   );
 }

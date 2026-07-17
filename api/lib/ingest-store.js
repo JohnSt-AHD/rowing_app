@@ -1764,6 +1764,54 @@ async function enrichTraccarSnapshotCapsize(orgId, snapshot, _onlineMs) {
   return snapshot;
 }
 
+/** Fill snapshot speed/stroke from recent samples when DB row lacks them (RowSafe map). */
+async function enrichTraccarSnapshotRowing(orgId, snapshot, onlineMs) {
+  if (!snapshot?.positions?.length) return snapshot;
+  const windowMs = Math.min(Math.max(Number(onlineMs) || 120_000, 60_000), 180_000);
+  /** @type {Map<string, { samples: Sample[] }>} */
+  let byDevice;
+  if (db.hasDb()) {
+    try {
+      byDevice = await db.fetchRecentSamplesByDevice(orgId, windowMs);
+    } catch (err) {
+      console.error('[ingest-store] snapshot rowing enrich failed:', err);
+      return snapshot;
+    }
+  } else {
+    byDevice = samplesByDeviceForWindow(orgId, windowMs);
+  }
+  if (!byDevice?.size) return snapshot;
+
+  const rowingByDevice = rowingMetricsByDevice(orgId, byDevice, windowMs);
+  const idToUid = new Map(
+    (snapshot.devices || []).map((d) => [d.id, d.uniqueId || d.name]),
+  );
+
+  for (const p of snapshot.positions) {
+    const uid = idToUid.get(p.deviceId) || p.deviceName;
+    if (!uid) continue;
+    const attrs = p.attributes || (p.attributes = {});
+
+    if (attrs.strokeRate == null) {
+      const rowing = rowingByDevice.get(uid);
+      if (rowing?.strokeRate != null) attrs.strokeRate = rowing.strokeRate;
+    }
+
+    if (!Number.isFinite(p.speed) || p.speed <= 0) {
+      const entry = byDevice.get(uid);
+      const samples = entry?.samples || [];
+      for (let i = samples.length - 1; i >= 0; i--) {
+        const spd = samples[i].gps?.spd;
+        if (spd != null && Number.isFinite(spd) && spd > 0) {
+          p.speed = spd;
+          break;
+        }
+      }
+    }
+  }
+  return snapshot;
+}
+
 async function getTraccarSnapshot(orgId, onlineMs = 120000) {
   let snapshot;
   if (db.hasDb()) {
@@ -1798,6 +1846,7 @@ async function getTraccarSnapshot(orgId, onlineMs = 120000) {
     }));
     snapshot = { devices, positions, geofences: [], groups: [] };
   }
+  snapshot = await enrichTraccarSnapshotRowing(orgId, snapshot, onlineMs);
   return enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs);
 }
 
