@@ -887,7 +887,32 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
 /**
  * @param {number} orgId
  * @param {string} sessionId
+ * @param {string} deviceId
+ * @param {number} [endedAtMs]
+ * @param {string} [athleteId]
  */
+async function endSession(orgId, sessionId, deviceId, endedAtMs, athleteId) {
+  const endedAt =
+    endedAtMs != null && Number.isFinite(Number(endedAtMs)) ? Number(endedAtMs) : Date.now();
+  let persisted = false;
+  if (db.hasDb()) {
+    try {
+      persisted = await db.endSession(orgId, sessionId, endedAt);
+    } catch (err) {
+      console.error('[ingest-store] DB endSession failed:', err);
+    }
+  }
+  const key = orgSessionKey(orgId, sessionId);
+  const row = sessions.get(key);
+  if (row) {
+    row.deviceId = String(deviceId);
+    if (athleteId) row.athleteId = String(athleteId);
+    row.endedAt = endedAt;
+    row.updatedAt = endedAt;
+  }
+  return { ended: true, persisted, endedAt };
+}
+
 /**
  * Drop samples while the device is inside a suppress-recording boat-park zone.
  * GPS samples update last-known position; motion/HR without GPS use that position.
@@ -2031,6 +2056,7 @@ function cors(res) {
 module.exports = {
   MAX_SAMPLES_PER_REQUEST,
   recordBatch,
+  endSession,
   getSession,
   listDevices,
   getPositionsSnapshot,

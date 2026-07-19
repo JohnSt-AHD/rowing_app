@@ -52,12 +52,28 @@ function buildIdempotencyKey(batch: TelemetryBatch): string {
   return `rnz-${checksumString(`${batch.sessionId}|${batch.deviceId}|${first}|${last}|${n}|${shape}`)}`;
 }
 
+function buildSessionEndIdempotencyKey(req: SessionEndRequest): string {
+  return `rnz-end-${checksumString(`${req.sessionId}|${req.endedAt ?? 0}`)}`;
+}
+
+function idempotencyKeyForBody(body: unknown): string {
+  if (
+    body &&
+    typeof body === 'object' &&
+    (body as { action?: string }).action === 'end' &&
+    typeof (body as SessionEndRequest).sessionId === 'string'
+  ) {
+    return buildSessionEndIdempotencyKey(body as SessionEndRequest);
+  }
+  return buildIdempotencyKey(body as TelemetryBatch);
+}
+
 async function postOnceNative(
   ingestUrl: string,
   token: string,
-  batch: TelemetryBatch,
+  body: unknown,
 ): Promise<IngestResponse> {
-  const idempotencyKey = buildIdempotencyKey(batch);
+  const idempotencyKey = idempotencyKeyForBody(body);
   const { CapacitorHttp } = await import('@capacitor/core');
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -68,7 +84,7 @@ async function postOnceNative(
   const response = await CapacitorHttp.post({
     url: normalizeIngestUrl(ingestUrl),
     headers,
-    data: batch,
+    data: body,
     connectTimeout: UPLOAD_TIMEOUT_MS,
     readTimeout: UPLOAD_TIMEOUT_MS,
   });
@@ -87,23 +103,28 @@ async function postOnceNative(
   if (typeof response.data === 'string' && response.data.length) {
     return JSON.parse(response.data) as IngestResponse;
   }
-  return { ok: true, received: batch.samples.length, sessionId: batch.sessionId };
+  const batch = body as TelemetryBatch;
+  return {
+    ok: true,
+    received: Array.isArray(batch.samples) ? batch.samples.length : 0,
+    sessionId: batch.sessionId,
+  };
 }
 
 async function postOnceFetch(
   ingestUrl: string,
   token: string,
-  batch: TelemetryBatch,
+  body: unknown,
 ): Promise<IngestResponse> {
-  const idempotencyKey = buildIdempotencyKey(batch);
+  const idempotencyKey = idempotencyKeyForBody(body);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'X-Idempotency-Key': idempotencyKey,
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const body = JSON.stringify(batch);
-  const useKeepalive = !IS_NATIVE && body.length < 60_000;
+  const payload = JSON.stringify(body);
+  const useKeepalive = !IS_NATIVE && payload.length < 60_000;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
@@ -113,7 +134,7 @@ async function postOnceFetch(
     res = await fetch(normalizeIngestUrl(ingestUrl), {
       method: 'POST',
       headers,
-      body,
+      body: payload,
       keepalive: useKeepalive,
       signal: controller.signal,
     });
@@ -146,20 +167,20 @@ async function postOnceFetch(
 async function postOnce(
   ingestUrl: string,
   token: string,
-  batch: TelemetryBatch,
+  body: unknown,
 ): Promise<IngestResponse> {
   if (IS_NATIVE) {
     try {
-      return await postOnceNative(ingestUrl, token, batch);
+      return await postOnceNative(ingestUrl, token, body);
     } catch (nativeErr) {
       try {
-        return await postOnceFetch(ingestUrl, token, batch);
+        return await postOnceFetch(ingestUrl, token, body);
       } catch {
         throw nativeErr;
       }
     }
   }
-  return postOnceFetch(ingestUrl, token, batch);
+  return postOnceFetch(ingestUrl, token, body);
 }
 
 /** POST a batch, splitting samples into safe-sized chunks. */
@@ -185,7 +206,7 @@ export async function postTelemetryBatch(
 async function postOnceWithRetry(
   ingestUrl: string,
   token: string,
-  batch: TelemetryBatch,
+  body: unknown,
 ): Promise<IngestResponse> {
   const delays = [0, 1200, 3500];
   let lastErr: unknown;
@@ -196,13 +217,36 @@ async function postOnceWithRetry(
       await sleep(delay + jitter);
     }
     try {
-      return await postOnce(ingestUrl, token, batch);
+      return await postOnce(ingestUrl, token, body);
     } catch (e) {
       lastErr = e;
       if (!isRetryableError(e) || i === delays.length - 1) throw e;
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+export type SessionEndRequest = {
+  sessionId: string;
+  deviceId: string;
+  athleteId?: string;
+  endedAt?: number;
+};
+
+/** Tell the ingest API a session has ended (sets server ended_at). */
+export async function postSessionEnd(
+  ingestUrl: string,
+  token: string,
+  req: SessionEndRequest,
+): Promise<IngestResponse> {
+  const body = {
+    action: 'end',
+    sessionId: req.sessionId,
+    deviceId: req.deviceId,
+    athleteId: req.athleteId,
+    endedAt: req.endedAt ?? Date.now(),
+  };
+  return postOnceWithRetry(normalizeIngestUrl(ingestUrl), token, body);
 }
 
 /** Minimal POST for Settings connectivity test. */

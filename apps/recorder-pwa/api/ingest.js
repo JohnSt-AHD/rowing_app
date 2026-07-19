@@ -38,6 +38,28 @@ module.exports = async function handler(req, res) {
   const deviceId = body?.deviceId;
   const samples = body?.samples;
 
+  if (body?.action === 'end') {
+    if (!sessionId || !deviceId) {
+      return res.status(400).json({
+        ok: false,
+        error: 'sessionId and deviceId required for action end',
+      });
+    }
+    const result = await store.endSession(
+      org.id,
+      String(sessionId),
+      String(deviceId),
+      body.endedAt,
+      body.athleteId,
+    );
+    return res.status(200).json({
+      ok: true,
+      sessionId: String(sessionId),
+      ended: Boolean(result.ended),
+      persisted: Boolean(result.persisted),
+    });
+  }
+
   if (!sessionId || !deviceId || !Array.isArray(samples)) {
     return res.status(400).json({
       ok: false,
@@ -68,6 +90,12 @@ module.exports = async function handler(req, res) {
     total: result.total,
     persisted: Boolean(result.persisted),
   };
+  if (result.suppressedInGeofence !== undefined) {
+    response.suppressedInGeofence = result.suppressedInGeofence;
+  }
+  if (result.dropped !== undefined) {
+    response.dropped = result.dropped;
+  }
   if (result.persistError) {
     response.persistError = String(result.persistError).slice(0, 300);
   }

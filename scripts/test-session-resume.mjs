@@ -3,6 +3,9 @@
  * Run: node scripts/test-session-resume.mjs
  */
 
+const SESSION_MAX_AGE_MS = 20 * 60 * 60 * 1000;
+const RESUME_MAX_IDLE_MS = 6 * 60 * 60 * 1000;
+
 function canAutoResume(native, persisted) {
   return (
     Boolean(native?.active && native.sessionId && native.deviceId) ||
@@ -10,7 +13,20 @@ function canAutoResume(native, persisted) {
   );
 }
 
-function resolveResumeCandidate(native, persisted, settingsDeviceId) {
+function isSessionTooOldToResume(startedAt, serviceRunning, now = Date.now()) {
+  if (!startedAt || !Number.isFinite(startedAt)) return false;
+  if (now - startedAt > SESSION_MAX_AGE_MS) return true;
+  if (!serviceRunning && now - startedAt > RESUME_MAX_IDLE_MS) return true;
+  return false;
+}
+
+function resolveResumeCandidate(
+  native,
+  persisted,
+  settingsDeviceId,
+  stored,
+  now = Date.now(),
+) {
   if (!canAutoResume(native, persisted)) {
     return { action: 'none' };
   }
@@ -20,17 +36,37 @@ function resolveResumeCandidate(native, persisted, settingsDeviceId) {
   if (settingsDeviceId.trim() !== deviceId.trim()) {
     return { action: 'mismatch', savedDeviceId: deviceId, settingsDeviceId };
   }
+  if (stored?.endedAt) {
+    return {
+      action: 'stale',
+      reason: 'previous session was stopped',
+      sessionId,
+      deviceId,
+    };
+  }
+  const startedAt = stored?.startedAt ?? native?.startedAt ?? persisted?.startedAt;
+  const serviceRunning = Boolean(native?.serviceRunning);
+  if (isSessionTooOldToResume(startedAt, serviceRunning, now)) {
+    return {
+      action: 'stale',
+      reason: serviceRunning ? 'session exceeded maximum length' : 'session idle too long',
+      sessionId,
+      deviceId,
+    };
+  }
   return {
     action: 'resume',
     candidate: {
       sessionId,
       deviceId,
-      startedAt: native?.startedAt ?? persisted?.startedAt,
+      startedAt,
       athleteId: native?.athleteId,
-      serviceRunning: Boolean(native?.serviceRunning),
+      serviceRunning,
     },
   };
 }
+
+const now = 1_700_000_000_000;
 
 const cases = [
   {
@@ -40,14 +76,15 @@ const cases = [
       serviceRunning: true,
       sessionId: 'abc-123',
       deviceId: 'CREW-01',
-      startedAt: 1_700_000_000_000,
+      startedAt: now - 60_000,
     },
     persisted: {
       sessionId: 'abc-123',
       deviceId: 'CREW-01',
-      startedAt: 1_700_000_000_000,
+      startedAt: now - 60_000,
     },
     settingsDeviceId: 'CREW-01',
+    stored: { startedAt: now - 60_000 },
     expect: { action: 'resume', skipNativeStart: true },
   },
   {
@@ -57,9 +94,11 @@ const cases = [
       serviceRunning: true,
       sessionId: 'abc-123',
       deviceId: 'CREW-01',
+      startedAt: now - 120_000,
     },
     persisted: null,
     settingsDeviceId: 'CREW-01',
+    stored: { startedAt: now - 120_000 },
     expect: { action: 'resume', skipNativeStart: true },
   },
   {
@@ -68,9 +107,10 @@ const cases = [
     persisted: {
       sessionId: 'abc-123',
       deviceId: 'CREW-01',
-      startedAt: 1_700_000_000_000,
+      startedAt: now - 30 * 60 * 1000,
     },
     settingsDeviceId: 'CREW-01',
+    stored: { startedAt: now - 30 * 60 * 1000 },
     expect: { action: 'resume', skipNativeStart: false },
   },
   {
@@ -78,6 +118,7 @@ const cases = [
     native: { active: false, serviceRunning: false },
     persisted: null,
     settingsDeviceId: 'CREW-01',
+    stored: null,
     expect: { action: 'none' },
   },
   {
@@ -91,16 +132,65 @@ const cases = [
     persisted: {
       sessionId: 'abc-123',
       deviceId: 'CREW-01',
-      startedAt: 1,
+      startedAt: now - 60_000,
     },
     settingsDeviceId: 'CREW-99',
+    stored: { startedAt: now - 60_000 },
     expect: { action: 'mismatch' },
+  },
+  {
+    name: 'stopped session — endedAt set locally',
+    native: { active: false, serviceRunning: false },
+    persisted: {
+      sessionId: 'abc-123',
+      deviceId: 'CREW-01',
+      startedAt: now - 60_000,
+    },
+    settingsDeviceId: 'CREW-01',
+    stored: { startedAt: now - 60_000, endedAt: now - 30_000 },
+    expect: { action: 'stale' },
+  },
+  {
+    name: 'multi-day stale session with service still running',
+    native: {
+      active: true,
+      serviceRunning: true,
+      sessionId: 'old-session',
+      deviceId: 'CREW-01',
+      startedAt: now - 4 * 24 * 60 * 60 * 1000,
+    },
+    persisted: {
+      sessionId: 'old-session',
+      deviceId: 'CREW-01',
+      startedAt: now - 4 * 24 * 60 * 60 * 1000,
+    },
+    settingsDeviceId: 'CREW-01',
+    stored: { startedAt: now - 4 * 24 * 60 * 60 * 1000 },
+    expect: { action: 'stale' },
+  },
+  {
+    name: 'idle overnight without service — stale after 6h',
+    native: { active: false, serviceRunning: false },
+    persisted: {
+      sessionId: 'abc-123',
+      deviceId: 'CREW-01',
+      startedAt: now - 7 * 60 * 60 * 1000,
+    },
+    settingsDeviceId: 'CREW-01',
+    stored: { startedAt: now - 7 * 60 * 60 * 1000 },
+    expect: { action: 'stale' },
   },
 ];
 
 let failed = 0;
 for (const c of cases) {
-  const result = resolveResumeCandidate(c.native, c.persisted, c.settingsDeviceId);
+  const result = resolveResumeCandidate(
+    c.native,
+    c.persisted,
+    c.settingsDeviceId,
+    c.stored,
+    now,
+  );
   const ok =
     result.action === c.expect.action &&
     (c.expect.action !== 'resume' ||

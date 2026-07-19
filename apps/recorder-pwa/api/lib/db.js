@@ -539,6 +539,24 @@ async function upsertSession(orgId, sessionId, deviceRef, uniqueId, athleteId) {
   `;
 }
 
+/** Mark a session closed. Keeps the first ended_at if already set. */
+async function endSession(orgId, sessionId, endedAtMs) {
+  if (!hasDb()) return false;
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const endedAt =
+    endedAtMs != null && Number.isFinite(Number(endedAtMs))
+      ? new Date(Number(endedAtMs))
+      : new Date();
+  const upd = await sql`
+    UPDATE rnz_sessions
+    SET ended_at = COALESCE(ended_at, ${endedAt}::timestamptz),
+        updated_at = NOW()
+    WHERE org_id = ${orgId} AND session_id = ${sessionId}
+  `;
+  return (upd.rowCount ?? 0) > 0;
+}
+
 /**
  * @param {import('@vercel/postgres').QueryResultRow} row
  */
@@ -1252,24 +1270,39 @@ async function getLogbook(orgId, opts = {}) {
       ORDER BY s.started_at DESC
       LIMIT 400
     ),
-    gps AS (
+    gps_tagged AS (
       SELECT
         sm.session_id,
         sm.t_ms,
         sm.latitude,
         sm.longitude,
-        LAG(sm.latitude) OVER (PARTITION BY sm.session_id ORDER BY sm.t_ms) AS prev_lat,
-        LAG(sm.longitude) OVER (PARTITION BY sm.session_id ORDER BY sm.t_ms) AS prev_lon,
-        LAG(sm.t_ms) OVER (PARTITION BY sm.session_id ORDER BY sm.t_ms) AS prev_t
+        sm.capsize,
+        to_char(
+          timezone(${timeZone}, to_timestamp(sm.t_ms / 1000.0)),
+          'YYYY-MM-DD'
+        ) AS day_key
       FROM rnz_samples sm
       INNER JOIN recent_sessions rs ON rs.session_id = sm.session_id
       WHERE sm.org_id = ${orgId}
         AND sm.latitude IS NOT NULL
         AND sm.longitude IS NOT NULL
     ),
+    gps AS (
+      SELECT
+        session_id,
+        day_key,
+        t_ms,
+        latitude,
+        longitude,
+        LAG(latitude) OVER (PARTITION BY session_id, day_key ORDER BY t_ms) AS prev_lat,
+        LAG(longitude) OVER (PARTITION BY session_id, day_key ORDER BY t_ms) AS prev_lon,
+        LAG(t_ms) OVER (PARTITION BY session_id, day_key ORDER BY t_ms) AS prev_t
+      FROM gps_tagged
+    ),
     dist AS (
       SELECT
         session_id,
+        day_key,
         COALESCE(SUM(
           CASE
             WHEN prev_lat IS NULL OR prev_lon IS NULL THEN NULL
@@ -1293,16 +1326,15 @@ async function getLogbook(orgId, opts = {}) {
         MIN(t_ms) AS first_t_ms,
         MAX(t_ms) AS last_t_ms
       FROM gps
-      GROUP BY session_id
+      GROUP BY session_id, day_key
     ),
     caps AS (
       SELECT
-        sm.session_id,
-        BOOL_OR(sm.capsize IS TRUE) AS had_capsize
-      FROM rnz_samples sm
-      INNER JOIN recent_sessions rs ON rs.session_id = sm.session_id
-      WHERE sm.org_id = ${orgId}
-      GROUP BY sm.session_id
+        session_id,
+        day_key,
+        BOOL_OR(capsize IS TRUE) AS had_capsize
+      FROM gps_tagged
+      GROUP BY session_id, day_key
     )
     SELECT
       rs.session_id,
@@ -1312,14 +1344,15 @@ async function getLogbook(orgId, opts = {}) {
       rs.ended_at,
       rs.updated_at,
       rs.device_name,
+      dist.day_key,
       COALESCE(dist.distance_m, 0) AS distance_m,
       dist.first_t_ms,
       dist.last_t_ms,
       COALESCE(caps.had_capsize, false) AS had_capsize
     FROM recent_sessions rs
-    LEFT JOIN dist ON dist.session_id = rs.session_id
-    LEFT JOIN caps ON caps.session_id = rs.session_id
-    ORDER BY rs.started_at DESC
+    INNER JOIN dist ON dist.session_id = rs.session_id
+    LEFT JOIN caps ON caps.session_id = rs.session_id AND caps.day_key = dist.day_key
+    ORDER BY dist.first_t_ms DESC NULLS LAST, rs.started_at DESC
   `;
 
   /** @type {Map<string, object>} */
@@ -1335,7 +1368,8 @@ async function getLogbook(orgId, opts = {}) {
         : row.updated_at
           ? new Date(row.updated_at).getTime()
           : startMs;
-    const day = logbookDayKey(Number.isFinite(startMs) ? startMs : Date.now(), timeZone);
+    const day = row.day_key
+      || logbookDayKey(Number.isFinite(startMs) ? startMs : Date.now(), timeZone);
     const distanceM = Math.max(0, Number(row.distance_m) || 0);
     const onWaterMs = Math.max(0, (Number.isFinite(endMs) ? endMs : startMs) - startMs);
     const hadCapsize = row.had_capsize === true;
@@ -2334,6 +2368,7 @@ module.exports = {
   listOrgs,
   resolveMemoryOrgFromToken,
   persistBatch,
+  endSession,
   raiseCapsizeAlert,
   clearCapsizeAlertDb,
   getCapsizeAlerts,

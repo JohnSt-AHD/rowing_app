@@ -38,6 +38,7 @@ import {
 } from '../lib/geofence-standby';
 import { clearPendingOutbox, countPendingOutbox, getSession } from '../session/store';
 import { flushOutbox } from '../upload/sync';
+import { postSessionEnd } from '../upload/telemetry-api';
 import { repairOversizedPendingOutbox } from '../session/store';
 import {
   formatSplit500m,
@@ -972,7 +973,33 @@ export function mountApp(root: HTMLElement): void {
       const persisted = getPersistedRecording();
       const native = await getNativeActiveSession();
       const s = loadSettings();
-      const decision = resolveResumeCandidate(native, persisted, s.deviceId);
+      const resumeSessionId = native?.sessionId ?? persisted?.sessionId ?? '';
+      const storedResume = resumeSessionId
+        ? await getSession(resumeSessionId)
+        : undefined;
+      const decision = resolveResumeCandidate(
+        native,
+        persisted,
+        s.deviceId,
+        storedResume,
+      );
+
+      if (decision.action === 'stale') {
+        pushLog(
+          `Not resuming — ${decision.reason}. Tap Start for a new session.`,
+        );
+        void postSessionEnd(s.ingestUrl, s.ingestToken, {
+          sessionId: decision.sessionId,
+          deviceId: decision.deviceId,
+          athleteId: s.athleteId,
+          endedAt: storedResume?.endedAt ?? Date.now(),
+        }).catch(() => {});
+        if (native?.serviceRunning) {
+          await stopNativeCapsizeMonitor();
+        }
+        clearRecordingActive();
+        return;
+      }
 
       if (decision.action === 'none') {
         const interrupted = getInterruptedRecording();

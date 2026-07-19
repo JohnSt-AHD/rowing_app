@@ -539,6 +539,24 @@ async function upsertSession(orgId, sessionId, deviceRef, uniqueId, athleteId) {
   `;
 }
 
+/** Mark a session closed. Keeps the first ended_at if already set. */
+async function endSession(orgId, sessionId, endedAtMs) {
+  if (!hasDb()) return false;
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const endedAt =
+    endedAtMs != null && Number.isFinite(Number(endedAtMs))
+      ? new Date(Number(endedAtMs))
+      : new Date();
+  const upd = await sql`
+    UPDATE rnz_sessions
+    SET ended_at = COALESCE(ended_at, ${endedAt}::timestamptz),
+        updated_at = NOW()
+    WHERE org_id = ${orgId} AND session_id = ${sessionId}
+  `;
+  return (upd.rowCount ?? 0) > 0;
+}
+
 /**
  * @param {import('@vercel/postgres').QueryResultRow} row
  */
@@ -2350,6 +2368,7 @@ module.exports = {
   listOrgs,
   resolveMemoryOrgFromToken,
   persistBatch,
+  endSession,
   raiseCapsizeAlert,
   clearCapsizeAlertDb,
   getCapsizeAlerts,

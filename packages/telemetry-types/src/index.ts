@@ -111,6 +111,8 @@ export type SessionMeta = {
 
 export type IngestResponse = {
   ok: boolean;
-  received: number;
+  received?: number;
   sessionId?: string;
+  ended?: boolean;
+  persisted?: boolean;
 };

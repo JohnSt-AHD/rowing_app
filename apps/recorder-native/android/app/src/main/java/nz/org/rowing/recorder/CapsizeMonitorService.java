@@ -1203,12 +1203,55 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         try {
             JSONArray samples = batch.getJSONArray("samples");
             sampleCount = samples.length();
+            return postIngestJson(p, batch.toString(), sampleCount, requeueOnFailure, batch);
+        } catch (Exception e) {
+            recordUploadResult(-1, sampleCount, false);
+            Log.e(TAG, "postBatchJson build failed", e);
+            if (requeueOnFailure) enqueuePendingBatch(p, batch);
+            return false;
+        }
+    }
+
+    private boolean postSessionEnd(
+            SharedPreferences p, String sessionId, String deviceId, long endedAtMs) {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("action", "end");
+            body.put("sessionId", sessionId);
+            body.put("deviceId", deviceId);
+            String athleteId = p.getString("athleteId", "");
+            if (athleteId != null && !athleteId.isEmpty()) {
+                body.put("athleteId", athleteId);
+            }
+            body.put("endedAt", endedAtMs);
+            boolean ok = postIngestJson(p, body.toString(), 0, false, null);
+            if (ok) {
+                Log.i(
+                        TAG,
+                        "Session end posted for "
+                                + (sessionId.length() > 8
+                                        ? sessionId.substring(0, 8)
+                                        : sessionId));
+            }
+            return ok;
+        } catch (Exception e) {
+            Log.w(TAG, "postSessionEnd failed", e);
+            return false;
+        }
+    }
+
+    private boolean postIngestJson(
+            SharedPreferences p,
+            String body,
+            int sampleCount,
+            boolean requeueOnFailure,
+            JSONObject requeueBatch) {
+        try {
             String ingestUrl = p.getString("ingestUrl", "");
             if (ingestUrl.isEmpty()) {
                 recordUploadResult(-1, sampleCount, false);
                 return false;
             }
-            String body = batch.toString();
             URL url = new URL(ingestUrl);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(20000);
@@ -1229,13 +1272,17 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             recordUploadResult(code, sampleCount, ok);
             if (!ok) {
                 Log.w(TAG, "Ingest HTTP " + code);
-                if (requeueOnFailure) enqueuePendingBatch(p, batch);
+                if (requeueOnFailure && requeueBatch != null) {
+                    enqueuePendingBatch(p, requeueBatch);
+                }
             }
             return ok;
         } catch (Exception e) {
             recordUploadResult(-1, sampleCount, false);
             Log.e(TAG, "Ingest POST failed", e);
-            if (requeueOnFailure) enqueuePendingBatch(p, batch);
+            if (requeueOnFailure && requeueBatch != null) {
+                enqueuePendingBatch(p, requeueBatch);
+            }
             return false;
         }
     }
@@ -2312,6 +2359,18 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void enterStandbyModeFromRecording() {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String sessionId = p.getString("sessionId", "");
+        String deviceId = p.getString("deviceId", "");
+        if (sessionId != null
+                && !sessionId.isEmpty()
+                && deviceId != null
+                && !deviceId.isEmpty()) {
+            final String sid = sessionId;
+            final String did = deviceId;
+            uploadExecutor.execute(
+                    () -> postSessionEnd(p, sid, did, System.currentTimeMillis()));
+        }
         uploadExecutor.execute(this::flushIngestBufferNow);
         mainHandler.removeCallbacks(heartbeatRunnable);
         mainHandler.removeCallbacks(ingestFlushRunnable);

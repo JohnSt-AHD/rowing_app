@@ -41,6 +41,7 @@ import {
   triggerCapsizeAlert,
 } from '../sensors/motion-analysis';
 import { countPendingOutbox, enqueueTelemetry, saveSession } from './store';
+import { postSessionEnd } from '../upload/telemetry-api';
 
 export type RecorderStats = {
   gpsCount: number;
@@ -840,6 +841,16 @@ export async function startRecorder(
       if (hrMonitor) await hrMonitor.disconnect();
       meta.endedAt = Date.now();
       await saveSession(meta);
+      try {
+        await postSessionEnd(settings.ingestUrl, settings.ingestToken, {
+          sessionId,
+          deviceId: settings.deviceId,
+          athleteId: settings.athleteId,
+          endedAt: meta.endedAt,
+        });
+      } catch {
+        onLog('Session end not confirmed by server — data is saved locally.', false);
+      }
       onLog('Session stopped — native standby armed.');
     },
     async stop() {
@@ -855,6 +866,16 @@ export async function startRecorder(
       if (hrMonitor) await hrMonitor.disconnect();
       meta.endedAt = Date.now();
       await saveSession(meta);
+      try {
+        await postSessionEnd(settings.ingestUrl, settings.ingestToken, {
+          sessionId,
+          deviceId: settings.deviceId,
+          athleteId: settings.athleteId,
+          endedAt: meta.endedAt,
+        });
+      } catch {
+        onLog('Session end not confirmed by server — data is saved locally.', false);
+      }
       onLog('Session stopped.');
     },
   };
