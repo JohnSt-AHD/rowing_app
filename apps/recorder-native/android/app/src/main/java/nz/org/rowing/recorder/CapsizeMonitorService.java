@@ -364,9 +364,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return START_STICKY;
     }
 
-        return START_STICKY;
-    }
-
     @Override
     public void onDestroy() {
         mainHandler.removeCallbacks(standbyDwellRunnable);
