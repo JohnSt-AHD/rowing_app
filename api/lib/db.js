@@ -671,6 +671,221 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
   `;
 }
 
+/** Auto-clear sticky map alerts older than this (ms). */
+const CAPSIZE_ALERT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+/** Backfill motion-only capsize samples from last GPS within this window (ms). */
+const CAPSIZE_GPS_BACKFILL_MAX_AGE_MS = 60 * 1000;
+/** Continuous rowing at/above min speed for this long clears an active alert (ms). */
+const CAPSIZE_ROWING_CLEAR_MS = 5 * 60 * 1000;
+const CAPSIZE_ROWING_MIN_SPEED_MPS = 1.2;
+/** Latest rowing fix must be this recent for auto-clear (ms). */
+const CAPSIZE_ROWING_RECENT_MS = 3 * 60 * 1000;
+
+function sampleHasCapsizeFlag(sample) {
+  return sample?.derived?.capsize === true || sample?.capsize === true;
+}
+
+function sampleGpsFix(sample) {
+  if (!sample?.gps) return null;
+  const lat = Number(sample.gps.lat);
+  const lon = Number(sample.gps.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (Math.abs(lat) < 1e-4 && Math.abs(lon) < 1e-4) return null;
+  const t = Number(sample.t);
+  if (!Number.isFinite(t)) return null;
+  return {
+    t,
+    lat,
+    lon,
+    acc:
+      sample.gps.acc != null && Number.isFinite(Number(sample.gps.acc))
+        ? Number(sample.gps.acc)
+        : null,
+    spd:
+      sample.gps.spd != null && Number.isFinite(Number(sample.gps.spd))
+        ? Number(sample.gps.spd)
+        : null,
+    hdg:
+      sample.gps.hdg != null && Number.isFinite(Number(sample.gps.hdg))
+        ? Number(sample.gps.hdg)
+        : null,
+  };
+}
+
+function nearestGpsFix(sampleT, fixes, maxAgeMs) {
+  let best = null;
+  let bestDt = Infinity;
+  for (const fix of fixes) {
+    const dt = Math.abs(fix.t - sampleT);
+    if (dt > maxAgeMs || dt >= bestDt) continue;
+    best = fix;
+    bestDt = dt;
+  }
+  return best;
+}
+
+function attachGpsToSample(sample, fix) {
+  if (!fix) return;
+  sample.gps = {
+    lat: fix.lat,
+    lon: fix.lon,
+    ...(fix.acc != null ? { acc: fix.acc } : {}),
+    ...(fix.spd != null ? { spd: fix.spd } : {}),
+    ...(fix.hdg != null ? { hdg: fix.hdg } : {}),
+  };
+}
+
+async function fetchDeviceLastGps(orgId, uniqueId) {
+  const sql = await getSql();
+  const rows = await sql`
+    SELECT last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
+    FROM rnz_devices
+    WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
+    LIMIT 1
+  `;
+  const row = rows.rows[0];
+  if (!row?.last_gps_t_ms || row.last_lat == null || row.last_lon == null) return null;
+  return {
+    t: Number(row.last_gps_t_ms),
+    lat: Number(row.last_lat),
+    lon: Number(row.last_lon),
+    acc:
+      row.last_gps_accuracy != null && Number.isFinite(Number(row.last_gps_accuracy))
+        ? Number(row.last_gps_accuracy)
+        : null,
+    spd: null,
+    hdg: null,
+  };
+}
+
+/** Attach last-known GPS to motion-only capsize samples (server-side; no app update). */
+async function backfillCapsizeGpsOnSamples(orgId, uniqueId, samples) {
+  if (!samples.length) return;
+  let needs = false;
+  for (const s of samples) {
+    if (sampleHasCapsizeFlag(s) && !sampleGpsFix(s)) {
+      needs = true;
+      break;
+    }
+  }
+  if (!needs) return;
+
+  /** @type {Array<{ t: number, lat: number, lon: number, acc: number|null, spd: number|null, hdg: number|null }>} */
+  const batchFixes = [];
+  for (const s of samples) {
+    const fix = sampleGpsFix(s);
+    if (fix) batchFixes.push(fix);
+  }
+  const deviceFix = await fetchDeviceLastGps(orgId, uniqueId);
+
+  for (const s of samples) {
+    if (!sampleHasCapsizeFlag(s) || sampleGpsFix(s)) continue;
+    const t = Number(s.t);
+    if (!Number.isFinite(t)) continue;
+    const fromBatch = nearestGpsFix(t, batchFixes, CAPSIZE_GPS_BACKFILL_MAX_AGE_MS);
+    const fromDevice =
+      deviceFix && Math.abs(deviceFix.t - t) <= CAPSIZE_GPS_BACKFILL_MAX_AGE_MS
+        ? deviceFix
+        : null;
+    let fix = fromBatch || fromDevice;
+    if (fromBatch && fromDevice) {
+      fix =
+        Math.abs(fromBatch.t - t) <= Math.abs(fromDevice.t - t) ? fromBatch : fromDevice;
+    }
+    attachGpsToSample(s, fix);
+  }
+}
+
+async function expireStaleCapsizeAlertsDb(orgId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const rows = await sql`
+    UPDATE rnz_devices
+    SET capsize_alert_active = false,
+        capsize_alert_at = NULL,
+        capsize_cleared_at = NOW()
+    WHERE org_id = ${orgId}
+      AND capsize_alert_active = true
+      AND capsize_alert_at IS NOT NULL
+      AND capsize_alert_at < NOW() - INTERVAL '12 hours'
+    RETURNING unique_id
+  `;
+  return rows.rows.map((row) => String(row.unique_id));
+}
+
+/**
+ * Clear active alert when the boat rows normally for CAPSIZE_ROWING_CLEAR_MS after the last capsize sample.
+ * @returns {Promise<boolean>}
+ */
+async function evaluateCapsizeAutoClear(orgId, uniqueId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const meta = await sql`
+    SELECT capsize_alert_active, capsize_alert_at
+    FROM rnz_devices
+    WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
+    LIMIT 1
+  `;
+  const row = meta.rows[0];
+  if (!row?.capsize_alert_active || !row.capsize_alert_at) return false;
+
+  const alertAtMs = new Date(row.capsize_alert_at).getTime();
+  if (!Number.isFinite(alertAtMs)) return false;
+  const now = Date.now();
+  if (now - alertAtMs < CAPSIZE_ROWING_CLEAR_MS) return false;
+
+  const sampleRows = await sql`
+    SELECT t_ms, latitude, longitude, speed, capsize
+    FROM rnz_samples
+    WHERE org_id = ${orgId}
+      AND unique_id = ${String(uniqueId)}
+      AND t_ms >= ${alertAtMs}
+    ORDER BY t_ms ASC
+    LIMIT 10000
+  `;
+
+  let lastCapsizeT = alertAtMs;
+  /** @type {number[]} */
+  const rowingTimes = [];
+  for (const s of sampleRows.rows) {
+    const t = Number(s.t_ms);
+    if (!Number.isFinite(t)) continue;
+    if (s.capsize === true) {
+      lastCapsizeT = Math.max(lastCapsizeT, t);
+      continue;
+    }
+    if (s.latitude == null || s.longitude == null) continue;
+    const spd = s.speed != null ? Number(s.speed) : null;
+    if (spd != null && spd >= CAPSIZE_ROWING_MIN_SPEED_MPS) {
+      rowingTimes.push(t);
+    }
+  }
+
+  if (rowingTimes.length < 2) return false;
+  const afterCapsize = rowingTimes.filter((t) => t >= lastCapsizeT);
+  if (afterCapsize.length < 2) return false;
+  const spanMs = afterCapsize[afterCapsize.length - 1] - afterCapsize[0];
+  if (spanMs < CAPSIZE_ROWING_CLEAR_MS) return false;
+  if (now - afterCapsize[afterCapsize.length - 1] > CAPSIZE_ROWING_RECENT_MS) return false;
+
+  await clearCapsizeAlertDb(orgId, uniqueId);
+  return true;
+}
+
+/**
+ * Expire old alerts and optionally auto-clear after sustained normal rowing.
+ * @returns {Promise<string[]>} cleared device unique_ids
+ */
+async function maintainCapsizeAlerts(orgId, uniqueId, opts = {}) {
+  /** @type {string[]} */
+  const cleared = await expireStaleCapsizeAlertsDb(orgId);
+  if (opts.raisedCapsize || !uniqueId) return cleared;
+  if (await evaluateCapsizeAutoClear(orgId, uniqueId)) {
+    cleared.push(String(uniqueId));
+  }
+  return cleared;
+}
+
 async function raiseCapsizeAlert(orgId, uniqueId, sampleTms) {
   const sql = await getSql();
   await ensureOrgsBootstrapped();
@@ -736,10 +951,11 @@ async function getCapsizeAlerts(orgId) {
 }
 
 async function persistBatch(orgId, sessionId, deviceId, athleteId, samples) {
-  if (!hasDb() || !samples.length) return false;
+  if (!hasDb() || !samples.length) return { ok: false, cleared: [] };
   await ensureOrgsBootstrapped();
   const dev = await ensureDevice(orgId, deviceId, athleteId);
   await upsertSession(orgId, sessionId, dev.id, deviceId, athleteId);
+  await backfillCapsizeGpsOnSamples(orgId, deviceId, samples);
   await insertSamples(orgId, sessionId, dev.id, deviceId, samples);
   await updateDeviceLatestGps(orgId, deviceId, samples);
   let maxCapsizeT = null;
@@ -749,8 +965,10 @@ async function persistBatch(orgId, sessionId, deviceId, athleteId, samples) {
       if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
     }
   }
-  if (maxCapsizeT != null) await raiseCapsizeAlert(orgId, deviceId, maxCapsizeT);
-  return true;
+  const raisedCapsize = maxCapsizeT != null;
+  if (raisedCapsize) await raiseCapsizeAlert(orgId, deviceId, maxCapsizeT);
+  const cleared = await maintainCapsizeAlerts(orgId, deviceId, { raisedCapsize });
+  return { ok: true, cleared };
 }
 
 async function resolveDevice(orgId, deviceIdParam, uniqueIdParam) {
@@ -2376,6 +2594,9 @@ module.exports = {
   raiseCapsizeAlert,
   clearCapsizeAlertDb,
   getCapsizeAlerts,
+  maintainCapsizeAlerts,
+  expireStaleCapsizeAlertsDb,
+  CAPSIZE_ALERT_MAX_AGE_MS,
   fetchRecentSamplesByDevice,
   getLatestRowingTelemetry,
   getDeviceIngestTimes,

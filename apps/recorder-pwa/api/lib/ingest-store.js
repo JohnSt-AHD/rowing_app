@@ -1,4 +1,7 @@
 const db = require('./db');
+
+const CAPSIZE_ALERT_MAX_AGE_MS = db.CAPSIZE_ALERT_MAX_AGE_MS ?? 12 * 60 * 60 * 1000;
+const CAPSIZE_GPS_BACKFILL_MAX_AGE_MS = 60 * 1000;
 const { analyzeMotionWindow } = require('./motion-analysis');
 const { resolveOrg: resolveOrgFromRequest } = require('./org-auth');
 const { findSuppressRecordingAt } = require('./geofence');
@@ -153,11 +156,89 @@ function clearStickyCapsizeAlert(orgId, deviceId) {
 function getStickyCapsizeAlerts(orgId) {
   const prefix = `${orgId}:`;
   const out = new Map();
+  const now = Date.now();
   for (const [key, alert] of stickyCapsizeByDevice) {
     if (!key.startsWith(prefix) || !alert?.active) continue;
+    if (alert.atMs != null && now - alert.atMs > CAPSIZE_ALERT_MAX_AGE_MS) {
+      stickyCapsizeByDevice.delete(key);
+      continue;
+    }
     out.set(key.slice(prefix.length), alert);
   }
   return out;
+}
+
+function applyCapsizeAlertClears(orgId, clearedIds) {
+  for (const id of clearedIds || []) {
+    const uid = String(id);
+    clearStickyCapsizeAlert(orgId, uid);
+    setCapsizeClear(orgDeviceKey(orgId, uid));
+  }
+}
+
+async function loadDbCapsizeAlerts(orgId) {
+  const expired = await db.expireStaleCapsizeAlertsDb(orgId);
+  applyCapsizeAlertClears(orgId, expired);
+  return db.getCapsizeAlerts(orgId);
+}
+
+function nearestGpsFixForSample(sampleT, fixes, maxAgeMs) {
+  let best = null;
+  let bestDt = Infinity;
+  for (const fix of fixes) {
+    const dt = Math.abs(fix.t - sampleT);
+    if (dt > maxAgeMs || dt >= bestDt) continue;
+    best = fix;
+    bestDt = dt;
+  }
+  return best;
+}
+
+/** Attach cached/batch GPS to motion-only capsize samples before persist (memory + DB). */
+function backfillCapsizeGpsInMemory(scopedDevice, samples) {
+  if (!samples.length) return;
+  /** @type {Array<{ t: number, lat: number, lon: number, acc: number|null, spd: number|null, hdg: number|null }>} */
+  const batchFixes = [];
+  for (const s of samples) {
+    const fix = gpsFromSample(s);
+    if (fix) batchFixes.push(fix);
+  }
+  const cached = lastGpsByDevice.get(scopedDevice);
+  const deviceFix =
+    cached && cached.lat != null && cached.lon != null
+      ? {
+          t: cached.t,
+          lat: cached.lat,
+          lon: cached.lon,
+          acc: cached.acc ?? null,
+          spd: cached.spd ?? null,
+          hdg: cached.hdg ?? null,
+        }
+      : null;
+
+  for (const s of samples) {
+    if (!sampleHasCapsize(s) || gpsFromSample(s)) continue;
+    const t = Number(s.t);
+    if (!Number.isFinite(t)) continue;
+    const fromBatch = nearestGpsFixForSample(t, batchFixes, CAPSIZE_GPS_BACKFILL_MAX_AGE_MS);
+    const fromDevice =
+      deviceFix && Math.abs(deviceFix.t - t) <= CAPSIZE_GPS_BACKFILL_MAX_AGE_MS
+        ? deviceFix
+        : null;
+    let fix = fromBatch || fromDevice;
+    if (fromBatch && fromDevice) {
+      fix =
+        Math.abs(fromBatch.t - t) <= Math.abs(fromDevice.t - t) ? fromBatch : fromDevice;
+    }
+    if (!fix) continue;
+    s.gps = {
+      lat: fix.lat,
+      lon: fix.lon,
+      ...(fix.acc != null ? { acc: fix.acc } : {}),
+      ...(fix.spd != null ? { spd: fix.spd } : {}),
+      ...(fix.hdg != null ? { hdg: fix.hdg } : {}),
+    };
+  }
 }
 
 /**
@@ -816,6 +897,8 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   }
   if (maxCapsizeT != null) raiseStickyCapsizeAlert(orgId, deviceId, maxCapsizeT);
 
+  backfillCapsizeGpsInMemory(scopedDevice, clean.samples);
+
   const key = orgSessionKey(orgId, sessionId);
   let row = sessions.get(key);
   if (!row) {
@@ -841,18 +924,23 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
 
   let persisted = false;
   let persistError = null;
+  /** @type {string[]} */
+  let capsizeCleared = [];
   try {
     if (db.hasDb()) {
-      persisted = await db.persistBatch(
+      const persistResult = await db.persistBatch(
         orgId,
         sessionId,
         deviceId,
         athleteId,
         clean.samples,
       );
+      persisted = persistResult?.ok === true;
+      capsizeCleared = persistResult?.cleared || [];
       if (persisted) {
         metrics.persistedBatches++;
         metrics.lastPersistAt = now;
+        applyCapsizeAlertClears(orgId, capsizeCleared);
       }
     }
   } catch (err) {
@@ -1070,6 +1158,7 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
 function forceCapsizeAlertsOnDevices(byDevice, alerts, orgId, windowMs, onlineMs, now) {
   if (!alerts?.size) return;
   for (const [deviceId, alert] of alerts) {
+    if (alert?.atMs != null && now - alert.atMs > CAPSIZE_ALERT_MAX_AGE_MS) continue;
     const id = String(deviceId);
     let dev = byDevice.get(id);
     if (!dev) {
@@ -1159,7 +1248,7 @@ async function listDevices(orgId, opts = {}) {
         db.getRegistryGpsByDevice(orgId),
         db.getDeviceRegistryTimes(orgId),
         db.getLatestRowingTelemetry(orgId, Math.max(windowMs, 120000)),
-        db.getCapsizeAlerts(orgId),
+        loadDbCapsizeAlerts(orgId),
       ]);
 
       for (const [deviceId, regFix] of registryGps) {
@@ -1636,7 +1725,7 @@ async function clearCapsizeAlert(orgId, deviceId) {
   const cleared = new Set();
   if (db.hasDb()) {
     try {
-      const dbAlerts = await db.getCapsizeAlerts(orgId);
+      const dbAlerts = await loadDbCapsizeAlerts(orgId);
       for (const id of dbAlerts.keys()) cleared.add(String(id));
     } catch (err) {
       console.error('[ingest-store] DB capsize alert list failed:', err);
@@ -1692,7 +1781,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
         db.getDeviceRegistryTimes(orgId),
         db.getRegistryMapPositions(orgId, onlineMs, staleMs),
         db.getLatestRowingTelemetry(orgId, Math.min(staleMs, 120000)),
-        db.getCapsizeAlerts(orgId),
+        loadDbCapsizeAlerts(orgId),
       ]);
 
       const rawMerged = mergeMapPositionsByFixMs([
@@ -1766,19 +1855,21 @@ async function enrichTraccarSnapshotCapsize(orgId, snapshot, _onlineMs) {
   const capsizeAlerts = getStickyCapsizeAlerts(orgId);
   if (db.hasDb()) {
     try {
-      const dbAlerts = await db.getCapsizeAlerts(orgId);
+      const dbAlerts = await loadDbCapsizeAlerts(orgId);
       for (const [id, alert] of dbAlerts) capsizeAlerts.set(id, alert);
     } catch (err) {
       console.error('[ingest-store] snapshot capsize alert list failed:', err);
     }
   }
   if (!capsizeAlerts.size) return snapshot;
+  const now = Date.now();
   const deviceById = new Map((snapshot.devices || []).map((d) => [d.id, d]));
   for (const p of snapshot.positions) {
     const dev = deviceById.get(p.deviceId);
     const uid = String(dev?.uniqueId || dev?.name || p.deviceName || '');
     const alert = capsizeAlerts.get(uid);
     if (!alert) continue;
+    if (alert.atMs != null && now - alert.atMs > CAPSIZE_ALERT_MAX_AGE_MS) continue;
     p.attributes = {
       ...(p.attributes || {}),
       capsize: true,
