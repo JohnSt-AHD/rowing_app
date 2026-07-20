@@ -1276,7 +1276,6 @@ async function getLogbook(orgId, opts = {}) {
         sm.t_ms,
         sm.latitude,
         sm.longitude,
-        sm.capsize,
         to_char(
           timezone(${timeZone}, to_timestamp(sm.t_ms / 1000.0)),
           'YYYY-MM-DD'
@@ -1330,11 +1329,16 @@ async function getLogbook(orgId, opts = {}) {
     ),
     caps AS (
       SELECT
-        session_id,
-        day_key,
-        BOOL_OR(capsize IS TRUE) AS had_capsize
-      FROM gps_tagged
-      GROUP BY session_id, day_key
+        sm.session_id,
+        to_char(
+          timezone(${timeZone}, to_timestamp(sm.t_ms / 1000.0)),
+          'YYYY-MM-DD'
+        ) AS day_key,
+        BOOL_OR(sm.capsize IS TRUE) AS had_capsize
+      FROM rnz_samples sm
+      INNER JOIN recent_sessions rs ON rs.session_id = sm.session_id
+      WHERE sm.org_id = ${orgId}
+      GROUP BY sm.session_id, day_key
     )
     SELECT
       rs.session_id,
