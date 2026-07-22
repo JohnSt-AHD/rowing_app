@@ -1266,6 +1266,7 @@ async function listDevices(orgId, opts = {}) {
                     lat: regFix.lat,
                     lon: regFix.lon,
                     acc: regFix.acc,
+                    ...(regFix.spd != null ? { spd: regFix.spd } : {}),
                   },
                 },
               ],
@@ -1594,7 +1595,15 @@ function mergeMapPositionsByFixMs(positionGroups) {
       if (p.latitude == null || p.longitude == null) continue;
       const prev = byDevice.get(p.deviceId);
       if (!prev || (p.fixMs ?? 0) >= (prev.fixMs ?? 0)) {
-        byDevice.set(p.deviceId, p);
+        const merged = { ...prev, ...p };
+        if (
+          (merged.speed == null || !Number.isFinite(merged.speed)) &&
+          prev?.speed != null &&
+          Number.isFinite(prev.speed)
+        ) {
+          merged.speed = prev.speed;
+        }
+        byDevice.set(p.deviceId, merged);
       }
     }
   }
@@ -1636,6 +1645,7 @@ function applyRegistryGpsToDevice(device, registryFix, now) {
         lat: registryFix.lat,
         lon: registryFix.lon,
         acc: registryFix.acc,
+        ...(registryFix.spd != null ? { spd: registryFix.spd } : {}),
       },
       ageSec,
     },
@@ -1799,6 +1809,17 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
         if (tel) {
           p.strokeRate = tel.strokeRate ?? p.strokeRate ?? null;
           p.tiltDeg = tel.tiltDeg ?? p.tiltDeg ?? null;
+        }
+        if (p.speed == null || !Number.isFinite(p.speed) || p.speed <= 0) {
+          const entry = telemetryByDevice.get(p.deviceId);
+          const samples = entry?.samples || [];
+          for (let i = samples.length - 1; i >= 0; i--) {
+            const spd = samples[i].gps?.spd;
+            if (spd != null && Number.isFinite(spd) && spd > 0) {
+              p.speed = spd;
+              break;
+            }
+          }
         }
       }
       forceCapsizeAlertsOnPositions(positions, dbCapsizeAlerts);

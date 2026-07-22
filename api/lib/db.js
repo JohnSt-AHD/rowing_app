@@ -156,6 +156,7 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_lat DOUBLE PRECISION`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_lon DOUBLE PRECISION`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_accuracy DOUBLE PRECISION`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_speed DOUBLE PRECISION`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_ingest_at TIMESTAMPTZ`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_active BOOLEAN NOT NULL DEFAULT false`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_at TIMESTAMPTZ`;
@@ -298,10 +299,11 @@ async function initSchema() {
       SET last_gps_t_ms = s.t_ms,
           last_lat = s.latitude,
           last_lon = s.longitude,
-          last_gps_accuracy = s.accuracy
+          last_gps_accuracy = s.accuracy,
+          last_gps_speed = s.speed
       FROM (
         SELECT DISTINCT ON (unique_id)
-          unique_id, t_ms, latitude, longitude, accuracy
+          unique_id, t_ms, latitude, longitude, accuracy, speed
         FROM rnz_samples
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL
         ORDER BY unique_id, t_ms DESC
@@ -653,6 +655,10 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
           s.gps?.acc != null && Number.isFinite(Number(s.gps.acc))
             ? Number(s.gps.acc)
             : null,
+        spd:
+          s.gps?.spd != null && Number.isFinite(Number(s.gps.spd))
+            ? Math.max(0, Number(s.gps.spd))
+            : null,
       };
     }
   }
@@ -664,6 +670,7 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
         last_lat = ${best.lat},
         last_lon = ${best.lon},
         last_gps_accuracy = ${best.acc},
+        last_gps_speed = ${best.spd},
         last_gps_ingest_at = NOW()
     WHERE org_id = ${orgId}
       AND unique_id = ${String(uniqueId)}
@@ -1278,7 +1285,7 @@ async function getRegistryMapPositions(orgId, onlineMs, staleMs) {
   const staleCutoff = now - staleMs;
   const rows = await sql`
     SELECT unique_id, athlete_id, last_seen_at,
-      last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
+      last_gps_t_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed
     FROM rnz_devices
     WHERE org_id = ${orgId}
       AND last_gps_t_ms IS NOT NULL
@@ -1298,6 +1305,10 @@ async function getRegistryMapPositions(orgId, onlineMs, staleMs) {
       latitude: row.last_lat,
       longitude: row.last_lon,
       accuracy: row.last_gps_accuracy,
+      speed:
+        row.last_gps_speed != null && Number.isFinite(Number(row.last_gps_speed))
+          ? Number(row.last_gps_speed)
+          : null,
       fixMs,
       fixAgeSec: Math.round((now - fixMs) / 1000),
       lastSeenAgoSec: Math.round((now - lastSeenMs) / 1000),
@@ -1354,7 +1365,7 @@ async function getRegistryGpsByDevice(orgId) {
   const sql = await getSql();
   await ensureOrgsBootstrapped();
   const rows = await sql`
-    SELECT unique_id, last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
+    SELECT unique_id, last_gps_t_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed
     FROM rnz_devices
     WHERE org_id = ${orgId}
       AND last_gps_t_ms IS NOT NULL
@@ -1369,6 +1380,10 @@ async function getRegistryGpsByDevice(orgId) {
       lat: row.last_lat,
       lon: row.last_lon,
       acc: row.last_gps_accuracy,
+      spd:
+        row.last_gps_speed != null && Number.isFinite(Number(row.last_gps_speed))
+          ? Number(row.last_gps_speed)
+          : null,
     });
   }
   return byDevice;
