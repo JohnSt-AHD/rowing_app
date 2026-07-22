@@ -635,6 +635,34 @@ async function insertSamples(orgId, sessionId, deviceRef, uniqueId, samples) {
   `;
 }
 
+function gpsDistanceMeters(aLat, aLon, bLat, bLon) {
+  const dLatM = (aLat - bLat) * 111320;
+  const dLonM = (aLon - bLon) * 111320 * Math.cos(((aLat + bLat) / 2) * (Math.PI / 180));
+  return Math.hypot(dLatM, dLonM);
+}
+
+/** Android Location.getSpeed() often understates rowing; blend toward position-derived speed. */
+function mergeGpsSpeedMps(derived, android) {
+  const d = Math.min(Math.max(Number(derived) || 0, 0), 12);
+  if (android == null || !Number.isFinite(Number(android)) || Number(android) <= 0) {
+    return d > 0 ? d : null;
+  }
+  const a = Math.min(Math.max(Number(android), 0), 12);
+  if (d <= 0) return a;
+  if (a < d * 0.75) return Math.round(d * 100) / 100;
+  return Math.round((0.5 * d + 0.5 * a) * 100) / 100;
+}
+
+function derivedGpsSpeedMps(prev, next) {
+  if (!prev || !next) return null;
+  const dt = (Number(next.t) - Number(prev.t)) / 1000;
+  if (!Number.isFinite(dt) || dt < 1 || dt > 45) return null;
+  const dist = gpsDistanceMeters(prev.lat, prev.lon, next.lat, next.lon);
+  if (!Number.isFinite(dist) || dist < 2) return null;
+  const derived = dist / dt;
+  return derived > 12 ? null : derived;
+}
+
 /**
  * @param {Array<{ t: number, gps?: object }>} samples
  */
@@ -664,6 +692,24 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
   }
   if (!best) return;
   const sql = await getSql();
+  const prevRows = await sql`
+    SELECT last_gps_t_ms, last_lat, last_lon
+    FROM rnz_devices
+    WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
+    LIMIT 1
+  `;
+  const prev = prevRows.rows[0];
+  if (prev?.last_lat != null && prev?.last_lon != null && prev?.last_gps_t_ms != null) {
+    const derived = derivedGpsSpeedMps(
+      {
+        t: Number(prev.last_gps_t_ms),
+        lat: Number(prev.last_lat),
+        lon: Number(prev.last_lon),
+      },
+      best,
+    );
+    if (derived != null) best.spd = mergeGpsSpeedMps(derived, best.spd);
+  }
   await sql`
     UPDATE rnz_devices
     SET last_gps_t_ms = ${best.t},
@@ -1330,6 +1376,48 @@ async function getRecentMotionByDevice(orgId, windowMs = 90000, limitPerDevice =
     list.push({
       t: Number(row.t_ms),
       motion: { ax: Number(row.ax), ay: Number(row.ay), az: Number(row.az) },
+    });
+  }
+  return map;
+}
+
+/**
+ * Recent GPS fixes per device for map speed smoothing (bounded per device).
+ * @returns {Promise<Map<string, { t: number, lat: number, lon: number, acc: number|null, spd: number|null }[]>>}
+ */
+async function getRecentGpsFixesByDevice(orgId, windowMs = 120000, limitPerDevice = 8) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const cutoff = Date.now() - windowMs;
+  const cap = Math.max(3, Math.min(Number(limitPerDevice) || 8, 20));
+  const rows = await sql`
+    SELECT unique_id, t_ms, latitude, longitude, accuracy, speed FROM (
+      SELECT unique_id, t_ms, latitude, longitude, accuracy, speed,
+        ROW_NUMBER() OVER (PARTITION BY unique_id ORDER BY t_ms DESC) AS rn
+      FROM rnz_samples
+      WHERE org_id = ${orgId}
+        AND t_ms >= ${cutoff}
+        AND latitude IS NOT NULL
+        AND longitude IS NOT NULL
+    ) sub
+    WHERE rn <= ${cap}
+    ORDER BY unique_id, t_ms ASC
+  `;
+  /** @type {Map<string, { t: number, lat: number, lon: number, acc: number|null, spd: number|null }[]>>} */
+  const map = new Map();
+  for (const row of rows.rows) {
+    const uid = String(row.unique_id);
+    let list = map.get(uid);
+    if (!list) {
+      list = [];
+      map.set(uid, list);
+    }
+    list.push({
+      t: Number(row.t_ms),
+      lat: Number(row.latitude),
+      lon: Number(row.longitude),
+      acc: row.accuracy != null ? Number(row.accuracy) : null,
+      spd: row.speed != null && Number.isFinite(Number(row.speed)) ? Number(row.speed) : null,
     });
   }
   return map;
@@ -2711,6 +2799,7 @@ module.exports = {
   getLatestBatteryByDevice,
   getLatestStrokeByDevice,
   getRecentMotionByDevice,
+  getRecentGpsFixesByDevice,
   getDeviceIngestTimes,
   getDeviceRegistryTimes,
   getMapPositions,

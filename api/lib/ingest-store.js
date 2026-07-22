@@ -457,7 +457,7 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
   let speedMps = jumpM / dtSec;
   let courseDeg = bearingDeg(prev.lat, prev.lon, fix.lat, fix.lon);
   if (fix.spd != null && Number.isFinite(fix.spd)) {
-    speedMps = prev.speedMps != null ? 0.35 * speedMps + 0.65 * fix.spd : fix.spd;
+    speedMps = prev.speedMps != null ? 0.85 * speedMps + 0.15 * fix.spd : speedMps;
   }
   const resolved = resolveMapHeading(fix);
   if (resolved != null && Number.isFinite(resolved)) {
@@ -484,6 +484,57 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
     courseDeg,
   });
   return true;
+}
+
+function displayMapSpeedMps(registrySpeed, trackSpeed) {
+  const track =
+    trackSpeed != null && Number.isFinite(trackSpeed) && trackSpeed > 0
+      ? Math.max(0, trackSpeed)
+      : null;
+  const registry =
+    registrySpeed != null && Number.isFinite(registrySpeed) && registrySpeed > 0
+      ? registrySpeed
+      : null;
+  if (track != null) {
+    if (registry == null || track >= registry * 0.85) return track;
+  }
+  return registry ?? track ?? null;
+}
+
+/** Replay recent GPS fixes from DB/memory so map speed uses distance/time not Android spd alone. */
+function warmGpsTracksFromFixesByDevice(orgId, fixesByDevice, opts = {}) {
+  if (!fixesByDevice?.size) return;
+  const trackOpts = {
+    maxTrackSpeedMps: opts.maxTrackSpeedMps ?? MAX_TRACK_SPEED_MPS,
+  };
+  for (const [deviceId, fixes] of fixesByDevice) {
+    if (!deviceId || !fixes?.length) continue;
+    const trackKey = orgDeviceKey(orgId, deviceId);
+    for (const fix of fixes) {
+      updateGpsTrack(
+        trackKey,
+        {
+          t: fix.t,
+          lat: fix.lat,
+          lon: fix.lon,
+          acc: fix.acc ?? null,
+          spd: fix.spd ?? null,
+          hdg: fix.hdg ?? null,
+        },
+        trackOpts,
+      );
+    }
+  }
+}
+
+async function warmGpsTracksFromRecentDbFixes(orgId, windowMs, opts = {}) {
+  if (!db.hasDb()) return;
+  try {
+    const fixesByDevice = await db.getRecentGpsFixesByDevice(orgId, windowMs, 8);
+    warmGpsTracksFromFixesByDevice(orgId, fixesByDevice, opts);
+  } catch (err) {
+    console.error('[ingest-store] warmGpsTracksFromRecentDbFixes failed:', err);
+  }
 }
 
 /** Replay recent GPS samples so map polls warm the filter (serverless-safe). */
@@ -605,11 +656,7 @@ function attachSmoothMapCoords(rawPositions, predictMode = 'rowing', orgId = nul
 
     return {
       ...p,
-      speed:
-        p.speed ??
-        (track?.speedMps != null && Number.isFinite(track.speedMps)
-          ? Math.max(0, track.speedMps)
-          : null),
+      speed: displayMapSpeedMps(p.speed, track?.speedMps),
       course:
         p.course ??
         (track?.courseDeg != null && Number.isFinite(track.courseDeg)
@@ -1829,6 +1876,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
         getRawMemoryMapPositions(orgId, onlineMs, now),
         registryPositions,
       ]);
+      await warmGpsTracksFromRecentDbFixes(orgId, telemetryWindowMs, trackOpts);
       warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
       const positions = attachSmoothMapCoords(rawMerged, predictMode, orgId);
 
@@ -1865,6 +1913,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   const rawMerged = mergeMapPositionsByFixMs([
     getRawMemoryMapPositions(orgId, onlineMs, now),
   ]);
+  await warmGpsTracksFromRecentDbFixes(orgId, telemetryWindowMs, trackOpts);
   warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
   const mapped = attachSmoothMapCoords(rawMerged, predictMode, orgId).map((p) => {
     const rowing = rowingByDevice.get(p.deviceId) || {};
@@ -1933,6 +1982,26 @@ async function enrichTraccarSnapshotCapsize(orgId, snapshot, _onlineMs) {
 }
 
 /** Fill snapshot speed/stroke from recent samples when DB row lacks them (RowSafe map). */
+/** Fill snapshot speed from position-derived track (RowSafe / overlay). */
+async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
+  if (!snapshot?.positions?.length) return snapshot;
+  const windowMs = Math.min(Math.max(Number(onlineMs) || 120_000, 60_000), 180_000);
+  await warmGpsTracksFromRecentDbFixes(orgId, windowMs, {
+    maxTrackSpeedMps: MAX_ROWING_PREDICT_MPS,
+  });
+  const idToUid = new Map(
+    (snapshot.devices || []).map((d) => [d.id, d.uniqueId || d.name]),
+  );
+  for (const p of snapshot.positions) {
+    const uid = idToUid.get(p.deviceId) || p.deviceName;
+    if (!uid) continue;
+    const track = gpsTracks.get(orgDeviceKey(orgId, uid));
+    const next = displayMapSpeedMps(p.speed, track?.speedMps);
+    if (next != null && Number.isFinite(next)) p.speed = next;
+  }
+  return snapshot;
+}
+
 async function enrichTraccarSnapshotRowing(orgId, snapshot, onlineMs) {
   if (!snapshot?.positions?.length) return snapshot;
   const windowMs = Math.min(Math.max(Number(onlineMs) || 120_000, 60_000), 180_000);
@@ -2014,6 +2083,7 @@ async function getTraccarSnapshot(orgId, onlineMs = 120000) {
     }));
     snapshot = { devices, positions, geofences: [], groups: [] };
   }
+  snapshot = await enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs);
   snapshot = await enrichTraccarSnapshotRowing(orgId, snapshot, onlineMs);
   return enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs);
 }

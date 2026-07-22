@@ -967,14 +967,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         enqueueGpsSample(location, t, false);
     }
 
-    private JSONObject buildGpsJson(Location location) throws Exception {
+    private JSONObject buildGpsJson(Location location, long t) throws Exception {
         JSONObject gps = new JSONObject();
         gps.put("lat", location.getLatitude());
         gps.put("lon", location.getLongitude());
         if (location.hasAccuracy()) gps.put("acc", location.getAccuracy());
-        if (location.hasSpeed() && location.getSpeed() >= 0f) {
-            gps.put("spd", Math.round(location.getSpeed() * 100) / 100.0);
-        }
+        float androidSpd =
+                location.hasSpeed() && location.getSpeed() >= 0f ? location.getSpeed() : -1f;
+        float spd = resolveUploadSpeedMps(location, t, androidSpd);
+        if (spd >= 0f) gps.put("spd", Math.round(spd * 100) / 100.0);
         if (location.hasBearing() && location.getBearing() >= 0f) {
             gps.put("hdg", Math.round(location.getBearing() * 10) / 10.0);
         }
@@ -985,6 +986,29 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             gps.put("alt", Math.round(location.getAltitude() * 10) / 10.0);
         }
         return gps;
+    }
+
+    /** Prefer distance/time over Android getSpeed() when rowing (getSpeed() often understates). */
+    private float resolveUploadSpeedMps(Location location, long t, float androidSpd) {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (!p.contains("lastGpsLat") || !p.contains("lastGpsLon")) {
+            return androidSpd;
+        }
+        long prevT = p.getLong("lastGpsT", 0L);
+        double prevLat = p.getFloat("lastGpsLat", 0f);
+        double prevLon = p.getFloat("lastGpsLon", 0f);
+        double dt = (t - prevT) / 1000.0;
+        if (dt < 1.0 || dt > 45.0) return androidSpd;
+        Location prev = new Location("");
+        prev.setLatitude(prevLat);
+        prev.setLongitude(prevLon);
+        float dist = location.distanceTo(prev);
+        if (dist < 2f) return androidSpd;
+        float derived = dist / (float) dt;
+        if (derived > 12f) return androidSpd;
+        if (androidSpd < 0f) return derived;
+        if (androidSpd < derived * 0.75f) return derived;
+        return Math.round((0.5f * derived + 0.5f * androidSpd) * 100f) / 100f;
     }
 
     /** Cached coords on heartbeat when the 1s GPS timer stalls (heartbeats fire ~every 10s). */
@@ -998,7 +1022,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return false;
         }
         try {
-            sample.put("gps", buildGpsJson(loc));
+            sample.put("gps", buildGpsJson(loc, System.currentTimeMillis()));
             return true;
         } catch (Exception e) {
             Log.w(TAG, "Heartbeat GPS attach failed", e);
@@ -1061,7 +1085,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         try {
             JSONObject sample = new JSONObject();
             sample.put("t", t);
-            sample.put("gps", buildGpsJson(location));
+            sample.put("gps", buildGpsJson(location, t));
             if (enableMotion && (lastAx != 0f || lastAy != 0f || lastAz != 0f)) {
                 JSONObject motion = new JSONObject();
                 motion.put("ax", Math.round(lastAx * 100) / 100.0);
