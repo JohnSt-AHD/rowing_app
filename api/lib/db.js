@@ -1242,6 +1242,100 @@ async function getLatestRowingTelemetry(orgId, windowMs = 120000) {
 }
 
 /**
+ * Latest battery reading per device (native reports ~every 10 min — no short window).
+ * @returns {Promise<Map<string, { t: number, pct: number }>>}
+ */
+async function getLatestBatteryByDevice(orgId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const rows = await sql`
+    SELECT DISTINCT ON (unique_id)
+      unique_id, t_ms, battery_pct
+    FROM rnz_samples
+    WHERE org_id = ${orgId}
+      AND battery_pct IS NOT NULL
+    ORDER BY unique_id, t_ms DESC
+  `;
+  /** @type {Map<string, { t: number, pct: number }>} */
+  const map = new Map();
+  for (const row of rows.rows) {
+    map.set(String(row.unique_id), {
+      t: Number(row.t_ms),
+      pct: Math.max(0, Math.min(100, Number(row.battery_pct))),
+    });
+  }
+  return map;
+}
+
+/**
+ * Latest stored stroke rate per device (attached to GPS uploads by native/WebView).
+ * @returns {Promise<Map<string, { t: number, strokeRate: number }>>}
+ */
+async function getLatestStrokeByDevice(orgId, windowMs = 120000) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const cutoff = Date.now() - windowMs;
+  const rows = await sql`
+    SELECT DISTINCT ON (unique_id)
+      unique_id, t_ms, stroke_rate
+    FROM rnz_samples
+    WHERE org_id = ${orgId}
+      AND stroke_rate IS NOT NULL
+      AND t_ms >= ${cutoff}
+    ORDER BY unique_id, t_ms DESC
+  `;
+  /** @type {Map<string, { t: number, strokeRate: number }>} */
+  const map = new Map();
+  for (const row of rows.rows) {
+    map.set(String(row.unique_id), {
+      t: Number(row.t_ms),
+      strokeRate: Number(row.stroke_rate),
+    });
+  }
+  return map;
+}
+
+/**
+ * Recent motion samples per device for server-side stroke analysis (bounded per device).
+ * @returns {Promise<Map<string, { t: number, motion: { ax: number, ay: number, az: number } }[]>>}
+ */
+async function getRecentMotionByDevice(orgId, windowMs = 90000, limitPerDevice = 90) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const cutoff = Date.now() - windowMs;
+  const cap = Math.max(20, Math.min(Number(limitPerDevice) || 90, 200));
+  const rows = await sql`
+    SELECT unique_id, t_ms, ax, ay, az FROM (
+      SELECT unique_id, t_ms, ax, ay, az,
+        ROW_NUMBER() OVER (PARTITION BY unique_id ORDER BY t_ms DESC) AS rn
+      FROM rnz_samples
+      WHERE org_id = ${orgId}
+        AND t_ms >= ${cutoff}
+        AND ax IS NOT NULL
+        AND ay IS NOT NULL
+        AND az IS NOT NULL
+    ) sub
+    WHERE rn <= ${cap}
+    ORDER BY unique_id, t_ms ASC
+  `;
+  /** @type {Map<string, { t: number, motion: { ax: number, ay: number, az: number } }[]>>} */
+  const map = new Map();
+  for (const row of rows.rows) {
+    const uid = String(row.unique_id);
+    let list = map.get(uid);
+    if (!list) {
+      list = [];
+      map.set(uid, list);
+    }
+    list.push({
+      t: Number(row.t_ms),
+      motion: { ax: Number(row.ax), ay: Number(row.ay), az: Number(row.az) },
+    });
+  }
+  return map;
+}
+
+/**
  * Server ingest times per device (telemetry + last GPS batch).
  * @returns {Promise<Map<string, { lastSeenMs: number, lastGpsIngestMs: number|null }>>}
  */
@@ -2614,6 +2708,9 @@ module.exports = {
   CAPSIZE_ALERT_MAX_AGE_MS,
   fetchRecentSamplesByDevice,
   getLatestRowingTelemetry,
+  getLatestBatteryByDevice,
+  getLatestStrokeByDevice,
+  getRecentMotionByDevice,
   getDeviceIngestTimes,
   getDeviceRegistryTimes,
   getMapPositions,

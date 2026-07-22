@@ -1244,11 +1244,15 @@ async function listDevices(orgId, opts = {}) {
     try {
       // Registry-only for live polls. Do NOT scan rnz_samples here; those
       // queries can outlive request handling and trigger Vercel 504s.
-      const [registryGps, registryTimes, rowingTel, dbCapsizeAlerts] = await Promise.all([
+      const [registryGps, registryTimes, rowingTel, dbCapsizeAlerts, batteryByDevice, strokeByDevice, motionByDevice] =
+        await Promise.all([
         db.getRegistryGpsByDevice(orgId),
         db.getDeviceRegistryTimes(orgId),
         db.getLatestRowingTelemetry(orgId, Math.max(windowMs, 120000)),
         loadDbCapsizeAlerts(orgId),
+        db.getLatestBatteryByDevice(orgId),
+        db.getLatestStrokeByDevice(orgId, Math.max(windowMs, 120000)),
+        db.getRecentMotionByDevice(orgId, Math.max(windowMs, 90000)),
       ]);
 
       for (const [deviceId, regFix] of registryGps) {
@@ -1311,21 +1315,15 @@ async function listDevices(orgId, opts = {}) {
         );
       }
 
-      for (const [deviceId, tel] of rowingTel) {
-        const dev = byDevice.get(deviceId);
-        if (!dev) continue;
-        const rowing = dev.rowing || {};
-        // Monitor capsize is sticky-only (forceCapsizeAlertsOnDevices). Do not
-        // re-light from latest sample or Clear alert cannot stick.
-        dev.rowing = {
-          ...rowing,
-          capsize: false,
-          tiltDeg: tel.tiltDeg ?? rowing.tiltDeg ?? null,
-          strokeRate: tel.strokeRate ?? rowing.strokeRate ?? null,
-        };
-      }
       for (const dev of byDevice.values()) {
-        if (dev.rowing) dev.rowing.capsize = false;
+        mergeListDeviceDbTelemetry(
+          dev,
+          rowingTel.get(dev.deviceId),
+          batteryByDevice.get(dev.deviceId),
+          strokeByDevice.get(dev.deviceId),
+          motionByDevice.get(dev.deviceId),
+          now,
+        );
       }
       forceCapsizeAlertsOnDevices(
         byDevice,
@@ -1627,6 +1625,39 @@ function snapshotPositionsToMapFormat(memPositions, now, onlineMs) {
       hr: p.attributes?.hr ?? p.attributes?.heartRate ?? null,
     };
   });
+}
+
+function mergeListDeviceDbTelemetry(dev, tel, batteryTel, strokeTel, motionSamples, now) {
+  const rowing = dev.rowing || {};
+  let strokeRate =
+    strokeTel?.strokeRate ?? tel?.strokeRate ?? rowing.strokeRate ?? null;
+  let strokeRateValid = strokeRate != null;
+  let calibrated = rowing.calibrated ?? false;
+
+  if (motionSamples?.length) {
+    const analyzed = analyzeMotionWindow(motionSamples);
+    if (analyzed?.strokeRate != null) {
+      strokeRate = analyzed.strokeRate;
+      strokeRateValid = true;
+      calibrated = analyzed.calibrated ?? calibrated;
+    }
+  }
+
+  dev.rowing = {
+    ...rowing,
+    capsize: false,
+    tiltDeg: tel?.tiltDeg ?? rowing.tiltDeg ?? null,
+    strokeRate,
+    strokeRateValid,
+    calibrated,
+  };
+
+  if (batteryTel) {
+    dev.battery = {
+      pct: batteryTel.pct,
+      ageSec: Math.round((now - batteryTel.t) / 1000),
+    };
+  }
 }
 
 function applyRegistryGpsToDevice(device, registryFix, now) {
