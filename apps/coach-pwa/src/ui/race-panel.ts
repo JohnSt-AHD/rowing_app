@@ -83,14 +83,14 @@ export class RacePanel {
   }
 
   mount(container: HTMLElement) {
+    this.root = container;
     const needsDomSetup = !container.querySelector('.race-panel');
     if (needsDomSetup) {
       container.innerHTML = RacePanel.html;
-      this.bind();
       this.loadPrefs();
+      this.bind();
       void this.reloadLines();
     }
-    this.root = container;
   }
 
   onTabShown() {
@@ -257,7 +257,16 @@ export class RacePanel {
     }
   }
 
+  private syncCourseSelect() {
+    const sel = this.root?.querySelector('[data-race-course]') as HTMLSelectElement | null;
+    if (!sel || !this.engine.selectedCourse) return;
+    if (sel.value !== this.engine.selectedCourse) {
+      sel.value = this.engine.selectedCourse;
+    }
+  }
+
   private refreshView() {
+    this.syncCourseSelect();
     const course = this.engine.getCourse();
     if (!course) {
       this.renderSplits(null);
