@@ -237,10 +237,10 @@ function isDataStale(p) {
   return age != null && age > TELEMETRY_STALE_SEC;
 }
 
-/** Coach-facing pace: 60s path average only (no instant-speed fallback). */
+/** Coach-facing pace: smoothed 60s path average (never instant GPS). */
 function paceMpsForPosition(p) {
   if (isDataStale(p)) return null;
-  const mps = p.pathSpeedMps ?? null;
+  const mps = p.displaySpeedMps ?? p.pathSpeedMps ?? null;
   if (mps == null || !Number.isFinite(mps) || mps < 0.25) return null;
   return mps;
 }
@@ -582,15 +582,18 @@ function deviceSummaryLine(d) {
     parts.push('No GPS');
   }
   if (d.battery?.pct != null) parts.push(`${fmtBatteryPct(d.battery.pct)} bat`);
-  if (!isDeviceDataStale(d) && window.RowingSpeed && d.pathSpeedMps != null && d.pathSpeedMps >= 0.25) {
-    parts.push(
-      window.RowingSpeed.formatPaceWithPrognostic(
-        d.pathSpeedMps,
-        d.deviceId,
-        d.athleteId,
-        { suffix: false },
-      ),
-    );
+  if (!isDeviceDataStale(d) && window.RowingSpeed) {
+    const paceMps = d.displaySpeedMps ?? d.pathSpeedMps ?? null;
+    if (paceMps != null && paceMps >= 0.25) {
+      parts.push(
+        window.RowingSpeed.formatPaceWithPrognostic(
+          paceMps,
+          d.deviceId,
+          d.athleteId,
+          { suffix: false },
+        ),
+      );
+    }
   }
   if (d.rowing?.capsize) parts.push('CAPSIZE');
   else {

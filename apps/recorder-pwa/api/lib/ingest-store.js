@@ -52,6 +52,10 @@ const PATH_PACE_MIN_TIME_SEC = 8;
 const PATH_PACE_MIN_DIST_M = 20;
 /** Max fixes per device when loading path pace window (~1 Hz for 60s). */
 const PATH_PACE_FIX_LIMIT = 75;
+/** Keep showing last path pace when a fresh window cannot be computed. */
+const PATH_PACE_HOLD_MS = 45_000;
+/** EMA weight for new raw path pace (lower = smoother display). */
+const PATH_PACE_EMA_ALPHA = 0.2;
 /** Rolling median window for coach-facing stroke rate. */
 const STROKE_MEDIAN_WINDOW_MS = 15_000;
 /** Minimum stroke readings before reporting median SPM. */
@@ -111,6 +115,10 @@ globalThis.__rnzLastHeartbeat = lastHeartbeatByDevice;
 /** @type {Map<string, { t: number, pct: number }>} */
 const lastBatteryByDevice = globalThis.__rnzLastBattery ?? new Map();
 globalThis.__rnzLastBattery = lastBatteryByDevice;
+/** Smoothed coach-facing path pace per org:device (EMA + hold on gaps). */
+/** @type {Map<string, { ema: number, raw: number, at: number }>} */
+const pathPaceDisplayByDevice = globalThis.__rnzPathPaceDisplayByDevice ?? new Map();
+globalThis.__rnzPathPaceDisplayByDevice = pathPaceDisplayByDevice;
 globalThis.__rnzRecentIdempotency = recentIdempotency;
 const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
 const metrics = globalThis.__rnzIngestMetrics ?? {
@@ -607,32 +615,57 @@ async function loadPathPaceFixesByDevice(orgId, windowMs, telemetryByDevice) {
   return fixesByDevice;
 }
 
-/** @param {object[]} positions @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice */
-function attachPathPaceToMapPositions(positions, fixesByDevice) {
+/**
+ * EMA-smoothed path pace for display; holds last good value through brief GPS gaps.
+ * @param {number} orgId
+ * @param {string} deviceId
+ * @param {number|null|undefined} rawPath
+ * @param {boolean} [live]
+ */
+function resolveDisplayPathSpeedMps(orgId, deviceId, rawPath, live = true) {
+  const key = orgDeviceKey(orgId, deviceId);
+  const prev = pathPaceDisplayByDevice.get(key);
+  const now = Date.now();
+  if (rawPath != null && Number.isFinite(rawPath) && rawPath >= 0.25) {
+    const ema =
+      prev?.ema != null && Number.isFinite(prev.ema)
+        ? PATH_PACE_EMA_ALPHA * rawPath + (1 - PATH_PACE_EMA_ALPHA) * prev.ema
+        : rawPath;
+    pathPaceDisplayByDevice.set(key, { ema, raw: rawPath, at: now });
+    return ema;
+  }
+  if (live && prev?.ema != null && now - prev.at <= PATH_PACE_HOLD_MS) {
+    return prev.ema;
+  }
+  return null;
+}
+
+/** @param {object[]} positions @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice @param {number} orgId */
+function attachPathPaceToMapPositions(positions, fixesByDevice, orgId) {
   for (const p of positions) {
     const fixes = fixesByDevice.get(p.deviceId);
     const pathSpeed = pathSpeedMpsFromFixes(fixes);
     p.pathSpeedMps = pathSpeed;
     p.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
-    if (
-      pathSpeed != null &&
-      p.online !== false &&
-      p.telemetryStale !== true
-    ) {
-      p.displaySpeedMps = pathSpeed;
-    } else {
-      p.displaySpeedMps = p.speed ?? null;
-    }
+    const live = p.online !== false && p.telemetryStale !== true;
+    p.displaySpeedMps = resolveDisplayPathSpeedMps(orgId, p.deviceId, pathSpeed, live);
   }
   return positions;
 }
 
-/** @param {object[]} devices @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice */
-function attachPathPaceToDevices(devices, fixesByDevice) {
+/** @param {object[]} devices @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice @param {number} orgId */
+function attachPathPaceToDevices(devices, fixesByDevice, orgId) {
   for (const dev of devices) {
     const fixes = fixesByDevice.get(dev.deviceId);
-    dev.pathSpeedMps = pathSpeedMpsFromFixes(fixes);
+    const pathSpeed = pathSpeedMpsFromFixes(fixes);
+    dev.pathSpeedMps = pathSpeed;
     dev.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
+    dev.displaySpeedMps = resolveDisplayPathSpeedMps(
+      orgId,
+      dev.deviceId,
+      pathSpeed,
+      dev.online !== false,
+    );
   }
   return devices;
 }
@@ -1676,7 +1709,7 @@ async function listDevices(orgId, opts = {}) {
     PATH_PACE_WINDOW_MS,
     pathTelemetry,
   );
-  attachPathPaceToDevices(devices, pathFixesByDevice);
+  attachPathPaceToDevices(devices, pathFixesByDevice, orgId);
   const strokeReadingsByDevice = await loadStrokeRateReadingsByDevice(
     orgId,
     STROKE_MEDIAN_WINDOW_MS,
@@ -2188,7 +2221,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
         loadPathPaceFixesByDevice(orgId, PATH_PACE_WINDOW_MS, telemetryByDevice),
         loadStrokeRateReadingsByDevice(orgId, STROKE_MEDIAN_WINDOW_MS, telemetryByDevice),
       ]);
-      attachPathPaceToMapPositions(positions, pathFixesByDevice);
+      attachPathPaceToMapPositions(positions, pathFixesByDevice, orgId);
       attachStrokeMedianToMapPositions(positions, strokeReadingsByDevice);
       return enrichMapPositionsDisplayAge(positions, now, registryTimes);
     } catch (err) {
@@ -2217,7 +2250,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
     loadPathPaceFixesByDevice(orgId, PATH_PACE_WINDOW_MS, telemetryByDevice),
     loadStrokeRateReadingsByDevice(orgId, STROKE_MEDIAN_WINDOW_MS, telemetryByDevice),
   ]);
-  attachPathPaceToMapPositions(mapped, pathFixesByDevice);
+  attachPathPaceToMapPositions(mapped, pathFixesByDevice, orgId);
   attachStrokeMedianToMapPositions(mapped, strokeReadingsByDevice);
   return enrichMapPositionsDisplayAge(mapped, now, null);
 }

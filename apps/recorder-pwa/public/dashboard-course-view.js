@@ -621,7 +621,7 @@
   /** 60s path pace from API — avoid instant map speed for live coach readouts. */
   function coachFacingSpeedMps(p) {
     if (p?.telemetryStale === true) return null;
-    const mps = p?.pathSpeedMps ?? null;
+    const mps = p?.displaySpeedMps ?? p?.pathSpeedMps ?? null;
     if (mps == null || !Number.isFinite(mps) || mps < 0.25) return null;
     return mps;
   }
