@@ -237,10 +237,10 @@ function isDataStale(p) {
   return age != null && age > TELEMETRY_STALE_SEC;
 }
 
-/** Coach-facing pace: 60s path average when available, else instant track speed. */
+/** Coach-facing pace: 60s path average only (no instant-speed fallback). */
 function paceMpsForPosition(p) {
   if (isDataStale(p)) return null;
-  const mps = p.pathSpeedMps ?? p.displaySpeedMps ?? p.speed ?? null;
+  const mps = p.pathSpeedMps ?? null;
   if (mps == null || !Number.isFinite(mps) || mps < 0.25) return null;
   return mps;
 }

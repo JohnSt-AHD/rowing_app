@@ -618,6 +618,21 @@
     return formatSplit500(mps);
   }
 
+  /** 60s path pace from API — avoid instant map speed for live coach readouts. */
+  function coachFacingSpeedMps(p) {
+    if (p?.telemetryStale === true) return null;
+    const mps = p?.pathSpeedMps ?? null;
+    if (mps == null || !Number.isFinite(mps) || mps < 0.25) return null;
+    return mps;
+  }
+
+  function coachFacingStrokeRate(p, stale) {
+    if (stale) return null;
+    const spm = p?.displayStrokeRate ?? p?.strokeRate ?? p?.attributes?.strokeRate ?? null;
+    if (spm == null || !Number.isFinite(spm) || spm <= 0) return null;
+    return spm;
+  }
+
   function markerAlongM(line, course) {
     if (line?.distanceM == null || !Number.isFinite(line.distanceM)) return null;
     return courseReversed
@@ -1084,15 +1099,10 @@
       const dtSec = prev ? Math.max(0.05, (nowMs - prev.t) / 1000) : 0;
       lastPosByDevice.set(deviceId, { ...cur, t: nowMs });
 
-      const spd = speedFromPosition(p, prev, dtSec);
+      const spd = coachFacingSpeedMps(p);
       const receiveAgo = p.lastSeenAgoSec ?? p.ingestAgoSec ?? null;
       const stale = p.telemetryStale === true || (receiveAgo != null && receiveAgo > 30);
-      const strokeRate =
-        !stale && p.strokeRateValid && p.strokeRate != null
-          ? p.strokeRate
-          : !stale
-            ? p.attributes?.strokeRate ?? null
-            : null;
+      const strokeRate = coachFacingStrokeRate(p, stale);
       liveByDevice.set(deviceId, {
         speedMps: stale ? null : spd,
         strokeRate: strokeRate,
@@ -1104,7 +1114,7 @@
 
       const effAlong = effectiveAlong(cur.lat, cur.lon, course);
       updateRollingStart(deviceId, {
-        spd,
+        spd: coachFacingSpeedMps(p) ?? speedFromPosition(p, prev, dtSec),
         along: effAlong,
         nowMs,
         cur,
