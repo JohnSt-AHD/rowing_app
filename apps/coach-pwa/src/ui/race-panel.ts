@@ -12,6 +12,13 @@ import {
   formatSpeedDisplay,
 } from '../lib/course-format';
 import {
+  avgSpeedInSegment,
+  computeCourseStats,
+  courseSegments,
+  formatPaceCell,
+  formatPrognosticForDevice,
+} from '../lib/course-stats';
+import {
   courseBounds,
   courseGroupsFromLines,
   effectiveAlong,
@@ -278,7 +285,7 @@ export class RacePanel {
     this.renderSplits(course);
     const canvas = this.root?.querySelector('[data-race-chart]') as HTMLCanvasElement | null;
     if (canvas) drawPaceDistanceChart(canvas, this.engine, course);
-    const n = this.engine.visibleDeviceIds().length;
+    const n = this.engine.visibleDeviceIdsByProg().length;
     this.setRaceStatus(
       `${course.group} · ${Math.round(course.totalDist)} m · ${n} boat${n === 1 ? '' : 's'} on course` +
         (this.engine.courseReversed ? ' · reverse' : '') +
@@ -293,11 +300,10 @@ export class RacePanel {
       el.innerHTML = '<p class="poll-line">No course selected.</p>';
       return;
     }
-    const ordered = [...course.markers].sort(
-      (a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0),
+    const segments = courseSegments(course, this.engine.courseReversed);
+    const deviceIds = this.engine.visibleDeviceIdsByProg(
+      this.lastPositions.map((p) => p.deviceId),
     );
-    const splitLines = ordered.filter((l) => l.lineType !== 'start');
-    const deviceIds = this.engine.visibleDeviceIds(this.lastPositions.map((p) => p.deviceId));
     if (!deviceIds.length) {
       el.innerHTML = '<p class="poll-line">Waiting for devices on course…</p>';
       return;
@@ -306,6 +312,9 @@ export class RacePanel {
       .map((deviceId) => {
         const crossed = this.engine.getCrossings(deviceId);
         const live = this.engine.getLive(deviceId);
+        const trace = this.engine.getTrace(deviceId);
+        const stats = computeCourseStats(trace, course, deviceId, live?.athleteId);
+        const finished = this.engine.hasFinishedCourse(deviceId, course);
         const pos = this.lastPositions.find((p) => p.deviceId === deviceId);
         const displayName =
           String(live?.athleteId ?? pos?.athleteId ?? deviceId).trim() || deviceId;
@@ -316,23 +325,44 @@ export class RacePanel {
             ? `${formatClock(tStart)} ↺`
             : formatClock(tStart)
           : '—';
-        const splitsHtml = splitLines
-          .map((line) => {
-            const label = markerLabelM(line, course, this.engine.courseReversed);
-            const t = crossed.get(line.id);
-            const val =
-              t != null && tStart != null ? formatElapsed(t - tStart) : '—';
+        const splitsHtml = segments
+          .map((seg) => {
+            const label = markerLabelM(seg.line, course, this.engine.courseReversed);
+            const t = crossed.get(seg.line.id);
+            if (t == null || tStart == null) {
+              return `<div class="race-split-cell"><dt>${esc(label)}</dt><dd>—</dd></div>`;
+            }
+            const elapsed = formatElapsed(t - tStart);
+            const segSpeed = avgSpeedInSegment(trace, seg.from, seg.to);
+            const segProg = formatPrognosticForDevice(
+              segSpeed,
+              deviceId,
+              live?.athleteId,
+            );
+            const val = segProg ? `${elapsed} · ${segProg}` : elapsed;
             return `<div class="race-split-cell"><dt>${esc(label)}</dt><dd>${esc(val)}</dd></div>`;
           })
           .join('');
-        const pace =
-          live?.stale && live.lastSeenAgoSec != null
-            ? `Stale ${live.lastSeenAgoSec}s`
-            : formatSpeedDisplay(live?.speedMps, deviceId, live?.athleteId);
-        const spm =
-          !live?.stale && live?.strokeRate != null && live.strokeRate > 0
-            ? `${Math.round(live.strokeRate)} spm`
-            : '—';
+        let pace: string;
+        if (finished) {
+          pace =
+            stats.avgMps != null
+              ? formatPaceCell(stats.avgMps, deviceId, live?.athleteId)
+              : '—';
+        } else if (live?.stale && live.lastSeenAgoSec != null) {
+          pace = `Stale ${live.lastSeenAgoSec}s`;
+        } else {
+          pace = formatSpeedDisplay(live?.speedMps, deviceId, live?.athleteId);
+        }
+        let spm = '—';
+        if (finished) {
+          spm =
+            stats.avgSpm != null && stats.avgSpm > 0
+              ? `${Math.round(stats.avgSpm)} spm`
+              : '—';
+        } else if (!live?.stale && live?.strokeRate != null && live.strokeRate > 0) {
+          spm = `${Math.round(live.strokeRate)} spm`;
+        }
         return `<article class="race-boat-card">
           <header class="race-boat-card__head">
             <span class="race-boat-card__dot" style="background:${colorForDevice(deviceId)}"></span>

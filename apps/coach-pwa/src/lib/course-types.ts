@@ -31,7 +31,11 @@ export type LatLon = { lat: number; lon: number };
 
 export type PosSample = LatLon & { t: number };
 
-export type TracePoint = { distM: number; speedMps: number };
+export type TracePoint = {
+  distM: number;
+  speedMps: number;
+  strokeRate?: number | null;
+};
 
 export type LiveDeviceState = {
   speedMps: number | null;

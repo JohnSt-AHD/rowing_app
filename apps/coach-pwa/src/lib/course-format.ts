@@ -27,5 +27,5 @@ export function formatSpeedDisplay(
   athleteId?: string | null,
 ) {
   if (mps == null || !Number.isFinite(mps) || mps <= 0) return '—';
-  return formatPaceWithPrognostic(mps, deviceId, athleteId ?? undefined, { suffix: true });
+  return formatPaceWithPrognostic(mps, deviceId, athleteId ?? undefined, { suffix: false });
 }

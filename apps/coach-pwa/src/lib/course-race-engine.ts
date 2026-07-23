@@ -8,6 +8,10 @@ import type {
   TracePoint,
 } from './course-types';
 import {
+  avgSpeedInSegment,
+  prognosticPercentForDevice,
+} from './course-stats';
+import {
   effectiveAlong,
   haversineM,
   parseCourse,
@@ -103,9 +107,43 @@ export class CourseRaceEngine {
       ...this.crossingsByDevice.keys(),
       ...extra,
     ]);
-    return [...ids]
-      .filter((id) => !this.hiddenDevices.has(id))
-      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    return [...ids].filter((id) => !this.hiddenDevices.has(id));
+  }
+
+  visibleDeviceIdsByProg(extra: string[] = []) {
+    const course = this.getCourse();
+    const ids = this.visibleDeviceIds(extra);
+    if (!course) {
+      return [...ids].sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: 'base' }),
+      );
+    }
+    return ids.sort((a, b) => {
+      const liveA = this.liveByDevice.get(a);
+      const liveB = this.liveByDevice.get(b);
+      const progA =
+        this.courseProgNum(a, course, liveA?.athleteId) ?? -1;
+      const progB =
+        this.courseProgNum(b, course, liveB?.athleteId) ?? -1;
+      if (progB !== progA) return progB - progA;
+      return a.localeCompare(b, undefined, { sensitivity: 'base' });
+    });
+  }
+
+  private courseProgNum(
+    deviceId: string,
+    course: ParsedCourse,
+    athleteId?: string | null,
+  ) {
+    const trace = this.getTrace(deviceId);
+    const avgMps = avgSpeedInSegment(trace, 0, course.totalDist);
+    return prognosticPercentForDevice(avgMps, deviceId, athleteId);
+  }
+
+  hasFinishedCourse(deviceId: string, course: ParsedCourse) {
+    const crossed = this.crossingsByDevice.get(deviceId);
+    if (!crossed || !course.finish) return false;
+    return crossed.has(course.finish.id);
   }
 
   hideDevice(deviceId: string) {
@@ -146,10 +184,11 @@ export class CourseRaceEngine {
       const stale =
         p.telemetryStale === true ||
         (receiveAgo != null && receiveAgo > TELEMETRY_STALE_SEC);
+      const strokeRate =
+        !stale && p.strokeRateValid && p.strokeRate != null ? p.strokeRate : null;
       this.liveByDevice.set(deviceId, {
         speedMps: stale ? null : spd,
-        strokeRate:
-          !stale && p.strokeRateValid && p.strokeRate != null ? p.strokeRate : null,
+        strokeRate,
         athleteId: p.athleteId ?? null,
         stale,
         lastSeenAgoSec: receiveAgo,
@@ -190,7 +229,14 @@ export class CourseRaceEngine {
         Math.abs(last.distM - distM) > 2 ||
         Math.abs(last.speedMps - spd) > 0.15
       ) {
-        trace.push({ distM, speedMps: spd });
+        trace.push({
+          distM,
+          speedMps: spd,
+          strokeRate:
+            strokeRate != null && Number.isFinite(strokeRate) && strokeRate > 0
+              ? strokeRate
+              : null,
+        });
         if (trace.length > 800) trace.shift();
       }
     }
