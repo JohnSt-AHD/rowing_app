@@ -90,10 +90,14 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long HEARTBEAT_INTERVAL_MS = 10_000L;
     /** Battery % on ingest — every 10 min (session start always includes a reading). */
     private static final long BATTERY_REPORT_INTERVAL_MS = 10L * 60L * 1000L;
-    /** Stroke rate from WebView motion analyzer — attach to GPS uploads when fresh. */
-    private static final long STROKE_RATE_MAX_AGE_MS = 10_000L;
+    /** Stroke rate from WebView or native motion — attach to GPS uploads when fresh. */
+    private static final long STROKE_RATE_MAX_AGE_MS = 20_000L;
     private static final float STROKE_RATE_MIN = 15f;
     private static final float STROKE_RATE_MAX = 50f;
+    private static final int STROKE_BUF_CAP = 256;
+    private static final long STROKE_BUF_MS = 8000L;
+    private static final long STROKE_COMPUTE_MIN_MS = 500L;
+    private static final int STROKE_HP_WINDOW_MS = 450;
     private static final int MAX_PENDING_BATCHES = 60;
     private static final int MAX_PENDING_FLUSH_PER_CYCLE = 8;
     private static final int MAX_PENDING_FLUSH_ON_GPS = 2;
@@ -196,6 +200,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private final float[] recentAz = new float[64];
     private final long[] recentT = new long[64];
     private int recentCount;
+    private final long[] strokeT = new long[STROKE_BUF_CAP];
+    private final float[] strokeAx = new float[STROKE_BUF_CAP];
+    private final float[] strokeAy = new float[STROKE_BUF_CAP];
+    private final float[] strokeAz = new float[STROKE_BUF_CAP];
+    private int strokeCount;
+    private long lastStrokeComputeMs;
     private JSONArray ingestBuffer = new JSONArray();
     private long lastIngestFlushMs;
     private long lastSuccessfulUploadMs;
@@ -444,9 +454,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
         if (enableMotion) {
             pushRecent(t, ax, ay, az);
+            pushStrokeSample(t, ax, ay, az);
             tryCalibrate(t);
             loadUprightFromPrefs();
             updateCapsize(t);
+            updateNativeStrokeRate(t);
         }
         if (compassAvailable && rotationVector == null && magnetometer != null) {
             updateCompassFromAccelMag();
@@ -1974,13 +1986,138 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         mirrorRecordingPrefsToDeviceProtected(ctx);
     }
 
-    /** Latest stroke rate (spm) computed in WebView — included on GPS uploads only. */
+    /** Latest stroke rate (spm) from WebView or native motion — included on GPS uploads only. */
     public static void setStrokeRate(Context ctx, float spm) {
         ctx.getSharedPreferences(PREFS, MODE_PRIVATE)
             .edit()
             .putFloat("lastStrokeRate", spm)
             .putLong("lastStrokeRateMs", System.currentTimeMillis())
             .apply();
+    }
+
+    private void pushStrokeSample(long t, float ax, float ay, float az) {
+        if (strokeCount < STROKE_BUF_CAP) {
+            int i = strokeCount++;
+            strokeT[i] = t;
+            strokeAx[i] = ax;
+            strokeAy[i] = ay;
+            strokeAz[i] = az;
+        } else {
+            System.arraycopy(strokeAx, 1, strokeAx, 0, STROKE_BUF_CAP - 1);
+            System.arraycopy(strokeAy, 1, strokeAy, 0, STROKE_BUF_CAP - 1);
+            System.arraycopy(strokeAz, 1, strokeAz, 0, STROKE_BUF_CAP - 1);
+            System.arraycopy(strokeT, 1, strokeT, 0, STROKE_BUF_CAP - 1);
+            int i = STROKE_BUF_CAP - 1;
+            strokeT[i] = t;
+            strokeAx[i] = ax;
+            strokeAy[i] = ay;
+            strokeAz[i] = az;
+        }
+    }
+
+    private void updateNativeStrokeRate(long t) {
+        if (!calibrated || strokeCount < 30 || t - lastStrokeComputeMs < STROKE_COMPUTE_MIN_MS) {
+            return;
+        }
+        lastStrokeComputeMs = t;
+        long cutoff = t - STROKE_BUF_MS;
+        int start = 0;
+        while (start < strokeCount && strokeT[start] < cutoff) start++;
+        int n = strokeCount - start;
+        if (n < 30) return;
+
+        float sx = 0f;
+        float sy = 0f;
+        float sz = 0f;
+        float[] lx = new float[n];
+        float[] ly = new float[n];
+        float[] lz = new float[n];
+        for (int i = 0; i < n; i++) {
+            int j = start + i;
+            lx[i] = strokeAx[j] - gx;
+            ly[i] = strokeAy[j] - gy;
+            lz[i] = strokeAz[j] - gz;
+            sx += lx[i];
+            sy += ly[i];
+            sz += lz[i];
+        }
+        sx = stdDevArray(lx, sx / n);
+        sy = stdDevArray(ly, sy / n);
+        sz = stdDevArray(lz, sz / n);
+        float[] raw;
+        if (sy >= sx && sy >= sz) raw = ly;
+        else if (sz >= sx && sz >= sy) raw = lz;
+        else raw = lx;
+
+        long t0 = strokeT[start];
+        long t1 = strokeT[strokeCount - 1];
+        float dt = (t1 - t0) / Math.max(1f, n - 1f);
+        int radius = Math.max(2, Math.round(STROKE_HP_WINDOW_MS / Math.max(1f, dt)));
+        float[] hp = new float[n];
+        float sumSq = 0f;
+        for (int i = 0; i < n; i++) {
+            float sum = 0f;
+            int count = 0;
+            for (int k = i - radius; k <= i + radius; k++) {
+                if (k >= 0 && k < n) {
+                    sum += raw[k];
+                    count++;
+                }
+            }
+            hp[i] = raw[i] - (count > 0 ? sum / count : raw[i]);
+            sumSq += hp[i] * hp[i];
+        }
+        float rms = (float) Math.sqrt(sumSq / n);
+        float minProminence = Math.max(0.08f, rms * 0.35f);
+        float minPeakMs = 60000f / STROKE_RATE_MAX;
+        float maxPeakMs = 60000f / STROKE_RATE_MIN;
+
+        int peakCount = 0;
+        long[] peakT = new long[16];
+        float[] peakV = new float[16];
+        for (int i = 2; i < n - 2; i++) {
+            float v = hp[i];
+            if (v <= hp[i - 1] || v <= hp[i + 1] || v < minProminence) continue;
+            long pt = strokeT[start + i];
+            if (peakCount > 0 && pt - peakT[peakCount - 1] < minPeakMs) {
+                if (v > peakV[peakCount - 1]) {
+                    peakT[peakCount - 1] = pt;
+                    peakV[peakCount - 1] = v;
+                }
+                continue;
+            }
+            if (peakCount < peakT.length) {
+                peakT[peakCount] = pt;
+                peakV[peakCount] = v;
+                peakCount++;
+            }
+        }
+        if (peakCount < 3) return;
+
+        int intervalCount = 0;
+        float[] intervals = new float[peakCount];
+        for (int i = 1; i < peakCount; i++) {
+            float dtMs = peakT[i] - peakT[i - 1];
+            if (dtMs >= minPeakMs && dtMs <= maxPeakMs) {
+                intervals[intervalCount++] = dtMs;
+            }
+        }
+        if (intervalCount < 2) return;
+        java.util.Arrays.sort(intervals, 0, intervalCount);
+        float medianMs = intervals[intervalCount / 2];
+        float spm = Math.round((60000f / medianMs) * 10f) / 10f;
+        if (spm < STROKE_RATE_MIN || spm > STROKE_RATE_MAX) return;
+        setStrokeRate(this, spm);
+    }
+
+    private static float stdDevArray(float[] values, float mean) {
+        if (values.length < 2) return 0f;
+        float sum = 0f;
+        for (float v : values) {
+            float d = v - mean;
+            sum += d * d;
+        }
+        return (float) Math.sqrt(sum / values.length);
     }
 
     private boolean appendFreshStrokeRate(JSONObject derived) throws org.json.JSONException {
