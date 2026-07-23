@@ -613,9 +613,90 @@
     if (RS) {
       const parts = [deviceId];
       if (athleteId) parts.push(athleteId);
-      return RS.formatPaceWithPrognostic(mps, ...parts, { suffix: true });
+      return RS.formatPaceWithPrognostic(mps, ...parts, { suffix: false });
     }
-    return `${formatSplit500(mps)}/500`;
+    return formatSplit500(mps);
+  }
+
+  function markerAlongM(line, course) {
+    if (line?.distanceM == null || !Number.isFinite(line.distanceM)) return null;
+    return courseReversed
+      ? (course.finishDist ?? 0) - line.distanceM
+      : line.distanceM - (course.startDist ?? 0);
+  }
+
+  function boatClassFor(deviceId, athleteId) {
+    const RS = window.RowingSpeed;
+    if (!RS?.parseBoatClass) return null;
+    return RS.parseBoatClass(deviceId, athleteId);
+  }
+
+  function formatPrognosticForDevice(mps, deviceId, athleteId) {
+    const RS = window.RowingSpeed;
+    if (!RS?.formatPrognostic || mps == null || !Number.isFinite(mps) || mps <= 0) return null;
+    const boat = boatClassFor(deviceId, athleteId);
+    if (!boat) return null;
+    return RS.formatPrognostic(mps, boat);
+  }
+
+  function prognosticPercentForDevice(mps, deviceId, athleteId) {
+    const RS = window.RowingSpeed;
+    if (!RS?.prognosticPercent || mps == null || !Number.isFinite(mps) || mps <= 0) return null;
+    const boat = boatClassFor(deviceId, athleteId);
+    if (!boat) return null;
+    return RS.prognosticPercent(mps, boat);
+  }
+
+  function avgSpeedInSegment(trace, distFrom, distTo) {
+    if (!trace?.length || distFrom == null || distTo == null) return null;
+    const lo = Math.min(distFrom, distTo);
+    const hi = Math.max(distFrom, distTo);
+    const samples = trace.filter(
+      (p) =>
+        p.speedMps > 0 &&
+        Number.isFinite(p.distM) &&
+        p.distM >= lo - 0.5 &&
+        p.distM <= hi + 0.5,
+    );
+    if (!samples.length) return null;
+    return samples.reduce((sum, p) => sum + p.speedMps, 0) / samples.length;
+  }
+
+  function avgStrokeInSegment(trace, distFrom, distTo) {
+    if (!trace?.length || distFrom == null || distTo == null) return null;
+    const lo = Math.min(distFrom, distTo);
+    const hi = Math.max(distFrom, distTo);
+    const samples = trace.filter(
+      (p) =>
+        p.strokeRate > 0 &&
+        Number.isFinite(p.distM) &&
+        p.distM >= lo - 0.5 &&
+        p.distM <= hi + 0.5,
+    );
+    if (!samples.length) return null;
+    return samples.reduce((sum, p) => sum + p.strokeRate, 0) / samples.length;
+  }
+
+  function courseStats(deviceId, course, athleteId) {
+    const trace = tracesByDevice.get(deviceId) || [];
+    const avgMps = avgSpeedInSegment(trace, 0, course.totalDist);
+    const avgSpm = avgStrokeInSegment(trace, 0, course.totalDist);
+    const avgProg = formatPrognosticForDevice(avgMps, deviceId, athleteId);
+    const progNum = prognosticPercentForDevice(avgMps, deviceId, athleteId);
+    return { avgMps, avgSpm, avgProg, progNum };
+  }
+
+  function hasFinishedCourse(deviceId, course) {
+    const crossed = crossingsByDevice.get(deviceId);
+    if (!crossed || !course.finish) return false;
+    return crossed.has(course.finish.id);
+  }
+
+  function formatPaceCell(mps, deviceId, athleteId) {
+    if (mps == null || !Number.isFinite(mps) || mps <= 0) return '—';
+    const split = formatSplit500(mps);
+    const prog = formatPrognosticForDevice(mps, deviceId, athleteId);
+    return prog ? `${split} · ${prog}` : split;
   }
 
   function speedFromPosition(p, prev, dtSec) {
@@ -894,7 +975,23 @@
       (a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0),
     );
 
-    const deviceIds = visibleDeviceIds();
+    const splitLines = ordered.filter((l) => l.lineType !== 'start');
+    let prevAlong = 0;
+    const segments = splitLines.map((line) => {
+      const along = markerAlongM(line, course);
+      const seg = { line, from: prevAlong, to: along ?? prevAlong };
+      if (along != null) prevAlong = along;
+      return seg;
+    });
+
+    const deviceIds = visibleDeviceIds().sort((a, b) => {
+      const liveA = liveByDevice.get(a) || {};
+      const liveB = liveByDevice.get(b) || {};
+      const progA = courseStats(a, course, liveA.athleteId).progNum ?? -1;
+      const progB = courseStats(b, course, liveB.athleteId).progNum ?? -1;
+      if (progB !== progA) return progB - progA;
+      return String(a).localeCompare(String(b), undefined, { sensitivity: 'base' });
+    });
     if (!deviceIds.length) {
       el.innerHTML =
         '<p class="poll-line">Waiting for devices on course…</p>';
@@ -903,8 +1000,7 @@
 
     let html =
       '<table class="course-view-table"><thead><tr><th>Device</th><th>Start</th>';
-    for (const line of ordered) {
-      if (line.lineType === 'start') continue;
+    for (const line of splitLines) {
       const label =
         line.distanceM != null
           ? `${Math.round(
@@ -920,6 +1016,9 @@
     for (const deviceId of deviceIds) {
       const crossed = crossingsByDevice.get(deviceId) || new Map();
       const live = liveByDevice.get(deviceId) || {};
+      const trace = tracesByDevice.get(deviceId) || [];
+      const finished = hasFinishedCourse(deviceId, course);
+      const stats = courseStats(deviceId, course, live.athleteId);
       const tStart = getEffectiveStartMs(deviceId, course);
       const rolling = raceStartByDevice.get(deviceId);
       const startLabel = tStart
@@ -929,24 +1028,39 @@
         : '—';
       html += `<tr><td><span class="course-view-table__dot" style="background:${colorForDevice(deviceId)}"></span><strong>${esc(deviceId)}</strong></td>`;
       html += `<td>${startLabel}</td>`;
-      for (const line of ordered) {
-        if (line.lineType === 'start') continue;
-        const t = crossed.get(line.id);
+      for (const seg of segments) {
+        const t = crossed.get(seg.line.id);
         if (!t || !tStart) {
           html += '<td>—</td>';
           continue;
         }
-        html += `<td>${formatElapsed(t - tStart)}</td>`;
+        const elapsed = formatElapsed(t - tStart);
+        const segSpeed = avgSpeedInSegment(trace, seg.from, seg.to);
+        const segProg = formatPrognosticForDevice(segSpeed, deviceId, live.athleteId);
+        html += `<td>${esc(elapsed)}${segProg ? ` · ${esc(segProg)}` : ''}</td>`;
       }
-      const spd = live.speedMps;
-      const paceCell =
-        live.stale && live.lastSeenAgoSec != null
-          ? `<span class="course-view-stale">Stale ${live.lastSeenAgoSec}s</span>`
-          : Number.isFinite(spd) && spd > 0
+      let paceCell;
+      if (finished) {
+        paceCell =
+          stats.avgMps != null ? formatPaceCell(stats.avgMps, deviceId, live.athleteId) : '—';
+      } else if (live.stale && live.lastSeenAgoSec != null) {
+        paceCell = `<span class="course-view-stale">Stale ${live.lastSeenAgoSec}s</span>`;
+      } else {
+        const spd = live.speedMps;
+        paceCell =
+          Number.isFinite(spd) && spd > 0
             ? formatSpeedDisplay(spd, deviceId, live.athleteId)
             : '—';
+      }
       html += `<td>${paceCell}</td>`;
-      html += `<td>${!live.stale && live.strokeRate != null && live.strokeRate > 0 ? `${Math.round(live.strokeRate)} spm` : '—'}</td>`;
+      let ratingCell = '—';
+      if (finished) {
+        ratingCell =
+          stats.avgSpm != null && stats.avgSpm > 0 ? `${Math.round(stats.avgSpm)} spm` : '—';
+      } else if (!live.stale && live.strokeRate != null && live.strokeRate > 0) {
+        ratingCell = `${Math.round(live.strokeRate)} spm`;
+      }
+      html += `<td>${ratingCell}</td>`;
       html += `<td><button type="button" class="course-view-hide-btn" data-hide-device="${esc(deviceId)}">Hide</button></td>`;
       html += '</tr>';
     }
@@ -973,14 +1087,15 @@
       const spd = speedFromPosition(p, prev, dtSec);
       const receiveAgo = p.lastSeenAgoSec ?? p.ingestAgoSec ?? null;
       const stale = p.telemetryStale === true || (receiveAgo != null && receiveAgo > 30);
+      const strokeRate =
+        !stale && p.strokeRateValid && p.strokeRate != null
+          ? p.strokeRate
+          : !stale
+            ? p.attributes?.strokeRate ?? null
+            : null;
       liveByDevice.set(deviceId, {
         speedMps: stale ? null : spd,
-        strokeRate:
-          !stale && p.strokeRateValid && p.strokeRate != null
-            ? p.strokeRate
-            : !stale
-              ? p.attributes?.strokeRate ?? null
-              : null,
+        strokeRate: strokeRate,
         online: Boolean(p.online),
         athleteId: p.athleteId ?? null,
         stale,
@@ -1017,7 +1132,14 @@
       const trace = tracesByDevice.get(deviceId);
       const last = trace[trace.length - 1];
       if (!last || Math.abs(last.distM - distM) > 2 || Math.abs(last.speedMps - spd) > 0.15) {
-        trace.push({ distM, speedMps: spd });
+        trace.push({
+          distM,
+          speedMps: spd,
+          strokeRate:
+            strokeRate != null && Number.isFinite(strokeRate) && strokeRate > 0
+              ? strokeRate
+              : null,
+        });
         if (trace.length > 800) trace.shift();
       }
     }
