@@ -1,13 +1,13 @@
 /**
- * Overnight monitoring pause — 9pm–5am Pacific/Auckland.
+ * Overnight monitoring pause — 6pm–6am Pacific/Auckland.
  * Live polls stop; banner: "Monitoring paused overnight".
  */
 (function (global) {
   const TIMEZONE = 'Pacific/Auckland';
-  /** Inclusive start hour (24h): 21 = 9pm */
-  const PAUSE_START_HOUR = 21;
-  /** Exclusive end hour (24h): 5 = 5am */
-  const PAUSE_END_HOUR = 5;
+  /** Inclusive start hour (24h): 18 = 6pm */
+  const PAUSE_START_HOUR = 18;
+  /** Exclusive end hour (24h): 6 = 6am */
+  const PAUSE_END_HOUR = 6;
   const MESSAGE = 'Monitoring paused overnight';
   const CHECK_MS = 30000;
 
