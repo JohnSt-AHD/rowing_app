@@ -41,6 +41,17 @@ const MAX_CAR_SMOOTH_OFFSET_M = Math.ceil(MAX_CAR_PREDICT_MPS * MAX_PREDICT_SEC)
 const MAX_CAR_TRACK_SPEED_MPS = 38;
 /** Only predict when GPS fix is fresher than this (seconds). */
 const MAX_PREDICT_FIX_AGE_SEC = 30;
+/** Rolling window for coach-facing pace (path distance / time). */
+const PATH_PACE_WINDOW_MS = 60_000;
+/** Ignore GPS segments shorter than this when computing path pace. */
+const PATH_PACE_MIN_SEGMENT_M = 1;
+/** Ignore GPS segment speeds above this when computing path pace (rowing). */
+const PATH_PACE_MAX_SEGMENT_MPS = 8;
+/** Minimum moving time/distance before reporting path pace. */
+const PATH_PACE_MIN_TIME_SEC = 8;
+const PATH_PACE_MIN_DIST_M = 20;
+/** Max fixes per device when loading path pace window (~1 Hz for 60s). */
+const PATH_PACE_FIX_LIMIT = 75;
 
 /**
  * @param {string | undefined | null} mode
@@ -499,6 +510,125 @@ function displayMapSpeedMps(registrySpeed, trackSpeed) {
     if (registry == null || track >= registry * 0.85) return track;
   }
   return registry ?? track ?? null;
+}
+
+/**
+ * Path speed from recent fixes: total distance / time (rejects GPS spikes).
+ * @param {{ t:number, lat:number, lon:number }[]|null|undefined} fixes
+ * @param {number} [windowMs]
+ * @returns {number|null}
+ */
+function pathSpeedMpsFromFixes(fixes, windowMs = PATH_PACE_WINDOW_MS) {
+  if (!fixes?.length) return null;
+  const sorted = [...fixes].sort((a, b) => a.t - b.t);
+  const endT = sorted[sorted.length - 1].t;
+  const cutoff = endT - windowMs;
+  const pts = sorted.filter(
+    (f) => f.t >= cutoff && Number.isFinite(f.lat) && Number.isFinite(f.lon),
+  );
+  if (pts.length < 2) return null;
+
+  let distM = 0;
+  let timeSec = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dt = (pts[i].t - pts[i - 1].t) / 1000;
+    if (dt <= 0 || dt > 15) continue;
+    const d = distanceMeters(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+    if (d < PATH_PACE_MIN_SEGMENT_M) continue;
+    const seg = d / dt;
+    if (seg > PATH_PACE_MAX_SEGMENT_MPS) continue;
+    distM += d;
+    timeSec += dt;
+  }
+  if (timeSec < PATH_PACE_MIN_TIME_SEC || distM < PATH_PACE_MIN_DIST_M) return null;
+  return distM / timeSec;
+}
+
+/** @param {Sample[]} samples @param {number} windowMs */
+function gpsFixesFromSamples(samples, windowMs) {
+  if (!samples?.length) return [];
+  const cutoff = Date.now() - windowMs;
+  /** @type {{ t:number, lat:number, lon:number, acc:number|null, spd:number|null }[]} */
+  const fixes = [];
+  for (const s of samples) {
+    if (!s?.gps || s.t < cutoff) continue;
+    const lat = s.gps.lat;
+    const lon = s.gps.lon;
+    if (lat == null || lon == null || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    fixes.push({
+      t: s.t,
+      lat,
+      lon,
+      acc: s.gps.acc ?? null,
+      spd: s.gps.spd ?? null,
+    });
+  }
+  return fixes;
+}
+
+/**
+ * @param {number} orgId
+ * @param {number} windowMs
+ * @param {Map<string, { samples?: Sample[] }>} telemetryByDevice
+ */
+async function loadPathPaceFixesByDevice(orgId, windowMs, telemetryByDevice) {
+  /** @type {Map<string, { t:number, lat:number, lon:number, acc:number|null, spd:number|null }[]>} */
+  const fixesByDevice = new Map();
+  if (db.hasDb()) {
+    try {
+      const dbFixes = await db.getRecentGpsFixesByDevice(
+        orgId,
+        windowMs + 5000,
+        PATH_PACE_FIX_LIMIT,
+      );
+      for (const [deviceId, fixes] of dbFixes) {
+        fixesByDevice.set(deviceId, fixes);
+      }
+    } catch (err) {
+      console.error('[ingest-store] loadPathPaceFixesByDevice DB failed:', err);
+    }
+  }
+  if (telemetryByDevice?.size) {
+    for (const [deviceId, entry] of telemetryByDevice) {
+      const fromSamples = gpsFixesFromSamples(entry?.samples || [], windowMs + 5000);
+      if (!fromSamples.length) continue;
+      const merged = [...(fixesByDevice.get(deviceId) || []), ...fromSamples].sort(
+        (a, b) => a.t - b.t,
+      );
+      fixesByDevice.set(deviceId, merged);
+    }
+  }
+  return fixesByDevice;
+}
+
+/** @param {object[]} positions @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice */
+function attachPathPaceToMapPositions(positions, fixesByDevice) {
+  for (const p of positions) {
+    const fixes = fixesByDevice.get(p.deviceId);
+    const pathSpeed = pathSpeedMpsFromFixes(fixes);
+    p.pathSpeedMps = pathSpeed;
+    p.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
+    if (
+      pathSpeed != null &&
+      p.online !== false &&
+      p.telemetryStale !== true
+    ) {
+      p.displaySpeedMps = pathSpeed;
+    } else {
+      p.displaySpeedMps = p.speed ?? null;
+    }
+  }
+  return positions;
+}
+
+/** @param {object[]} devices @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice */
+function attachPathPaceToDevices(devices, fixesByDevice) {
+  for (const dev of devices) {
+    const fixes = fixesByDevice.get(dev.deviceId);
+    dev.pathSpeedMps = pathSpeedMpsFromFixes(fixes);
+    dev.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
+  }
+  return devices;
 }
 
 /** Replay recent GPS fixes from DB/memory so map speed uses distance/time not Android spd alone. */
@@ -1410,6 +1540,16 @@ async function listDevices(orgId, opts = {}) {
   const devices = [...byDevice.values()].sort(
     (a, b) => b.lastSeenMs - a.lastSeenMs,
   );
+  const pathTelemetry = samplesByDeviceForWindow(
+    orgId,
+    Math.max(windowMs, PATH_PACE_WINDOW_MS),
+  );
+  const pathFixesByDevice = await loadPathPaceFixesByDevice(
+    orgId,
+    PATH_PACE_WINDOW_MS,
+    pathTelemetry,
+  );
+  attachPathPaceToDevices(devices, pathFixesByDevice);
   const onlineDevices = devices.filter((d) => d.online);
   const gpsAges = onlineDevices
     .map((d) => gpsHealthAgeSec(d.gps))
@@ -1911,6 +2051,12 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       forceCapsizeAlertsOnPositions(positions, dbCapsizeAlerts);
       forceCapsizeAlertsOnPositions(positions, getStickyCapsizeAlerts(orgId));
       attachTelemetryToMapPositions(orgId, positions, telemetryByDevice, rowingWindowMs);
+      const pathFixesByDevice = await loadPathPaceFixesByDevice(
+        orgId,
+        PATH_PACE_WINDOW_MS,
+        telemetryByDevice,
+      );
+      attachPathPaceToMapPositions(positions, pathFixesByDevice);
       return enrichMapPositionsDisplayAge(positions, now, registryTimes);
     } catch (err) {
       console.error('[ingest-store] getMapPositions DB failed:', err);
@@ -1933,11 +2079,14 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
     };
   });
   forceCapsizeAlertsOnPositions(mapped, getStickyCapsizeAlerts(orgId));
-  return enrichMapPositionsDisplayAge(
-    attachTelemetryToMapPositions(orgId, mapped, telemetryByDevice, rowingWindowMs),
-    now,
-    null,
+  attachTelemetryToMapPositions(orgId, mapped, telemetryByDevice, rowingWindowMs);
+  const pathFixesByDevice = await loadPathPaceFixesByDevice(
+    orgId,
+    PATH_PACE_WINDOW_MS,
+    telemetryByDevice,
   );
+  attachPathPaceToMapPositions(mapped, pathFixesByDevice);
+  return enrichMapPositionsDisplayAge(mapped, now, null);
 }
 
 function getMetrics() {

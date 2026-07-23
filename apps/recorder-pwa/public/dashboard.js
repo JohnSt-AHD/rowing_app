@@ -237,6 +237,14 @@ function isDataStale(p) {
   return age != null && age > TELEMETRY_STALE_SEC;
 }
 
+/** Coach-facing pace: 60s path average when available, else instant track speed. */
+function paceMpsForPosition(p) {
+  if (isDataStale(p)) return null;
+  const mps = p.pathSpeedMps ?? p.displaySpeedMps ?? p.speed ?? null;
+  if (mps == null || !Number.isFinite(mps) || mps < 0.25) return null;
+  return mps;
+}
+
 function deviceDataReceiveAgeSec(d) {
   if (!d || typeof d !== 'object') return null;
   if (d.lastSeenAgoSec != null && Number.isFinite(d.lastSeenAgoSec)) {
@@ -558,6 +566,16 @@ function deviceSummaryLine(d) {
     parts.push('No GPS');
   }
   if (d.battery?.pct != null) parts.push(`${fmtBatteryPct(d.battery.pct)} bat`);
+  if (!isDeviceDataStale(d) && window.RowingSpeed && d.pathSpeedMps != null && d.pathSpeedMps >= 0.25) {
+    parts.push(
+      window.RowingSpeed.formatPaceWithPrognostic(
+        d.pathSpeedMps,
+        d.deviceId,
+        d.athleteId,
+        { suffix: false },
+      ),
+    );
+  }
   if (d.rowing?.capsize) parts.push('CAPSIZE');
   else if (!isDeviceDataStale(d) && d.rowing?.strokeRateValid) {
     parts.push(`${fmtSpm(d.rowing.strokeRate)}`);
@@ -922,12 +940,10 @@ function popupHtml(p) {
     p.batteryPct != null
       ? `<br>Battery: <strong>${fmtBatteryPct(p.batteryPct)}</strong>${p.batteryAgeSec != null ? ` · ${fmtAgoSec(p.batteryAgeSec)}` : ''}`
       : '';
+  const paceMps = paceMpsForPosition(p);
   const pace =
-    !stale &&
-    p.speed != null &&
-    p.speed >= 0.25 &&
-    window.RowingSpeed
-      ? `<br>Pace: ${window.RowingSpeed.formatPaceWithPrognostic(p.speed, p.deviceId, p.athleteId, { suffix: true })}`
+    paceMps != null && window.RowingSpeed
+      ? `<br>Pace: ${window.RowingSpeed.formatPaceWithPrognostic(paceMps, p.deviceId, p.athleteId, { suffix: true })}`
       : '';
   return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}${staleNote}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${fmtAgoSec(p.lastSeenAgoSec)}${smoothNote}${compareNote}${hb}${bat}${pace}${hr}${spm}${tilt}${cap}</div>`;
 }
@@ -1105,7 +1121,14 @@ function enrichDeviceWithMapPosition(d, p) {
     rowing.strokeRate = p.strokeRate;
     rowing.strokeRateValid = true;
   }
-  return { ...d, gps, rowing };
+  return {
+    ...d,
+    gps,
+    rowing,
+    pathSpeedMps: p.pathSpeedMps ?? d.pathSpeedMps ?? null,
+    displaySpeedMps: p.displaySpeedMps ?? d.displaySpeedMps ?? null,
+    telemetryStale: p.telemetryStale ?? d.telemetryStale,
+  };
 }
 
 /** @param {object} p @param {number} windowSec */
@@ -1142,6 +1165,9 @@ function mapPositionToDeviceCard(p, windowSec) {
       tiltDeg: p.tiltDeg ?? null,
       calibrated: false,
     },
+    pathSpeedMps: p.pathSpeedMps ?? null,
+    displaySpeedMps: p.displaySpeedMps ?? null,
+    telemetryStale: p.telemetryStale,
   };
 }
 
