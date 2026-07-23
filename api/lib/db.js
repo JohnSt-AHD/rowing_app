@@ -1342,6 +1342,46 @@ async function getLatestStrokeByDevice(orgId, windowMs = 120000) {
 }
 
 /**
+ * Recent stroke-rate readings per device for dashboard median smoothing.
+ * @returns {Promise<Map<string, { t: number, strokeRate: number }[]>>}
+ */
+async function getRecentStrokeRatesByDevice(orgId, windowMs = 15000, limitPerDevice = 20) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const cutoff = Date.now() - windowMs;
+  const cap = Math.max(3, Math.min(Number(limitPerDevice) || 20, 40));
+  const rows = await sql`
+    SELECT unique_id, t_ms, stroke_rate FROM (
+      SELECT unique_id, t_ms, stroke_rate,
+        ROW_NUMBER() OVER (PARTITION BY unique_id ORDER BY t_ms DESC) AS rn
+      FROM rnz_samples
+      WHERE org_id = ${orgId}
+        AND t_ms >= ${cutoff}
+        AND stroke_rate IS NOT NULL
+        AND stroke_rate >= ${15}
+        AND stroke_rate <= ${50}
+    ) sub
+    WHERE rn <= ${cap}
+    ORDER BY unique_id, t_ms ASC
+  `;
+  /** @type {Map<string, { t: number, strokeRate: number }[]>>} */
+  const map = new Map();
+  for (const row of rows.rows) {
+    const uid = String(row.unique_id);
+    let list = map.get(uid);
+    if (!list) {
+      list = [];
+      map.set(uid, list);
+    }
+    list.push({
+      t: Number(row.t_ms),
+      strokeRate: Number(row.stroke_rate),
+    });
+  }
+  return map;
+}
+
+/**
  * Recent motion samples per device for server-side stroke analysis (bounded per device).
  * @returns {Promise<Map<string, { t: number, motion: { ax: number, ay: number, az: number } }[]>>}
  */
@@ -2798,6 +2838,7 @@ module.exports = {
   getLatestRowingTelemetry,
   getLatestBatteryByDevice,
   getLatestStrokeByDevice,
+  getRecentStrokeRatesByDevice,
   getRecentMotionByDevice,
   getRecentGpsFixesByDevice,
   getDeviceIngestTimes,

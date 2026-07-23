@@ -185,7 +185,9 @@ export class CourseRaceEngine {
         p.telemetryStale === true ||
         (receiveAgo != null && receiveAgo > TELEMETRY_STALE_SEC);
       const strokeRate =
-        !stale && p.strokeRateValid && p.strokeRate != null ? p.strokeRate : null;
+        !stale
+          ? (p.displayStrokeRate ?? (p.strokeRateValid && p.strokeRate != null ? p.strokeRate : null))
+          : null;
       this.liveByDevice.set(deviceId, {
         speedMps: stale ? null : spd,
         strokeRate,

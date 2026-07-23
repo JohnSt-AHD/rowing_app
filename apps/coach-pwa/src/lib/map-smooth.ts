@@ -96,8 +96,17 @@ export function trackSpeedMps(deviceId: string): number | null {
 }
 
 export function resolveSpeedMps(p: MapPosition): number | null {
+  const display = p.displaySpeedMps ?? p.pathSpeedMps;
+  if (display != null && Number.isFinite(display) && display >= 0) return display;
   if (p.speed != null && Number.isFinite(p.speed) && p.speed >= 0) return p.speed;
   return trackSpeedMps(p.deviceId);
+}
+
+/** Coach-facing stroke rate: 15s median when available, else latest reading. */
+export function resolveStrokeRate(p: MapPosition): number | null {
+  const spm = p.displayStrokeRate ?? p.strokeRate ?? null;
+  if (spm == null || !Number.isFinite(spm) || spm <= 0) return null;
+  return spm;
 }
 
 export function syncMapTracks(positions: MapPosition[]) {

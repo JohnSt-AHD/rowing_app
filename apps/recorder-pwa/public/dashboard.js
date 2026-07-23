@@ -245,6 +245,22 @@ function paceMpsForPosition(p) {
   return mps;
 }
 
+/** Coach-facing stroke rate: 15s median when available, else latest reading. */
+function strokeRateForPosition(p) {
+  if (isDataStale(p)) return null;
+  const spm = p.displayStrokeRate ?? p.strokeRate ?? null;
+  if (spm == null || !Number.isFinite(spm) || spm <= 0) return null;
+  return spm;
+}
+
+/** @param {object} d */
+function strokeRateForDevice(d) {
+  if (isDeviceDataStale(d)) return null;
+  const spm = d.displayStrokeRate ?? d.rowing?.strokeRate ?? null;
+  if (spm == null || !Number.isFinite(spm) || spm <= 0) return null;
+  return spm;
+}
+
 function deviceDataReceiveAgeSec(d) {
   if (!d || typeof d !== 'object') return null;
   if (d.lastSeenAgoSec != null && Number.isFinite(d.lastSeenAgoSec)) {
@@ -507,7 +523,7 @@ function fmtHz(v) {
 
 function fmtSpm(v) {
   if (v == null || v === 0) return '—';
-  return `${v} spm`;
+  return `${Math.round(v)} spm`;
 }
 
 function fmtAgoSec(sec) {
@@ -577,8 +593,9 @@ function deviceSummaryLine(d) {
     );
   }
   if (d.rowing?.capsize) parts.push('CAPSIZE');
-  else if (!isDeviceDataStale(d) && d.rowing?.strokeRateValid) {
-    parts.push(`${fmtSpm(d.rowing.strokeRate)}`);
+  else {
+    const spm = strokeRateForDevice(d);
+    if (spm != null) parts.push(fmtSpm(spm));
   }
   parts.push(`seen ${fmtAgoSec(d.lastSeenAgoSec)}`);
   return parts.join(' · ');
@@ -704,7 +721,7 @@ function updateRowingSummary(devices) {
   const list = devices || [];
   const spms = list
     .filter((d) => !isDeviceDataStale(d))
-    .map((d) => d.rowing?.strokeRate)
+    .map((d) => strokeRateForDevice(d))
     .filter((v) => v != null && v > 0);
 
   if (!spms.length) {
@@ -924,9 +941,10 @@ function popupHtml(p) {
     ? '<br><span class="map-popup-compare">Purple dot = H6 refresh-rate lerp test</span>'
     : '';
   const hr = p.hr != null ? `<br>HR: ${p.hr} bpm` : '';
+  const spmVal = strokeRateForPosition(p);
   const spm =
-    !stale && p.strokeRate != null && p.strokeRate > 0
-      ? `<br>Stroke rate: <strong>${p.strokeRate} spm</strong>`
+    spmVal != null
+      ? `<br>Stroke rate: <strong>${Math.round(spmVal)} spm</strong>`
       : '';
   const tilt = p.tiltDeg != null ? `<br>Tilt: ${p.tiltDeg}°` : '';
   const cap = p.capsize
@@ -1127,6 +1145,8 @@ function enrichDeviceWithMapPosition(d, p) {
     rowing,
     pathSpeedMps: p.pathSpeedMps ?? d.pathSpeedMps ?? null,
     displaySpeedMps: p.displaySpeedMps ?? d.displaySpeedMps ?? null,
+    displayStrokeRate: p.displayStrokeRate ?? d.displayStrokeRate ?? null,
+    strokeRateMedian: p.strokeRateMedian ?? d.strokeRateMedian ?? null,
     telemetryStale: p.telemetryStale ?? d.telemetryStale,
   };
 }
@@ -1167,6 +1187,8 @@ function mapPositionToDeviceCard(p, windowSec) {
     },
     pathSpeedMps: p.pathSpeedMps ?? null,
     displaySpeedMps: p.displaySpeedMps ?? null,
+    displayStrokeRate: p.displayStrokeRate ?? null,
+    strokeRateMedian: p.strokeRateMedian ?? null,
     telemetryStale: p.telemetryStale,
   };
 }
@@ -1303,6 +1325,7 @@ function renderDevice(d) {
     typeof window.dashboardGetRegattaMessage === 'function'
       ? window.dashboardGetRegattaMessage(d.deviceId)
       : null;
+  const displaySpm = strokeRateForDevice(d);
 
   card.innerHTML = `
     <div class="device-head">
@@ -1333,9 +1356,9 @@ function renderDevice(d) {
           <div class="rate">${fmtBatteryPct(battery.pct)}</div>
           <div class="detail">${battery.ageSec != null ? `Reported ${fmtAgoSec(battery.ageSec)}` : 'Not reported'}</div>
         </div>
-        <div class="sensor ${rowing.strokeRateValid && !isDeviceDataStale(d) ? 'present' : motion.present ? 'present' : 'absent'}">
+        <div class="sensor ${displaySpm != null ? 'present' : motion.present ? 'present' : 'absent'}">
           <div class="name">Stroke rate</div>
-          <div class="rate">${rowing.strokeRateValid && !isDeviceDataStale(d) ? fmtSpm(rowing.strokeRate) : '—'}</div>
+          <div class="rate">${displaySpm != null ? fmtSpm(displaySpm) : '—'}</div>
           <div class="detail">${strokeDetail(d)}</div>
         </div>
         <div class="sensor ${hr.present ? 'present' : 'absent'}">

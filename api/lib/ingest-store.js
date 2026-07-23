@@ -2,7 +2,7 @@ const db = require('./db');
 
 const CAPSIZE_ALERT_MAX_AGE_MS = db.CAPSIZE_ALERT_MAX_AGE_MS ?? 12 * 60 * 60 * 1000;
 const CAPSIZE_GPS_BACKFILL_MAX_AGE_MS = 60 * 1000;
-const { analyzeMotionWindow } = require('./motion-analysis');
+const { analyzeMotionWindow, MIN_SPM, MAX_SPM } = require('./motion-analysis');
 const { resolveOrg: resolveOrgFromRequest } = require('./org-auth');
 const { findSuppressRecordingAt } = require('./geofence');
 
@@ -52,6 +52,12 @@ const PATH_PACE_MIN_TIME_SEC = 8;
 const PATH_PACE_MIN_DIST_M = 20;
 /** Max fixes per device when loading path pace window (~1 Hz for 60s). */
 const PATH_PACE_FIX_LIMIT = 75;
+/** Rolling median window for coach-facing stroke rate. */
+const STROKE_MEDIAN_WINDOW_MS = 15_000;
+/** Minimum stroke readings before reporting median SPM. */
+const STROKE_MEDIAN_MIN_READINGS = 3;
+/** Max stroke readings per device in median window (~1 Hz for 15s). */
+const STROKE_MEDIAN_READING_LIMIT = 20;
 
 /**
  * @param {string | undefined | null} mode
@@ -627,6 +633,127 @@ function attachPathPaceToDevices(devices, fixesByDevice) {
     const fixes = fixesByDevice.get(dev.deviceId);
     dev.pathSpeedMps = pathSpeedMpsFromFixes(fixes);
     dev.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
+  }
+  return devices;
+}
+
+/** @param {number[]} values */
+function medianOf(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** @param {Sample} s */
+function strokeRateFromSample(s) {
+  const rate = s.derived?.strokeRate;
+  if (rate == null || !Number.isFinite(rate)) return null;
+  if (rate < MIN_SPM || rate > MAX_SPM) return null;
+  return rate;
+}
+
+/** @param {Sample[]} samples @param {number} windowMs */
+function strokeRateReadingsFromSamples(samples, windowMs) {
+  if (!samples?.length) return [];
+  const cutoff = Date.now() - windowMs;
+  /** @type {{ t:number, strokeRate:number }[]} */
+  const readings = [];
+  for (const s of samples) {
+    if (s.t < cutoff) continue;
+    const strokeRate = strokeRateFromSample(s);
+    if (strokeRate == null) continue;
+    readings.push({ t: s.t, strokeRate });
+  }
+  return readings;
+}
+
+/**
+ * @param {{ t:number, strokeRate:number }[]|null|undefined} readings
+ * @param {number} [windowMs]
+ */
+function medianStrokeRateFromReadings(readings, windowMs = STROKE_MEDIAN_WINDOW_MS) {
+  if (!readings?.length) return null;
+  const endT = readings[readings.length - 1].t;
+  const cutoff = endT - windowMs;
+  const rates = readings
+    .filter((r) => r.t >= cutoff)
+    .map((r) => r.strokeRate);
+  if (rates.length < STROKE_MEDIAN_MIN_READINGS) return null;
+  const median = medianOf(rates);
+  if (median == null || !Number.isFinite(median)) return null;
+  return Math.round(median * 10) / 10;
+}
+
+/**
+ * @param {number} orgId
+ * @param {number} windowMs
+ * @param {Map<string, { samples?: Sample[] }>} telemetryByDevice
+ */
+async function loadStrokeRateReadingsByDevice(orgId, windowMs, telemetryByDevice) {
+  /** @type {Map<string, { t:number, strokeRate:number }[]>} */
+  const readingsByDevice = new Map();
+  if (db.hasDb()) {
+    try {
+      const dbReadings = await db.getRecentStrokeRatesByDevice(
+        orgId,
+        windowMs + 2000,
+        STROKE_MEDIAN_READING_LIMIT,
+      );
+      for (const [deviceId, readings] of dbReadings) {
+        readingsByDevice.set(deviceId, readings);
+      }
+    } catch (err) {
+      console.error('[ingest-store] loadStrokeRateReadingsByDevice DB failed:', err);
+    }
+  }
+  if (telemetryByDevice?.size) {
+    for (const [deviceId, entry] of telemetryByDevice) {
+      const fromSamples = strokeRateReadingsFromSamples(
+        entry?.samples || [],
+        windowMs + 2000,
+      );
+      if (!fromSamples.length) continue;
+      const merged = [...(readingsByDevice.get(deviceId) || []), ...fromSamples].sort(
+        (a, b) => a.t - b.t,
+      );
+      readingsByDevice.set(deviceId, merged);
+    }
+  }
+  return readingsByDevice;
+}
+
+/** @param {object[]} positions @param {Map<string, { t:number, strokeRate:number }[]>} readingsByDevice */
+function attachStrokeMedianToMapPositions(positions, readingsByDevice) {
+  for (const p of positions) {
+    const readings = readingsByDevice.get(p.deviceId);
+    const median = medianStrokeRateFromReadings(readings);
+    p.strokeRateMedian = median;
+    p.strokeMedianWindowSec = STROKE_MEDIAN_WINDOW_MS / 1000;
+    if (
+      median != null &&
+      p.online !== false &&
+      p.telemetryStale !== true
+    ) {
+      p.displayStrokeRate = median;
+    } else {
+      p.displayStrokeRate = p.strokeRate ?? null;
+    }
+  }
+  return positions;
+}
+
+/** @param {object[]} devices @param {Map<string, { t:number, strokeRate:number }[]>} readingsByDevice */
+function attachStrokeMedianToDevices(devices, readingsByDevice) {
+  for (const dev of devices) {
+    const readings = readingsByDevice.get(dev.deviceId);
+    const median = medianStrokeRateFromReadings(readings);
+    dev.strokeRateMedian = median;
+    dev.strokeMedianWindowSec = STROKE_MEDIAN_WINDOW_MS / 1000;
+    dev.displayStrokeRate =
+      median != null && dev.online !== false ? median : dev.rowing?.strokeRate ?? null;
   }
   return devices;
 }
@@ -1550,6 +1677,12 @@ async function listDevices(orgId, opts = {}) {
     pathTelemetry,
   );
   attachPathPaceToDevices(devices, pathFixesByDevice);
+  const strokeReadingsByDevice = await loadStrokeRateReadingsByDevice(
+    orgId,
+    STROKE_MEDIAN_WINDOW_MS,
+    pathTelemetry,
+  );
+  attachStrokeMedianToDevices(devices, strokeReadingsByDevice);
   const onlineDevices = devices.filter((d) => d.online);
   const gpsAges = onlineDevices
     .map((d) => gpsHealthAgeSec(d.gps))
@@ -2051,12 +2184,12 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       forceCapsizeAlertsOnPositions(positions, dbCapsizeAlerts);
       forceCapsizeAlertsOnPositions(positions, getStickyCapsizeAlerts(orgId));
       attachTelemetryToMapPositions(orgId, positions, telemetryByDevice, rowingWindowMs);
-      const pathFixesByDevice = await loadPathPaceFixesByDevice(
-        orgId,
-        PATH_PACE_WINDOW_MS,
-        telemetryByDevice,
-      );
+      const [pathFixesByDevice, strokeReadingsByDevice] = await Promise.all([
+        loadPathPaceFixesByDevice(orgId, PATH_PACE_WINDOW_MS, telemetryByDevice),
+        loadStrokeRateReadingsByDevice(orgId, STROKE_MEDIAN_WINDOW_MS, telemetryByDevice),
+      ]);
       attachPathPaceToMapPositions(positions, pathFixesByDevice);
+      attachStrokeMedianToMapPositions(positions, strokeReadingsByDevice);
       return enrichMapPositionsDisplayAge(positions, now, registryTimes);
     } catch (err) {
       console.error('[ingest-store] getMapPositions DB failed:', err);
@@ -2080,12 +2213,12 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   });
   forceCapsizeAlertsOnPositions(mapped, getStickyCapsizeAlerts(orgId));
   attachTelemetryToMapPositions(orgId, mapped, telemetryByDevice, rowingWindowMs);
-  const pathFixesByDevice = await loadPathPaceFixesByDevice(
-    orgId,
-    PATH_PACE_WINDOW_MS,
-    telemetryByDevice,
-  );
+  const [pathFixesByDevice, strokeReadingsByDevice] = await Promise.all([
+    loadPathPaceFixesByDevice(orgId, PATH_PACE_WINDOW_MS, telemetryByDevice),
+    loadStrokeRateReadingsByDevice(orgId, STROKE_MEDIAN_WINDOW_MS, telemetryByDevice),
+  ]);
   attachPathPaceToMapPositions(mapped, pathFixesByDevice);
+  attachStrokeMedianToMapPositions(mapped, strokeReadingsByDevice);
   return enrichMapPositionsDisplayAge(mapped, now, null);
 }
 

@@ -13,6 +13,8 @@ export type FleetDevice = {
     strokeRateValid?: boolean;
     capsize?: boolean;
   };
+  displayStrokeRate?: number | null;
+  strokeRateMedian?: number | null;
 };
 
 export type MapPosition = {
@@ -32,6 +34,11 @@ export type MapPosition = {
   telemetryStale?: boolean;
   online?: boolean;
   athleteId?: string | null;
+  pathSpeedMps?: number | null;
+  displaySpeedMps?: number | null;
+  displayStrokeRate?: number | null;
+  strokeRateMedian?: number | null;
+  strokeMedianWindowSec?: number;
 };
 
 export type TimingLine = {

@@ -29,6 +29,7 @@ import {
   displayLatLon,
   onMapDisplayTick,
   resolveSpeedMps,
+  resolveStrokeRate,
   syncMapTracks,
 } from '../lib/map-smooth';
 import { loadSettings, saveSettings, DEFAULT_API_BASE_URL, type CoachSettings } from '../lib/settings';
@@ -52,6 +53,7 @@ type LiveDeviceRow = FleetDevice & {
   displayName: string;
   colorIndex: number;
   telemetryStale?: boolean;
+  mapPosition?: MapPosition;
 };
 
 const ONLINE_SEC = 120;
@@ -477,9 +479,13 @@ export function mountApp(root: HTMLElement): void {
     return `${(mps * 3.6).toFixed(1)} km/h`;
   }
 
-  function formatSpm(d: FleetDevice): string {
-    if (d.rowing?.strokeRateValid && d.rowing.strokeRate != null) {
-      return `${Math.round(d.rowing.strokeRate)} spm`;
+  function formatSpm(d: FleetDevice, p?: MapPosition): string {
+    const spm =
+      p != null
+        ? resolveStrokeRate(p)
+        : d.displayStrokeRate ?? d.rowing?.strokeRate ?? null;
+    if (spm != null && Number.isFinite(spm) && spm > 0) {
+      return `${Math.round(spm)} spm`;
     }
     return '— spm';
   }
@@ -501,6 +507,7 @@ export function mountApp(root: HTMLElement): void {
         colorIndex: registerLiveDevice(d.deviceId),
         telemetryStale: stale,
         lastSeenAgoSec: ago,
+        mapPosition: p,
       });
     }
     rows.sort((a, b) => (b.speedMps ?? -1) - (a.speedMps ?? -1));
@@ -520,7 +527,7 @@ export function mountApp(root: HTMLElement): void {
       ? `${d.online ? 'Online' : 'Offline'} · ${gpsLabel}${staleNote}`
       : `${d.online ? 'Online' : 'Offline'} · ${gpsLabel} · seen ${d.lastSeenAgoSec ?? '—'}s ago${staleNote}`;
     const speedLabel = stale ? '—' : formatSpeedKmh(d.speedMps);
-    const spmLabel = stale ? '— spm' : formatSpm(d);
+    const spmLabel = stale ? '— spm' : formatSpm(d, d.mapPosition);
     return `<li>
       <details class="device-card ${cap ? 'capsize' : ''}${stale ? ' device-card--stale' : ''}" data-device-id="${esc(d.deviceId)}" ${expanded ? 'open' : ''}>
         <summary class="device-card__summary">
