@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="/ahd-hub-theme.css" />
     <style>
       .install-wrap {
-        max-width: 560px;
+        max-width: 640px;
         margin: 0 auto;
       }
       .install-wrap ol {
@@ -69,6 +69,66 @@
         font-size: 0.95rem;
         line-height: 1.5;
       }
+      .guide-jump {
+        margin: 0.5rem 0 0;
+        font-size: 0.9rem;
+      }
+      .guide-step {
+        margin: 1rem 0 0;
+        padding-top: 0.85rem;
+        border-top: 1px solid var(--ahd-border, rgba(148, 180, 220, 0.22));
+      }
+      .guide-step:first-of-type {
+        border-top: none;
+        padding-top: 0;
+      }
+      .guide-step-title {
+        margin: 0 0 0.4rem;
+        font-size: 1rem;
+        font-weight: 650;
+        color: var(--ahd-text);
+      }
+      .guide-step-num {
+        display: inline-block;
+        min-width: 1.55rem;
+        height: 1.55rem;
+        line-height: 1.55rem;
+        text-align: center;
+        border-radius: 999px;
+        background: var(--ahd-accent, #00e5ff);
+        color: #0a1628;
+        font-weight: 700;
+        font-size: 0.85rem;
+        margin-right: 0.4rem;
+      }
+      .guide-step p {
+        margin: 0 0 0.65rem;
+        font-size: 0.9rem;
+        color: var(--ahd-muted);
+        line-height: 1.5;
+      }
+      .guide-step strong {
+        color: var(--ahd-text);
+      }
+      .guide-shot {
+        display: block;
+        width: 100%;
+        max-width: 280px;
+        margin: 0.35rem auto 0;
+        border-radius: 10px;
+        border: 1px solid var(--ahd-border, rgba(148, 180, 220, 0.22));
+        background: #000;
+      }
+      .guide-shots {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 0.65rem;
+        margin-top: 0.35rem;
+      }
+      .guide-shots .guide-shot {
+        max-width: none;
+        margin: 0;
+      }
     </style>
   </head>
   <body class="hub-page">
@@ -102,6 +162,10 @@
             href="https://github.com/JohnSt-AHD/rowing_app/releases/download/android-apk-latest/CrewSight.apk"
             ><strong>Download CrewSight.apk</strong></a
           >
+        </p>
+        <p class="guide-jump install-note">
+          New to sideloading? Follow the
+          <a href="#android-guide"><strong>Android install guide</strong></a> below (with screenshots).
         </p>
         <p class="install-note">
           <a href="https://github.com/JohnSt-AHD/rowing_app/releases/tag/android-apk-latest">Releases</a>
@@ -139,23 +203,207 @@
         </p>
       </section>
 
-      <section class="hub-panel">
-        <h2 class="hub-section-title">Install steps</h2>
+      <section class="hub-panel" id="android-guide">
+        <h2 class="hub-section-title">Android install guide (CrewSight)</h2>
         <p class="install-note">
-          Use <strong>Samsung Internet</strong> or <strong>Chrome</strong>. If a download stalls, use USB (below).
+          Use <strong>Chrome</strong> or <strong>Samsung Internet</strong>. Screenshots are from a Samsung phone; other Androids are similar.
+          If a download stalls, use USB (below).
         </p>
-        <ol>
-          <li>Download the APK for the app you need (or both — they install separately).</li>
-          <li>Open the file and tap <strong>Install</strong>.</li>
-          <li>If blocked, allow installs from your browser in Android settings.</li>
-          <li>
-            <strong>CrewSight:</strong> grant location (Always), motion, and notifications; enter device ID and start a session.
-          </li>
-          <li>
-            <strong>CrewSight Manager:</strong> set API URL and token if required; tap <strong>Start monitoring</strong> on the water.
-          </li>
-        </ol>
         <div class="install-warn">
+          CrewSight is not on the Play Store yet. Google Play Protect may warn that it has not seen this developer —
+          that is expected. Choose <strong>Install anyway</strong> (not OK).
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">1</span>Download the APK</h3>
+          <p>
+            On this page, tap <strong>Download CrewSight.apk</strong> above (or open the download from Chrome).
+          </p>
+          <img
+            class="guide-shot"
+            src="/assets/crewsight/install/01-download.jpg"
+            alt="Install page with Download CrewSight.apk button"
+            loading="lazy"
+          />
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">2</span>Open the file</h3>
+          <p>
+            Open <strong>My Files → Downloads</strong> (or Chrome’s download notification). Tap the latest
+            <strong>CrewSight</strong> APK.
+          </p>
+          <img
+            class="guide-shot"
+            src="/assets/crewsight/install/02-downloads.jpg"
+            alt="Downloads folder with CrewSight APK"
+            loading="lazy"
+          />
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">3</span>Install</h3>
+          <p>When asked “Do you want to install this app?”, tap <strong>Install</strong>.</p>
+          <img
+            class="guide-shot"
+            src="/assets/crewsight/install/03-install-confirm.jpg"
+            alt="Install confirmation dialog"
+            loading="lazy"
+          />
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">4</span>Bypass Play Protect (if shown)</h3>
+          <p>
+            If Play Protect blocks the install, tap <strong>More details</strong>, then
+            <strong>Install anyway</strong>. Do not tap OK — that cancels the install.
+          </p>
+          <div class="guide-shots">
+            <img
+              class="guide-shot"
+              src="/assets/crewsight/install/04-play-protect.jpg"
+              alt="Play Protect blocked — More details"
+              loading="lazy"
+            />
+            <img
+              class="guide-shot"
+              src="/assets/crewsight/install/05-install-anyway.jpg"
+              alt="Play Protect — Install anyway"
+              loading="lazy"
+            />
+          </div>
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">5</span>Open the app</h3>
+          <p>When you see <strong>App installed</strong>, tap <strong>Open</strong>.</p>
+          <img
+            class="guide-shot"
+            src="/assets/crewsight/install/06-app-installed.jpg"
+            alt="App installed — Open"
+            loading="lazy"
+          />
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">6</span>Allow notifications</h3>
+          <p>Tap <strong>Allow</strong> so capsize and session alerts can reach you.</p>
+          <img
+            class="guide-shot"
+            src="/assets/crewsight/install/07-notifications.jpg"
+            alt="Allow notifications"
+            loading="lazy"
+          />
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">7</span>Allow location (precise)</h3>
+          <p>
+            Choose <strong>Precise</strong>, then <strong>While using the app</strong>. Next, set location to
+            <strong>Allow all the time</strong> and leave <strong>Use precise location</strong> on — background
+            GPS needs this while you row.
+          </p>
+          <div class="guide-shots">
+            <img
+              class="guide-shot"
+              src="/assets/crewsight/install/08-location-precise.jpg"
+              alt="Location permission — Precise"
+              loading="lazy"
+            />
+            <img
+              class="guide-shot"
+              src="/assets/crewsight/install/09-location-always.jpg"
+              alt="Allow all the time"
+              loading="lazy"
+            />
+          </div>
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">8</span>Allow background battery use</h3>
+          <p>
+            When asked “Stop optimising battery usage?”, tap <strong>Allow</strong> so tracking continues with
+            the screen off.
+          </p>
+          <img
+            class="guide-shot"
+            src="/assets/crewsight/install/10-battery.jpg"
+            alt="Stop battery optimisation — Allow"
+            loading="lazy"
+          />
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">9</span>Confirm the home screen</h3>
+          <p>
+            You should see the CrewSight home screen with <strong>Start session</strong> and
+            <strong>Settings</strong>.
+          </p>
+          <img
+            class="guide-shot"
+            src="/assets/crewsight/install/11-home.jpg"
+            alt="CrewSight home screen"
+            loading="lazy"
+          />
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">10</span>Set Device ID</h3>
+          <p>
+            Tap <strong>Settings</strong>. Enter your club <strong>Device ID</strong> (e.g. boat/phone label).
+            Leave the ingest URL as provided unless your coach gives a different one. Save, then return and tap
+            <strong>Start session</strong> when you go on the water.
+          </p>
+          <img
+            class="guide-shot"
+            src="/assets/crewsight/install/12-settings-device-id.jpg"
+            alt="CrewSight Settings — Device ID"
+            loading="lazy"
+          />
+        </div>
+
+        <div class="guide-step">
+          <h3 class="guide-step-title"><span class="guide-step-num">11</span>Optional checks (recommended)</h3>
+          <p>
+            Phone <strong>Settings → Apps → CrewSight</strong>: confirm Location and Notifications are allowed.
+            Under mobile data for the app, keep <strong>Allow background data usage</strong> on so uploads work
+            away from Wi‑Fi. Ensure <strong>Mobile data</strong> is on when you are on the water.
+          </p>
+          <div class="guide-shots">
+            <img
+              class="guide-shot"
+              src="/assets/crewsight/install/13-phone-settings.jpg"
+              alt="Phone Settings"
+              loading="lazy"
+            />
+            <img
+              class="guide-shot"
+              src="/assets/crewsight/install/14-apps-list.jpg"
+              alt="Apps list — CrewSight"
+              loading="lazy"
+            />
+            <img
+              class="guide-shot"
+              src="/assets/crewsight/install/15-app-info.jpg"
+              alt="App info — permissions"
+              loading="lazy"
+            />
+            <img
+              class="guide-shot"
+              src="/assets/crewsight/install/16-background-data.jpg"
+              alt="Background data allowed"
+              loading="lazy"
+            />
+            <img
+              class="guide-shot"
+              src="/assets/crewsight/install/17-mobile-data.jpg"
+              alt="Mobile data on"
+              loading="lazy"
+            />
+          </div>
+        </div>
+
+        <div class="install-warn" style="margin-top: 1rem">
           For sideloading from a PC, copy the APK to the phone and open it with Files or My Files.
         </div>
       </section>

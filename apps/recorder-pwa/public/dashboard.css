@@ -164,6 +164,10 @@
   color: #c084fc;
 }
 
+.map-legend-item--stale-flag {
+  color: #fde68a;
+}
+
 .map-popup-compare {
   font-size: 12px;
   color: #64748b;
@@ -192,6 +196,49 @@
 
 .map-marker-wrap--capsize {
   z-index: 1000 !important;
+}
+
+.map-marker-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.map-marker-stale-flag {
+  display: block;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid #fbbf24;
+  color: #fde68a;
+  font:
+    600 9px/1.2 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+.map-marker-wrap--stale {
+  z-index: 900 !important;
+}
+
+.map-popup-stale {
+  color: #fbbf24;
+  font-size: 12px;
+}
+
+.device-card--data-stale {
+  opacity: 0.92;
+}
+
+.badge-pill--stale {
+  background: rgba(251, 191, 36, 0.18);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #fde68a;
 }
 
 @keyframes capsize-marker-red-orange {
@@ -1331,7 +1378,11 @@
   color: #3b82f6;
 }
 
-/* Course view overlay (RNZ / CrewSight theme) */
+.course-view-stale {
+  color: #fde68a;
+  font-size: 12px;
+  font-weight: 600;
+}
 body.course-view-open {
   overflow: hidden;
 }

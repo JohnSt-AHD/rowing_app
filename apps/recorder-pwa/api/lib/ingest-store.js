@@ -1133,10 +1133,17 @@ function enrichMapPositionDisplayAge(p, now, registryRow) {
       ? Math.max(0, Math.round((now - registryRow.lastGpsIngestMs) / 1000))
       : p.lastSeenAgoSec ?? null;
   const displayFixAgeSec = displayGpsAgeSec(p.fixAgeSec, ingestAgoSec);
+  const receiveAgoSec =
+    p.lastSeenAgoSec != null && Number.isFinite(p.lastSeenAgoSec)
+      ? p.lastSeenAgoSec
+      : ingestAgoSec;
+  const telemetryStale =
+    receiveAgoSec != null && Number.isFinite(receiveAgoSec) && receiveAgoSec > 30;
   return {
     ...p,
     ingestAgoSec,
     displayFixAgeSec,
+    telemetryStale,
   };
 }
 

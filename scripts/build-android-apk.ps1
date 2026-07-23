@@ -32,6 +32,12 @@ if ($LASTEXITCODE -ne 0) {
 
 $built = Join-Path $android "app\build\outputs\apk\debug\app-debug.apk"
 if (-not (Test-Path $built)) {
+  $split = Get-ChildItem (Join-Path $android "app\build\outputs\apk\debug") -Filter "app-*-debug.apk" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if ($split) { $built = $split.FullName }
+}
+if (-not (Test-Path $built)) {
   Write-Host "APK not found at $built" -ForegroundColor Red
   exit 1
 }

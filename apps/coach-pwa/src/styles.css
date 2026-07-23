@@ -71,6 +71,219 @@
   color: var(--ahd-accent);
 }
 
+.coach-tabs--four .coach-tab {
+  padding: 0.5rem 0.35rem;
+  font-size: 0.88rem;
+}
+
+.coach-panel--race {
+  padding-top: 0.35rem;
+}
+
+.race-panel-root {
+  width: 100%;
+}
+
+.race-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.race-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.75rem;
+  background: var(--ahd-bg-card);
+  border: 1px solid var(--ahd-border);
+  border-radius: 12px;
+}
+
+.race-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.race-field__label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ahd-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.race-select {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--ahd-border);
+  background: rgba(15, 23, 42, 0.85);
+  color: var(--ahd-text);
+  font: inherit;
+}
+
+.race-toolbar__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.race-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  color: var(--ahd-text);
+}
+
+.race-meta {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--ahd-muted);
+  line-height: 1.4;
+}
+
+.race-meta.poll-line--warn {
+  color: #fbbf24;
+}
+
+.race-splits {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.race-boat-card {
+  background: var(--ahd-bg-card);
+  border: 1px solid var(--ahd-border);
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.race-boat-card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+}
+
+.race-boat-card__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.race-boat-card__name {
+  flex: 1;
+  font-size: 0.95rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.race-boat-card__hide {
+  background: transparent;
+  border: 1px solid var(--ahd-border);
+  color: var(--ahd-muted);
+  border-radius: 6px;
+  padding: 0.2rem 0.45rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.race-boat-card__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin: 0 0 0.55rem;
+}
+
+.race-boat-card__stats > div,
+.race-boat-card__splits > .race-split-cell {
+  min-width: 0;
+}
+
+.race-boat-card__stats dt,
+.race-split-cell dt {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--ahd-muted);
+  text-transform: uppercase;
+}
+
+.race-boat-card__stats dd,
+.race-split-cell dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.race-boat-card__splits {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr));
+  gap: 0.45rem 0.35rem;
+  margin: 0;
+  padding-top: 0.45rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.race-map-card,
+.race-chart-card {
+  background: var(--ahd-bg-card);
+  border: 1px solid var(--ahd-border);
+  border-radius: 12px;
+  padding: 0.65rem 0.75rem 0.75rem;
+}
+
+.race-section-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ahd-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.race-map {
+  height: 38vh;
+  min-height: 200px;
+  border-radius: 8px;
+  border: 1px solid var(--ahd-border);
+  z-index: 0;
+}
+
+.race-map.leaflet-container {
+  background: #1e293b;
+  font-family: inherit;
+}
+
+.race-chart-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.race-chart {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}
+
+.race-device-marker span {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
 .coach-panel {
   flex: 1;
   padding: 0 clamp(12px, 4vw, 20px) 1.25rem;
@@ -221,6 +434,31 @@
   padding: 0.1rem 0.35rem;
   border-radius: 4px;
   flex-shrink: 0;
+}
+
+.device-card__stale,
+.coach-marker-stale {
+  font-size: 0.65rem;
+  font-weight: 800;
+  color: #fde68a;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.coach-marker-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.device-card--stale .device-card__head-stats {
+  color: var(--ahd-muted);
 }
 
 .device-card__head-stats {

@@ -2,6 +2,7 @@ import '../styles.css';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { HistoryPanel } from './history-panel';
+import { RacePanel } from './race-panel';
 import { drawMultiSeriesChart } from '../lib/history-charts';
 import {
   clearLiveSpeedBuffers,
@@ -34,6 +35,7 @@ import { loadSettings, saveSettings, DEFAULT_API_BASE_URL, type CoachSettings } 
 import {
   gpsFixState,
   gpsStatusLabel,
+  isTelemetryStale,
   resolveGpsDisplayAge,
   displayGpsAgeSec,
 } from '../lib/gps-age';
@@ -43,12 +45,13 @@ import {
   onQuietHoursChange,
 } from '../lib/quiet-hours';
 
-type Tab = 'live' | 'history' | 'settings';
+type Tab = 'live' | 'history' | 'race' | 'settings';
 
 type LiveDeviceRow = FleetDevice & {
   speedMps: number | null;
   displayName: string;
   colorIndex: number;
+  telemetryStale?: boolean;
 };
 
 const ONLINE_SEC = 120;
@@ -95,7 +98,19 @@ export function mountApp(root: HTMLElement): void {
   let mapFollowFleet = loadMapFollowPref();
   let mapTickUnsub: (() => void) | null = null;
   let historyPanel: HistoryPanel | null = null;
+  let racePanel: RacePanel | null = null;
   let lastAlarmAt = 0;
+
+  function shouldPollLive(): boolean {
+    if (isQuietHours()) return false;
+    if (!settings.apiBaseUrl) return false;
+    return monitoring || tab === 'race';
+  }
+
+  function syncPollTimer() {
+    if (shouldPollLive()) startPollTimer();
+    else stopPollTimer();
+  }
 
   const capsizeCount = () =>
     devices.filter((d) => d.rowing?.capsize || positions.some((p) => p.deviceId === d.deviceId && p.capsize)).length;
@@ -194,6 +209,7 @@ export function mountApp(root: HTMLElement): void {
       recordLiveSpeedSamples(pos);
       updateLivePanel();
       updateMap();
+      racePanel?.processPositions(pos);
 
       if (errors.length && !pos.length && !dev.length) {
         const joined = errors.join(' · ');
@@ -323,17 +339,22 @@ export function mountApp(root: HTMLElement): void {
   function markerIcon(p: MapPosition, device?: FleetDevice): L.DivIcon {
     registerLiveDevice(p.deviceId);
     const gpsAge = resolveGpsDisplayAge(device, p);
+    const receiveAgo = device?.lastSeenAgoSec ?? p.lastSeenAgoSec ?? null;
+    const stale = p.telemetryStale === true || isTelemetryStale(receiveAgo);
     const cap = Boolean(p.capsize);
     const state = gpsFixState(gpsAge);
     const accent = liveDeviceColor(p.deviceId);
     const opacity = state === 'lost' ? 0.45 : state === 'amber' ? 0.75 : 1;
     const capRing = cap ? 'box-shadow:0 0 0 2px #ef4444;' : '';
     const className = cap ? 'coach-marker capsize' : 'coach-marker';
+    const staleFlag = stale
+      ? `<span class="coach-marker-stale">Stale</span>`
+      : '';
     return L.divIcon({
       className,
-      html: `<span style="background:${accent};opacity:${opacity};${capRing}width:14px;height:14px;border-radius:50%;display:block;border:2px solid #fff"></span>`,
-      iconSize: [14, 14],
-      iconAnchor: [7, 7],
+      html: `<span class="coach-marker-stack">${staleFlag}<span style="background:${accent};opacity:${opacity};${capRing}width:14px;height:14px;border-radius:50%;display:block;border:2px solid #fff"></span></span>`,
+      iconSize: stale ? [52, 30] : [14, 14],
+      iconAnchor: stale ? [26, 26] : [7, 7],
     });
   }
 
@@ -472,11 +493,14 @@ export function mountApp(root: HTMLElement): void {
       if (!p) continue;
       const ago = d.lastSeenAgoSec ?? p.lastSeenAgoSec ?? p.fixAgeSec ?? 999;
       if (ago > ONLINE_SEC) continue;
+      const stale = p.telemetryStale === true || isTelemetryStale(ago);
       rows.push({
         ...d,
-        speedMps: resolveSpeedMps(p),
+        speedMps: stale ? null : resolveSpeedMps(p),
         displayName: deviceDisplayName(d),
         colorIndex: registerLiveDevice(d.deviceId),
+        telemetryStale: stale,
+        lastSeenAgoSec: ago,
       });
     }
     rows.sort((a, b) => (b.speedMps ?? -1) - (a.speedMps ?? -1));
@@ -487,22 +511,29 @@ export function mountApp(root: HTMLElement): void {
     const cap = Boolean(d.rowing?.capsize);
     const gpsAge = d.gpsAgeSec ?? resolveGpsDisplayAge(d);
     const gpsLabel = gpsAge == null ? 'GPS —' : gpsStatusLabel(gpsAge);
+    const stale = Boolean(d.telemetryStale);
+    const staleNote = stale
+      ? ` · Stale — no data for ${d.lastSeenAgoSec ?? '?'}s`
+      : '';
     const accent = liveDeviceColor(d.deviceId);
     const meta = monitoring
-      ? `${d.online ? 'Online' : 'Offline'} · ${gpsLabel}`
-      : `${d.online ? 'Online' : 'Offline'} · ${gpsLabel} · seen ${d.lastSeenAgoSec ?? '—'}s ago`;
+      ? `${d.online ? 'Online' : 'Offline'} · ${gpsLabel}${staleNote}`
+      : `${d.online ? 'Online' : 'Offline'} · ${gpsLabel} · seen ${d.lastSeenAgoSec ?? '—'}s ago${staleNote}`;
+    const speedLabel = stale ? '—' : formatSpeedKmh(d.speedMps);
+    const spmLabel = stale ? '— spm' : formatSpm(d);
     return `<li>
-      <details class="device-card ${cap ? 'capsize' : ''}" data-device-id="${esc(d.deviceId)}" ${expanded ? 'open' : ''}>
+      <details class="device-card ${cap ? 'capsize' : ''}${stale ? ' device-card--stale' : ''}" data-device-id="${esc(d.deviceId)}" ${expanded ? 'open' : ''}>
         <summary class="device-card__summary">
           <span class="device-card__lead">
             <span class="device-card__dot" style="background:${accent}"></span>
             <span class="device-card__name">${esc(d.displayName)}</span>
             ${d.displayName !== d.deviceId ? `<span class="device-card__id-tag">${esc(d.deviceId)}</span>` : ''}
+            ${stale ? '<span class="device-card__stale">Stale</span>' : ''}
             ${cap ? '<span class="device-card__alert">CAPSIZE</span>' : ''}
           </span>
           <span class="device-card__head-stats">
-            <span>${formatSpeedKmh(d.speedMps)}</span>
-            <span>${formatSpm(d)}</span>
+            <span>${speedLabel}</span>
+            <span>${spmLabel}</span>
           </span>
         </summary>
         <div class="device-card__body">
@@ -577,7 +608,7 @@ export function mountApp(root: HTMLElement): void {
       await startNativeMonitoring(settings.apiBaseUrl, settings.ingestToken);
     }
     serviceRunning = IS_NATIVE;
-    startPollTimer();
+    syncPollTimer();
     startMapTick();
     render();
     void pollLive();
@@ -600,14 +631,14 @@ export function mountApp(root: HTMLElement): void {
       setStatus(QUIET_HOURS_MESSAGE);
       return;
     }
-    if (!monitoring) return;
+    if (!monitoring && tab !== 'race') return;
     settings = loadSettings();
-    if (IS_NATIVE && settings.apiBaseUrl) {
+    if (IS_NATIVE && settings.apiBaseUrl && monitoring) {
       await startNativeMonitoring(settings.apiBaseUrl, settings.ingestToken);
       serviceRunning = true;
     }
-    startPollTimer();
-    startMapTick();
+    syncPollTimer();
+    if (monitoring) startMapTick();
     void pollLive();
   }
 
@@ -617,7 +648,7 @@ export function mountApp(root: HTMLElement): void {
     }
     monitoring = false;
     serviceRunning = false;
-    stopPollTimer();
+    syncPollTimer();
     stopMapTick();
     clearMapTracks();
     clearLiveSpeedBuffers();
@@ -639,13 +670,23 @@ export function mountApp(root: HTMLElement): void {
 
   function startPollTimer() {
     stopPollTimer();
-    if (isQuietHours()) return;
+    if (!shouldPollLive()) return;
     pollTimer = setInterval(() => void pollLive(), 2000);
   }
 
   function stopPollTimer() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
+  }
+
+  function ensureRacePanel(): RacePanel {
+    if (!racePanel) {
+      racePanel = new RacePanel(
+        () => loadSettings(),
+        (msg, err) => setStatus(msg, err),
+      );
+    }
+    return racePanel;
   }
 
   function ensureHistoryPanel(): HistoryPanel {
@@ -664,7 +705,7 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function render() {
-    if (tab === 'live') destroyMap();
+    destroyMap();
     const caps = capsizeCount();
     root.innerHTML = `
       <div class="coach-app">
@@ -702,8 +743,9 @@ export function mountApp(root: HTMLElement): void {
             : `<button type="button" class="coach-btn coach-btn--primary" data-start-monitor>Start monitoring</button>`}
         </div>`
           : ''}
-        <nav class="coach-tabs">
+        <nav class="coach-tabs coach-tabs--four">
           <button type="button" class="coach-tab ${tab === 'live' ? 'active' : ''}" data-tab="live">Live</button>
+          <button type="button" class="coach-tab ${tab === 'race' ? 'active' : ''}" data-tab="race">Race</button>
           <button type="button" class="coach-tab ${tab === 'history' ? 'active' : ''}" data-tab="history">History</button>
           <button type="button" class="coach-tab ${tab === 'settings' ? 'active' : ''}" data-tab="settings">Settings</button>
         </nav>
@@ -718,6 +760,10 @@ export function mountApp(root: HTMLElement): void {
             <ul class="device-list" data-device-list></ul>
           </div>
           <canvas class="live-speed-chart history-chart" data-live-speed-chart height="200"></canvas>
+        </section>
+        <section class="coach-panel coach-panel--race" data-panel="race" ${tab === 'race' ? '' : 'hidden'}>
+          <p class="poll-line" data-poll-status>—</p>
+          <div class="race-panel-root" data-race-root></div>
         </section>
         <section class="coach-panel coach-panel--history" data-panel="history" ${tab === 'history' ? '' : 'hidden'}>
           <div class="history-panel" data-history-track-root></div>
@@ -750,12 +796,16 @@ export function mountApp(root: HTMLElement): void {
       btn.addEventListener('click', () => {
         const next = (btn as HTMLElement).dataset.tab as Tab;
         historyPanel?.prepareForRender(next);
-        if (next === 'live') destroyMap();
+        racePanel?.prepareForRender(next);
         tab = next;
         render();
+        syncPollTimer();
         if (tab === 'live') {
           ensureMap();
           updateMap();
+        }
+        if (tab === 'race') {
+          void pollLive();
         }
       });
     });
@@ -766,7 +816,18 @@ export function mountApp(root: HTMLElement): void {
       };
       saveSettings(settings);
       setStatus('Settings saved');
+      void ensureRacePanel().reloadLines();
     });
+
+    if (tab === 'race') {
+      const raceRoot = root.querySelector('[data-race-root]') as HTMLElement | null;
+      if (raceRoot) {
+        const panel = ensureRacePanel();
+        panel.mount(raceRoot);
+        panel.onTabShown();
+        panel.processPositions(positions);
+      }
+    }
 
     if (tab === 'history') {
       const trackRoot = root.querySelector('[data-history-track-root]') as HTMLElement | null;
@@ -798,9 +859,9 @@ export function mountApp(root: HTMLElement): void {
   void (async () => {
     await refreshMonitoringStatus();
     quietHoursActive = isQuietHours();
-    if (monitoring && !quietHoursActive) {
-      startPollTimer();
-      startMapTick();
+    if ((monitoring || tab === 'race') && !quietHoursActive) {
+      syncPollTimer();
+      if (monitoring) startMapTick();
       void pollLive();
     } else if (quietHoursActive) {
       stopPollTimer();
@@ -813,8 +874,7 @@ export function mountApp(root: HTMLElement): void {
   document.addEventListener('visibilitychange', () => {
     if (
       document.visibilityState === 'visible' &&
-      monitoring &&
-      !isQuietHours()
+      shouldPollLive()
     ) {
       void pollLive();
     }

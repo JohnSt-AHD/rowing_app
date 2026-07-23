@@ -2,6 +2,7 @@ import type { FleetDevice, MapPosition } from './api';
 
 const GPS_LIVE_SEC = 30;
 const GPS_STALE_SEC = 300;
+const TELEMETRY_STALE_SEC = GPS_LIVE_SEC;
 const PIPELINE_LAG_SEC = 20;
 
 /** Match server/dashboard: prefer ingest age when fix timestamp lags upload. */
@@ -44,6 +45,11 @@ export function gpsStatusLabel(ageSec?: number | null): string {
   if (state === 'live') return 'GPS live';
   if (state === 'amber') return `GPS ${Math.round(ageSec!)}s ago`;
   return 'GPS stale';
+}
+
+export function isTelemetryStale(lastSeenAgoSec?: number | null): boolean {
+  if (lastSeenAgoSec == null || !Number.isFinite(lastSeenAgoSec)) return false;
+  return lastSeenAgoSec > TELEMETRY_STALE_SEC;
 }
 
 export function markerColorForState(state: GpsFixState, capsize: boolean): string {

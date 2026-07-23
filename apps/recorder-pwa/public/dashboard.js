@@ -14,6 +14,8 @@ const MAP_ZOOM = 12;
 const ONLINE_SEC = 120;
 /** GPS fix age thresholds (seconds) for map/card colours. */
 const GPS_LIVE_SEC = 30;
+/** No uploads for this long → hide live speed/stroke and show stale flag. */
+const TELEMETRY_STALE_SEC = GPS_LIVE_SEC;
 const GPS_STALE_SEC = 300;
 /** Dead-reckoning cap after last fix (seconds). */
 const MAP_INTERPOLATE_MAX_SEC = 8;
@@ -214,6 +216,42 @@ function mapDisplayAgeSec(p) {
     return ingest;
   }
   return p.fixAgeSec ?? null;
+}
+
+/** Seconds since last upload (prefer ingest/seen over fix clock). */
+function dataReceiveAgeSec(p) {
+  if (!p || typeof p !== 'object') return null;
+  if (p.lastSeenAgoSec != null && Number.isFinite(p.lastSeenAgoSec)) {
+    return p.lastSeenAgoSec;
+  }
+  if (p.ingestAgoSec != null && Number.isFinite(p.ingestAgoSec)) {
+    return p.ingestAgoSec;
+  }
+  return mapDisplayAgeSec(p);
+}
+
+function isDataStale(p) {
+  if (p?.telemetryStale === true) return true;
+  if (p?.telemetryStale === false) return false;
+  const age = dataReceiveAgeSec(p);
+  return age != null && age > TELEMETRY_STALE_SEC;
+}
+
+function deviceDataReceiveAgeSec(d) {
+  if (!d || typeof d !== 'object') return null;
+  if (d.lastSeenAgoSec != null && Number.isFinite(d.lastSeenAgoSec)) {
+    return d.lastSeenAgoSec;
+  }
+  const gps = d.gps || {};
+  if (gps.ingestAgoSec != null && Number.isFinite(gps.ingestAgoSec)) {
+    return gps.ingestAgoSec;
+  }
+  return gpsDisplayAge(gps);
+}
+
+function isDeviceDataStale(d) {
+  const age = deviceDataReceiveAgeSec(d);
+  return age != null && age > TELEMETRY_STALE_SEC;
 }
 
 function positionFixMs(p) {
@@ -508,6 +546,10 @@ function setDeviceCollapsed(deviceId, collapsed) {
 
 function deviceSummaryLine(d) {
   const parts = [];
+  if (isDeviceDataStale(d)) {
+    const age = deviceDataReceiveAgeSec(d);
+    parts.push(age != null ? `Stale ${age}s` : 'Stale');
+  }
   const gps = d.gps || {};
   if (gps.present) {
     parts.push(`GPS ${fmtHz(gps.rateHz)}`);
@@ -517,7 +559,9 @@ function deviceSummaryLine(d) {
   }
   if (d.battery?.pct != null) parts.push(`${fmtBatteryPct(d.battery.pct)} bat`);
   if (d.rowing?.capsize) parts.push('CAPSIZE');
-  else if (d.rowing?.strokeRateValid) parts.push(`${fmtSpm(d.rowing.strokeRate)}`);
+  else if (!isDeviceDataStale(d) && d.rowing?.strokeRateValid) {
+    parts.push(`${fmtSpm(d.rowing.strokeRate)}`);
+  }
   parts.push(`seen ${fmtAgoSec(d.lastSeenAgoSec)}`);
   return parts.join(' · ');
 }
@@ -641,6 +685,7 @@ function updateRowingSummary(devices) {
 
   const list = devices || [];
   const spms = list
+    .filter((d) => !isDeviceDataStale(d))
     .map((d) => d.rowing?.strokeRate)
     .filter((v) => v != null && v > 0);
 
@@ -819,15 +864,18 @@ function gpsStatusLabel(state) {
   return 'Last known (>5min)';
 }
 
-function markerIcon(state, capsize = false) {
+function markerIcon(state, capsize = false, stale = false) {
   const visual = capsize ? 'capsize' : state;
   const size = capsize ? 24 : 14;
   const half = size / 2;
+  const staleFlag = stale
+    ? `<span class="map-marker-stale-flag">Stale</span>`
+    : '';
   return L.divIcon({
-    className: `map-marker-wrap map-marker-wrap--${visual}`,
-    html: `<span class="map-marker map-marker--${visual}" aria-hidden="true"></span>`,
-    iconSize: [size, size],
-    iconAnchor: [half, half],
+    className: `map-marker-wrap map-marker-wrap--${visual}${stale ? ' map-marker-wrap--stale' : ''}`,
+    html: `<span class="map-marker-stack">${staleFlag}<span class="map-marker map-marker--${visual}" aria-hidden="true"></span></span>`,
+    iconSize: stale ? [52, size + 16] : [size, size],
+    iconAnchor: stale ? [26, size + 12] : [half, half],
   });
 }
 
@@ -846,6 +894,11 @@ function popupHtml(p) {
   const state = gpsFixState(p);
   const status = gpsStatusLabel(state);
   const dispAge = mapDisplayAgeSec(p);
+  const stale = isDataStale(p);
+  const receiveAge = dataReceiveAgeSec(p);
+  const staleNote = stale
+    ? `<br><strong class="map-popup-stale">Stale — no data for ${receiveAge ?? '?'}s</strong>`
+    : '';
   const smoothNote = isMapSmoothed()
     ? '<br><span class="map-popup-note">Smoothed position (display only)</span>'
     : '';
@@ -854,7 +907,7 @@ function popupHtml(p) {
     : '';
   const hr = p.hr != null ? `<br>HR: ${p.hr} bpm` : '';
   const spm =
-    p.strokeRate != null && p.strokeRate > 0
+    !stale && p.strokeRate != null && p.strokeRate > 0
       ? `<br>Stroke rate: <strong>${p.strokeRate} spm</strong>`
       : '';
   const tilt = p.tiltDeg != null ? `<br>Tilt: ${p.tiltDeg}°` : '';
@@ -870,10 +923,13 @@ function popupHtml(p) {
       ? `<br>Battery: <strong>${fmtBatteryPct(p.batteryPct)}</strong>${p.batteryAgeSec != null ? ` · ${fmtAgoSec(p.batteryAgeSec)}` : ''}`
       : '';
   const pace =
-    p.speed != null && p.speed >= 0.25 && window.RowingSpeed
+    !stale &&
+    p.speed != null &&
+    p.speed >= 0.25 &&
+    window.RowingSpeed
       ? `<br>Pace: ${window.RowingSpeed.formatPaceWithPrognostic(p.speed, p.deviceId, p.athleteId, { suffix: true })}`
       : '';
-  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${fmtAgoSec(p.lastSeenAgoSec)}${smoothNote}${compareNote}${hb}${bat}${pace}${hr}${spm}${tilt}${cap}</div>`;
+  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}${staleNote}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${fmtAgoSec(p.lastSeenAgoSec)}${smoothNote}${compareNote}${hb}${bat}${pace}${hr}${spm}${tilt}${cap}</div>`;
 }
 
 function updateMap(positions) {
@@ -896,7 +952,7 @@ function updateMap(positions) {
     const latlng = L.latLng(lat, lon);
     let marker = deviceMarkers.get(p.deviceId);
     const state = gpsFixState(p);
-    const icon = markerIcon(state, Boolean(p.capsize));
+    const icon = markerIcon(state, Boolean(p.capsize), isDataStale(p));
 
     if (marker) {
       marker.setLatLng(latlng);
@@ -1179,8 +1235,10 @@ function renderDevice(d) {
         ingestAgoSec: d.gps?.ingestAgoSec,
         lastSeenAgoSec: d.lastSeenAgoSec,
       });
+  const dataStale = isDeviceDataStale(d);
+  const receiveAge = deviceDataReceiveAgeSec(d);
   const collapsed = isDeviceCollapsed(d);
-  card.className = `device-card device-card--${gpsState}${collapsed ? ' device-card--collapsed' : ''}`;
+  card.className = `device-card device-card--${gpsState}${dataStale ? ' device-card--data-stale' : ''}${collapsed ? ' device-card--collapsed' : ''}`;
   card.dataset.deviceId = d.deviceId;
 
   const gps = d.gps || {};
@@ -1191,18 +1249,24 @@ function renderDevice(d) {
 
   const badgeClass = rowing.capsize
     ? 'badge-pill--capsize'
-    : gpsState === 'live'
-      ? 'badge-pill--live'
-      : gpsState === 'amber'
-        ? 'badge-pill--amber'
-        : 'badge-pill--lost';
+    : dataStale
+      ? 'badge-pill--stale'
+      : gpsState === 'live'
+        ? 'badge-pill--live'
+        : gpsState === 'amber'
+          ? 'badge-pill--amber'
+          : 'badge-pill--lost';
   const badgeLabel = rowing.capsize
     ? 'Capsize'
-    : gpsState === 'live'
-      ? 'GPS live'
-      : gpsState === 'amber'
-        ? 'GPS delayed'
-        : 'Last known';
+    : dataStale
+      ? receiveAge != null
+        ? `Stale ${receiveAge}s`
+        : 'Stale'
+      : gpsState === 'live'
+        ? 'GPS live'
+        : gpsState === 'amber'
+          ? 'GPS delayed'
+          : 'Last known';
 
   const coords =
     gps.last?.lat != null
@@ -1243,9 +1307,9 @@ function renderDevice(d) {
           <div class="rate">${fmtBatteryPct(battery.pct)}</div>
           <div class="detail">${battery.ageSec != null ? `Reported ${fmtAgoSec(battery.ageSec)}` : 'Not reported'}</div>
         </div>
-        <div class="sensor ${rowing.strokeRateValid ? 'present' : motion.present ? 'present' : 'absent'}">
+        <div class="sensor ${rowing.strokeRateValid && !isDeviceDataStale(d) ? 'present' : motion.present ? 'present' : 'absent'}">
           <div class="name">Stroke rate</div>
-          <div class="rate">${rowing.strokeRateValid ? fmtSpm(rowing.strokeRate) : '—'}</div>
+          <div class="rate">${rowing.strokeRateValid && !isDeviceDataStale(d) ? fmtSpm(rowing.strokeRate) : '—'}</div>
           <div class="detail">${strokeDetail(d)}</div>
         </div>
         <div class="sensor ${hr.present ? 'present' : 'absent'}">

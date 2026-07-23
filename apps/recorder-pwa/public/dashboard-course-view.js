@@ -939,8 +939,14 @@
         html += `<td>${formatElapsed(t - tStart)}</td>`;
       }
       const spd = live.speedMps;
-      html += `<td>${Number.isFinite(spd) && spd > 0 ? formatSpeedDisplay(spd, deviceId, live.athleteId) : '—'}</td>`;
-      html += `<td>${live.strokeRate != null && live.strokeRate > 0 ? `${Math.round(live.strokeRate)} spm` : '—'}</td>`;
+      const paceCell =
+        live.stale && live.lastSeenAgoSec != null
+          ? `<span class="course-view-stale">Stale ${live.lastSeenAgoSec}s</span>`
+          : Number.isFinite(spd) && spd > 0
+            ? formatSpeedDisplay(spd, deviceId, live.athleteId)
+            : '—';
+      html += `<td>${paceCell}</td>`;
+      html += `<td>${!live.stale && live.strokeRate != null && live.strokeRate > 0 ? `${Math.round(live.strokeRate)} spm` : '—'}</td>`;
       html += `<td><button type="button" class="course-view-hide-btn" data-hide-device="${esc(deviceId)}">Hide</button></td>`;
       html += '</tr>';
     }
@@ -965,14 +971,20 @@
       lastPosByDevice.set(deviceId, { ...cur, t: nowMs });
 
       const spd = speedFromPosition(p, prev, dtSec);
+      const receiveAgo = p.lastSeenAgoSec ?? p.ingestAgoSec ?? null;
+      const stale = p.telemetryStale === true || (receiveAgo != null && receiveAgo > 30);
       liveByDevice.set(deviceId, {
-        speedMps: spd,
+        speedMps: stale ? null : spd,
         strokeRate:
-          p.strokeRateValid && p.strokeRate != null
+          !stale && p.strokeRateValid && p.strokeRate != null
             ? p.strokeRate
-            : p.attributes?.strokeRate ?? null,
+            : !stale
+              ? p.attributes?.strokeRate ?? null
+              : null,
         online: Boolean(p.online),
         athleteId: p.athleteId ?? null,
+        stale,
+        lastSeenAgoSec: receiveAgo,
       });
 
       const effAlong = effectiveAlong(cur.lat, cur.lon, course);

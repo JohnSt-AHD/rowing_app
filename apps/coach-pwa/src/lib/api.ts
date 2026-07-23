@@ -24,11 +24,37 @@ export type MapPosition = {
   speed?: number | null;
   course?: number | null;
   strokeRate?: number | null;
+  strokeRateValid?: boolean;
   capsize?: boolean;
   fixAgeSec?: number;
   fixMs?: number;
   lastSeenAgoSec?: number;
+  telemetryStale?: boolean;
   online?: boolean;
+  athleteId?: string | null;
+};
+
+export type TimingLine = {
+  id: number;
+  name: string;
+  lineType: 'start' | 'finish' | 'split';
+  lat1: number;
+  lon1: number;
+  lat2: number;
+  lon2: number;
+  distanceM: number | null;
+  sortOrder: number;
+  courseGroup: string | null;
+  courseBearingDeg: number | null;
+  enabled: boolean;
+};
+
+export type TimingLinesPayload = {
+  ok?: boolean;
+  org?: string;
+  persisted?: boolean;
+  lines?: TimingLine[];
+  error?: string;
 };
 
 function apiBase(settings: CoachSettings): string {
@@ -69,6 +95,18 @@ export async function fetchMapPositions(settings: CoachSettings): Promise<MapPos
     .filter(
       (p) => p.deviceId && Number.isFinite(p.latitude) && Number.isFinite(p.longitude),
     );
+}
+
+export async function fetchTimingLines(settings: CoachSettings): Promise<TimingLinesPayload> {
+  const url = `${apiBase(settings)}/api/timing-lines`;
+  const res = await fetch(url, { headers: authHeaders(settings) });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Timing lines 401 — check ingest token in Settings');
+    }
+    throw new Error(`Timing lines ${res.status}`);
+  }
+  return (await res.json()) as TimingLinesPayload;
 }
 
 export async function clearCapsizeAlert(settings: CoachSettings, deviceId?: string) {
