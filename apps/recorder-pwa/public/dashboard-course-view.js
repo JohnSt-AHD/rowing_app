@@ -252,28 +252,60 @@
       );
   }
 
+  function dedupeMarkersByDistance(markers) {
+    const seen = new Set();
+    const out = [];
+    for (const line of markers) {
+      const key =
+        line.lineType === 'start'
+          ? 'start'
+          : line.lineType === 'finish'
+            ? 'finish'
+            : String(line.distanceM ?? line.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(line);
+    }
+    return out;
+  }
+
   function parseCourse(group) {
-    const lines = linesForCourse(group);
-    if (!lines.length) return null;
-    const start = lines.find((l) => l.lineType === 'start') || lines[0];
+    const courseLines = linesForCourse(group);
+    if (!courseLines.length) return null;
+    const start = courseLines.find((l) => l.lineType === 'start') || courseLines[0];
+    const startDist = start?.distanceM ?? 0;
+    const finishCandidates = courseLines.filter(
+      (l) => l.lineType === 'finish' && (l.distanceM ?? 0) > startDist,
+    );
     const finish =
-      [...lines].reverse().find((l) => l.lineType === 'finish') ||
-      lines[lines.length - 1];
+      finishCandidates.sort((a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0))[0] ||
+      [...courseLines].reverse().find((l) => l.lineType === 'finish') ||
+      courseLines[courseLines.length - 1];
     let bearing = start?.courseBearingDeg;
     if (!Number.isFinite(bearing) && start) {
       bearing = (bearingDeg(start.lat1, start.lon1, start.lat2, start.lon2) + 90 + 360) % 360;
     }
-    const startDist = start?.distanceM ?? 0;
     let finishDist = finish?.distanceM;
     if (!Number.isFinite(finishDist)) {
-      finishDist = Math.max(...lines.map((l) => l.distanceM ?? 0).filter(Number.isFinite));
+      finishDist = Math.max(
+        ...courseLines
+          .map((l) => l.distanceM ?? 0)
+          .filter((d) => Number.isFinite(d) && d > startDist),
+      );
     }
     if (!Number.isFinite(finishDist) || finishDist <= startDist) {
       finishDist = startDist + 2000;
     }
     const totalDist = finishDist - startDist;
-    const markers = lines.filter(
-      (l) => l.lineType === 'start' || l.lineType === 'finish' || l.lineType === 'split',
+    const lines = courseLines.filter((l) => {
+      if (l.id === start.id) return true;
+      const d = l.distanceM ?? 0;
+      return d > startDist && d <= finishDist;
+    });
+    const markers = dedupeMarkersByDistance(
+      lines.filter(
+        (l) => l.lineType === 'start' || l.lineType === 'finish' || l.lineType === 'split',
+      ),
     );
     return {
       group,
@@ -318,17 +350,27 @@
     return 2000 / (refSec / pct);
   }
 
+  function crossingTimeForLine(deviceId, line, course) {
+    const crossed = crossingsByDevice.get(deviceId);
+    if (!crossed || !line) return null;
+    if (crossed.has(line.id)) return crossed.get(line.id);
+    if (line.distanceM == null) return null;
+    for (const marker of course.markers || []) {
+      if (marker.distanceM === line.distanceM && crossed.has(marker.id)) {
+        return crossed.get(marker.id);
+      }
+    }
+    return null;
+  }
+
   function getEffectiveStartMs(deviceId, course) {
     const rolling = raceStartByDevice.get(deviceId);
     if (rolling?.confirmed && Number.isFinite(rolling.tMs)) return rolling.tMs;
-    const crossed = crossingsByDevice.get(deviceId);
     const startLine = timingStartLine(course);
-    if (crossed && startLine) {
-      const t = crossed.get(startLine.id);
-      if (Number.isFinite(t)) {
-        if (rollingStartEnabled && prognosticThresholdMps(deviceId) != null) return null;
-        return t;
-      }
+    const t = crossingTimeForLine(deviceId, startLine, course);
+    if (Number.isFinite(t)) {
+      if (rollingStartEnabled && prognosticThresholdMps(deviceId) != null) return null;
+      return t;
     }
     return null;
   }
@@ -718,7 +760,10 @@
   function hasFinishedCourse(deviceId, course) {
     const crossed = crossingsByDevice.get(deviceId);
     if (!crossed || !course.finish) return false;
-    return crossed.has(course.finish.id);
+    return (
+      crossed.has(course.finish.id) ||
+      crossingTimeForLine(deviceId, course.finish, course) != null
+    );
   }
 
   function formatPaceCell(mps, deviceId, athleteId) {
@@ -1054,11 +1099,13 @@
         ? rolling?.confirmed
           ? `${formatClock(tStart)} ↺`
           : formatClock(tStart)
-        : '—';
+        : rollingStartEnabled && prognosticThresholdMps(deviceId, live.athleteId) != null
+          ? '↺ pending'
+          : '—';
       html += `<tr><td><span class="course-view-table__dot" style="background:${colorForDevice(deviceId)}"></span><strong>${esc(deviceId)}</strong></td>`;
       html += `<td>${startLabel}</td>`;
       for (const seg of segments) {
-        const t = crossed.get(seg.line.id);
+        const t = crossingTimeForLine(deviceId, seg.line, course);
         if (!t || !tStart) {
           html += '<td>—</td>';
           continue;

@@ -21,6 +21,7 @@ import {
 import {
   courseBounds,
   courseGroupsFromLines,
+  crossingTimeForLine,
   effectiveAlong,
   markerLabelM,
   parseCourse,
@@ -324,11 +325,13 @@ export class RacePanel {
           ? rolling?.confirmed
             ? `${formatClock(tStart)} ↺`
             : formatClock(tStart)
-          : '—';
+          : this.engine.usesRollingStartGate(deviceId, live?.athleteId)
+            ? '↺ pending'
+            : '—';
         const splitsHtml = segments
           .map((seg) => {
             const label = markerLabelM(seg.line, course, this.engine.courseReversed);
-            const t = crossed.get(seg.line.id);
+            const t = crossingTimeForLine(crossed, seg.line, course);
             if (t == null || tStart == null) {
               return `<div class="race-split-cell"><dt>${esc(label)}</dt><dd>—</dd></div>`;
             }

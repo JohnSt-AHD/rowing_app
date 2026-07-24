@@ -16,6 +16,7 @@ import {
   haversineM,
   parseCourse,
   segmentsCrossDirected,
+  crossingTimeForLine,
   timingStartLine,
   type TimingLine,
 } from './course-geo';
@@ -143,7 +144,14 @@ export class CourseRaceEngine {
   hasFinishedCourse(deviceId: string, course: ParsedCourse) {
     const crossed = this.crossingsByDevice.get(deviceId);
     if (!crossed || !course.finish) return false;
-    return crossed.has(course.finish.id);
+    return (
+      crossed.has(course.finish.id) ||
+      crossingTimeForLine(crossed, course.finish, course) != null
+    );
+  }
+
+  usesRollingStartGate(deviceId: string, athleteId?: string | null) {
+    return this.rollingStartEnabled && prognosticThresholdMps(deviceId, athleteId) != null;
   }
 
   hideDevice(deviceId: string) {
@@ -153,14 +161,11 @@ export class CourseRaceEngine {
   getEffectiveStartMs(deviceId: string, course: ParsedCourse) {
     const rolling = this.raceStartByDevice.get(deviceId);
     if (rolling?.confirmed && rolling.tMs != null) return rolling.tMs;
-    const crossed = this.crossingsByDevice.get(deviceId);
     const startLine = timingStartLine(course, this.courseReversed);
-    if (crossed && startLine) {
-      const t = crossed.get(startLine.id);
-      if (t != null && Number.isFinite(t)) {
-        if (this.rollingStartEnabled && prognosticThresholdMps(deviceId) != null) return null;
-        return t;
-      }
+    const t = crossingTimeForLine(this.crossingsByDevice.get(deviceId), startLine, course);
+    if (t != null && Number.isFinite(t)) {
+      if (this.rollingStartEnabled && prognosticThresholdMps(deviceId) != null) return null;
+      return t;
     }
     return null;
   }

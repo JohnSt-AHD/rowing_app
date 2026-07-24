@@ -47,34 +47,66 @@ export function courseGroupsFromLines(lines: TimingLine[]): string[] {
   return [...groups].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
+function dedupeMarkersByDistance(markers: TimingLine[]) {
+  const seen = new Set<string>();
+  const out: TimingLine[] = [];
+  for (const line of markers) {
+    const key =
+      line.lineType === 'start'
+        ? 'start'
+        : line.lineType === 'finish'
+          ? 'finish'
+          : String(line.distanceM ?? line.id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(line);
+  }
+  return out;
+}
+
 export function parseCourse(lines: TimingLine[], group: string): ParsedCourse | null {
   const courseLines = linesForCourse(lines, group);
   if (!courseLines.length) return null;
   const start = courseLines.find((l) => l.lineType === 'start') || courseLines[0];
+  const startDist = start?.distanceM ?? 0;
+  const finishCandidates = courseLines.filter(
+    (l) => l.lineType === 'finish' && (l.distanceM ?? 0) > startDist,
+  );
   const finish =
+    finishCandidates.sort((a, b) => (a.distanceM ?? 0) - (b.distanceM ?? 0))[0] ||
     [...courseLines].reverse().find((l) => l.lineType === 'finish') ||
     courseLines[courseLines.length - 1];
   let bearing = start?.courseBearingDeg ?? NaN;
   if (!Number.isFinite(bearing) && start) {
     bearing = (bearingDeg(start.lat1, start.lon1, start.lat2, start.lon2) + 90 + 360) % 360;
   }
-  const startDist = start?.distanceM ?? 0;
   let finishDist = finish?.distanceM ?? NaN;
   if (!Number.isFinite(finishDist)) {
-    finishDist = Math.max(...courseLines.map((l) => l.distanceM ?? 0).filter(Number.isFinite));
+    finishDist = Math.max(
+      ...courseLines
+        .map((l) => l.distanceM ?? 0)
+        .filter((d) => Number.isFinite(d) && d > startDist),
+    );
   }
   if (!Number.isFinite(finishDist) || finishDist <= startDist) {
     finishDist = startDist + 2000;
   }
   const totalDist = finishDist - startDist;
-  const markers = courseLines.filter(
-    (l) => l.lineType === 'start' || l.lineType === 'finish' || l.lineType === 'split',
+  const activeLines = courseLines.filter((l) => {
+    if (l.id === start.id) return true;
+    const d = l.distanceM ?? 0;
+    return d > startDist && d <= finishDist;
+  });
+  const markers = dedupeMarkersByDistance(
+    activeLines.filter(
+      (l) => l.lineType === 'start' || l.lineType === 'finish' || l.lineType === 'split',
+    ),
   );
   return {
     group,
     start,
     finish,
-    lines: courseLines,
+    lines: activeLines,
     markers,
     bearing,
     startDist,
@@ -104,6 +136,22 @@ export function effectiveAlong(
 
 export function timingStartLine(course: ParsedCourse, reversed: boolean) {
   return reversed && course.finish ? course.finish : course.start;
+}
+
+export function crossingTimeForLine(
+  crossed: Map<number, number> | undefined,
+  line: TimingLine | null | undefined,
+  course: ParsedCourse,
+): number | null {
+  if (!crossed || !line) return null;
+  if (crossed.has(line.id)) return crossed.get(line.id)!;
+  if (line.distanceM == null) return null;
+  for (const marker of course.markers) {
+    if (marker.distanceM === line.distanceM && crossed.has(marker.id)) {
+      return crossed.get(marker.id)!;
+    }
+  }
+  return null;
 }
 
 function ccw(a: LatLon, b: LatLon, c: LatLon) {
