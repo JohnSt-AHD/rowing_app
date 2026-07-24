@@ -52,6 +52,10 @@ const PATH_PACE_SEGMENT_BAND_LO = 0.72;
 const PATH_PACE_SEGMENT_BAND_HI = 1.28;
 /** Max single-step change in displayed path pace vs previous EMA (ratio). */
 const PATH_PACE_MAX_STEP_RATIO = 1.22;
+/** EMA below this is treated as rest/stale — re-seed when raw path shows rowing. */
+const PATH_PACE_REST_MAX_MPS = 1.5;
+/** Raw path above this after rest re-seeds display (piece start). ~2:36/500. */
+const PATH_PACE_ROWING_MIN_MPS = 3.2;
 /** Minimum moving time/distance before reporting path pace. */
 const PATH_PACE_MIN_TIME_SEC = 4;
 const PATH_PACE_MIN_DIST_M = 8;
@@ -780,9 +784,15 @@ function resolveDisplayPathSpeedMps(orgId, deviceId, rawPath, live = true) {
   if (rawPath != null && Number.isFinite(rawPath) && rawPath >= 0.25) {
     let accepted = rawPath;
     if (prev?.ema != null && Number.isFinite(prev.ema) && prev.ema >= 0.25) {
-      const ratio = rawPath / prev.ema;
-      if (ratio > PATH_PACE_MAX_STEP_RATIO || ratio < 1 / PATH_PACE_MAX_STEP_RATIO) {
-        accepted = prev.ema;
+      if (prev.ema <= PATH_PACE_REST_MAX_MPS && rawPath >= PATH_PACE_ROWING_MIN_MPS) {
+        accepted = rawPath;
+      } else {
+        const ratio = rawPath / prev.ema;
+        if (ratio > PATH_PACE_MAX_STEP_RATIO || ratio < 1 / PATH_PACE_MAX_STEP_RATIO) {
+          const maxStep = prev.ema * (PATH_PACE_MAX_STEP_RATIO - 1);
+          const delta = rawPath - prev.ema;
+          accepted = prev.ema + Math.sign(delta) * Math.min(Math.abs(delta), maxStep);
+        }
       }
     }
     const ema =
