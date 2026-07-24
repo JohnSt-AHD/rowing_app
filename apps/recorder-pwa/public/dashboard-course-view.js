@@ -44,7 +44,7 @@
   const liveByDevice = new Map();
   /** @type {Map<string, { mps: number, at: number }>} */
   const paceHoldByDevice = new Map();
-  const PACE_HOLD_MS = 12000;
+  const PACE_HOLD_MS = 24000;
   /** @type {Set<string>} */
   const hiddenDevices = new Set();
   /** @type {Map<string, { confirmed: boolean, tMs?: number, distM?: number, lat?: number, lon?: number, pendingDistM: number, pendingStartT?: number, pendingStartAlong?: number, pendingStartLat?: number, pendingStartLon?: number, lastAlong?: number, source?: string }>} */
@@ -663,7 +663,7 @@
     return formatSplit500(mps);
   }
 
-  /** Spike-filtered 15s path pace from API — ticket/graph use displaySpeedMps first. */
+  /** Spike-filtered 30s path pace from API — ticket/graph use displaySpeedMps first. */
   function coachFacingSpeedMps(p, deviceId) {
     const now = Date.now();
     if (p?.telemetryStale === true) {

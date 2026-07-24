@@ -42,7 +42,7 @@ const MAX_CAR_TRACK_SPEED_MPS = 38;
 /** Only predict when GPS fix is fresher than this (seconds). */
 const MAX_PREDICT_FIX_AGE_SEC = 30;
 /** Rolling window for coach-facing pace (path distance / time). */
-const PATH_PACE_WINDOW_MS = 15_000;
+const PATH_PACE_WINDOW_MS = 30_000;
 /** Ignore GPS segments shorter than this when computing path pace. */
 const PATH_PACE_MIN_SEGMENT_M = 1;
 /** Ignore GPS segment speeds above this when computing path pace (rowing). */
@@ -55,10 +55,10 @@ const PATH_PACE_MAX_STEP_RATIO = 1.22;
 /** Minimum moving time/distance before reporting path pace. */
 const PATH_PACE_MIN_TIME_SEC = 4;
 const PATH_PACE_MIN_DIST_M = 8;
-/** Max fixes per device when loading path pace window (~1 Hz for 15s). */
-const PATH_PACE_FIX_LIMIT = 20;
+/** Max fixes per device when loading path pace window (~1 Hz for 30s). */
+const PATH_PACE_FIX_LIMIT = 35;
 /** Keep showing last path pace when a fresh window cannot be computed. */
-const PATH_PACE_HOLD_MS = 12_000;
+const PATH_PACE_HOLD_MS = 24_000;
 /** EMA weight for new raw path pace (lower = smoother display). */
 const PATH_PACE_EMA_ALPHA = 0.2;
 /** Rolling median window for coach-facing stroke rate. */
