@@ -42,6 +42,9 @@
   const tracesByDevice = new Map();
   /** @type {Map<string, { speedMps: number|null, strokeRate: number|null, online: boolean }>} */
   const liveByDevice = new Map();
+  /** @type {Map<string, { mps: number, at: number }>} */
+  const paceHoldByDevice = new Map();
+  const PACE_HOLD_MS = 12000;
   /** @type {Set<string>} */
   const hiddenDevices = new Set();
   /** @type {Map<string, { confirmed: boolean, tMs?: number, distM?: number, lat?: number, lon?: number, pendingDistM: number, pendingStartT?: number, pendingStartAlong?: number, pendingStartLat?: number, pendingStartLon?: number, lastAlong?: number, source?: string }>} */
@@ -618,12 +621,23 @@
     return formatSplit500(mps);
   }
 
-  /** 60s path pace from API — avoid instant map speed for live coach readouts. */
-  function coachFacingSpeedMps(p) {
-    if (p?.telemetryStale === true) return null;
+  /** 15s path pace from API — avoid instant map speed for live coach readouts. */
+  function coachFacingSpeedMps(p, deviceId) {
+    const now = Date.now();
+    if (p?.telemetryStale === true) {
+      if (deviceId) paceHoldByDevice.delete(deviceId);
+      return null;
+    }
     const mps = p?.displaySpeedMps ?? p?.pathSpeedMps ?? null;
-    if (mps == null || !Number.isFinite(mps) || mps < 0.25) return null;
-    return mps;
+    if (mps != null && Number.isFinite(mps) && mps >= 0.25) {
+      if (deviceId) paceHoldByDevice.set(deviceId, { mps, at: now });
+      return mps;
+    }
+    if (deviceId) {
+      const held = paceHoldByDevice.get(deviceId);
+      if (held && now - held.at <= PACE_HOLD_MS) return held.mps;
+    }
+    return null;
   }
 
   function coachFacingStrokeRate(p, stale) {
@@ -1099,7 +1113,7 @@
       const dtSec = prev ? Math.max(0.05, (nowMs - prev.t) / 1000) : 0;
       lastPosByDevice.set(deviceId, { ...cur, t: nowMs });
 
-      const spd = coachFacingSpeedMps(p);
+      const spd = coachFacingSpeedMps(p, deviceId);
       const receiveAgo = p.lastSeenAgoSec ?? p.ingestAgoSec ?? null;
       const stale = p.telemetryStale === true || (receiveAgo != null && receiveAgo > 30);
       const strokeRate = coachFacingStrokeRate(p, stale);
@@ -1114,7 +1128,7 @@
 
       const effAlong = effectiveAlong(cur.lat, cur.lon, course);
       updateRollingStart(deviceId, {
-        spd: coachFacingSpeedMps(p) ?? speedFromPosition(p, prev, dtSec),
+        spd: coachFacingSpeedMps(p, deviceId) ?? speedFromPosition(p, prev, dtSec),
         along: effAlong,
         nowMs,
         cur,
@@ -1183,6 +1197,7 @@
   function resetSession() {
     resetTimingData();
     liveByDevice.clear();
+    paceHoldByDevice.clear();
     hiddenDevices.clear();
     recalledRace = null;
     populateRecallSelect();

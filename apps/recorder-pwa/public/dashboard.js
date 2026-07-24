@@ -237,7 +237,7 @@ function isDataStale(p) {
   return age != null && age > TELEMETRY_STALE_SEC;
 }
 
-/** Coach-facing pace: smoothed 60s path average (never instant GPS). */
+/** Coach-facing pace: smoothed 15s path average (never instant GPS). */
 function paceMpsForPosition(p) {
   if (isDataStale(p)) return null;
   const mps = p.displaySpeedMps ?? p.pathSpeedMps ?? null;

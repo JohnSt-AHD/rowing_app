@@ -42,18 +42,18 @@ const MAX_CAR_TRACK_SPEED_MPS = 38;
 /** Only predict when GPS fix is fresher than this (seconds). */
 const MAX_PREDICT_FIX_AGE_SEC = 30;
 /** Rolling window for coach-facing pace (path distance / time). */
-const PATH_PACE_WINDOW_MS = 60_000;
+const PATH_PACE_WINDOW_MS = 15_000;
 /** Ignore GPS segments shorter than this when computing path pace. */
 const PATH_PACE_MIN_SEGMENT_M = 1;
 /** Ignore GPS segment speeds above this when computing path pace (rowing). */
 const PATH_PACE_MAX_SEGMENT_MPS = 8;
 /** Minimum moving time/distance before reporting path pace. */
-const PATH_PACE_MIN_TIME_SEC = 8;
-const PATH_PACE_MIN_DIST_M = 20;
-/** Max fixes per device when loading path pace window (~1 Hz for 60s). */
-const PATH_PACE_FIX_LIMIT = 75;
+const PATH_PACE_MIN_TIME_SEC = 4;
+const PATH_PACE_MIN_DIST_M = 8;
+/** Max fixes per device when loading path pace window (~1 Hz for 15s). */
+const PATH_PACE_FIX_LIMIT = 20;
 /** Keep showing last path pace when a fresh window cannot be computed. */
-const PATH_PACE_HOLD_MS = 45_000;
+const PATH_PACE_HOLD_MS = 12_000;
 /** EMA weight for new raw path pace (lower = smoother display). */
 const PATH_PACE_EMA_ALPHA = 0.2;
 /** Rolling median window for coach-facing stroke rate. */
@@ -393,6 +393,85 @@ function bearingDeg(lat1, lon1, lat2, lon2) {
   return (toDeg(Math.atan2(y, x)) + 360) % 360;
 }
 
+/** Signed metres from point 1 → 2 along bearingDeg (positive = forward). */
+function distanceAlongBearing(lat1, lon1, lat2, lon2, brg) {
+  const dist = distanceMeters(lat1, lon1, lat2, lon2);
+  if (dist < 0.01) return 0;
+  const segBrg = bearingDeg(lat1, lon1, lat2, lon2);
+  const toRad = (d) => (d * Math.PI) / 180;
+  const delta = toRad(((segBrg - brg) + 540) % 360 - 180);
+  return dist * Math.cos(delta);
+}
+
+/** Drop duplicate fixes from merged DB + memory batches. */
+function dedupePathFixes(fixes) {
+  if (!fixes?.length) return [];
+  const sorted = [...fixes].sort((a, b) => a.t - b.t);
+  /** @type {typeof fixes} */
+  const out = [];
+  for (const f of sorted) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      f.t - prev.t < 1500 &&
+      distanceMeters(prev.lat, prev.lon, f.lat, f.lon) < 3
+    ) {
+      continue;
+    }
+    out.push(f);
+  }
+  return out;
+}
+
+/** Keep only the latest contiguous run in one direction (ignores lap turn / return mixing). */
+function trimFixesToCurrentMotionRun(fixes) {
+  if (fixes.length < 2) return fixes;
+  const brg = dominantMotionBearingDeg(fixes);
+  if (brg == null) return fixes;
+
+  let runStart = 0;
+  let prevSign = null;
+  for (let i = fixes.length - 1; i > 0; i--) {
+    const along = distanceAlongBearing(
+      fixes[i - 1].lat,
+      fixes[i - 1].lon,
+      fixes[i].lat,
+      fixes[i].lon,
+      brg,
+    );
+    if (Math.abs(along) < 0.75) continue;
+    const sign = along > 0 ? 1 : -1;
+    if (prevSign == null) prevSign = sign;
+    else if (sign !== prevSign) {
+      runStart = i;
+      break;
+    }
+  }
+  const trimmed = fixes.slice(runStart);
+  return trimmed.length >= 2 ? trimmed : fixes;
+}
+
+function dominantMotionBearingDeg(fixes) {
+  if (fixes.length < 2) return null;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const toDeg = (r) => (r * 180) / Math.PI;
+  const start = Math.max(1, fixes.length - 6);
+  let sumX = 0;
+  let sumY = 0;
+  for (let i = start; i < fixes.length; i++) {
+    const b = bearingDeg(
+      fixes[i - 1].lat,
+      fixes[i - 1].lon,
+      fixes[i].lat,
+      fixes[i].lon,
+    );
+    sumX += Math.cos(toRad(b));
+    sumY += Math.sin(toRad(b));
+  }
+  if (sumX === 0 && sumY === 0) return null;
+  return (toDeg(Math.atan2(sumY, sumX)) + 360) % 360;
+}
+
 function destinationLatLon(lat, lon, courseDeg, distanceM) {
   if (distanceM <= 0) return [lat, lon];
   const R = 6371000;
@@ -537,8 +616,10 @@ function pathSpeedMpsFromFixes(fixes, windowMs = PATH_PACE_WINDOW_MS) {
   const sorted = [...fixes].sort((a, b) => a.t - b.t);
   const endT = sorted[sorted.length - 1].t;
   const cutoff = endT - windowMs;
-  const pts = sorted.filter(
-    (f) => f.t >= cutoff && Number.isFinite(f.lat) && Number.isFinite(f.lon),
+  const pts = trimFixesToCurrentMotionRun(
+    sorted.filter(
+      (f) => f.t >= cutoff && Number.isFinite(f.lat) && Number.isFinite(f.lon),
+    ),
   );
   if (pts.length < 2) return null;
 
@@ -558,26 +639,58 @@ function pathSpeedMpsFromFixes(fixes, windowMs = PATH_PACE_WINDOW_MS) {
   return distM / timeSec;
 }
 
-/** @param {Sample[]} samples @param {number} windowMs */
-function gpsFixesFromSamples(samples, windowMs) {
+/** Preserve fix spacing but anchor the latest fix to now (clock-lagged device timestamps). */
+function rebaseFixTimestamps(fixes, anchorMs) {
+  if (!fixes.length) return [];
+  if (fixes.length === 1) return [{ ...fixes[0], t: anchorMs }];
+  const rebased = [];
+  let t = anchorMs;
+  rebased.unshift({ ...fixes[fixes.length - 1], t });
+  for (let i = fixes.length - 2; i >= 0; i--) {
+    const dt = Math.max(500, Math.min(15000, fixes[i + 1].t - fixes[i].t));
+    t -= dt;
+    rebased.unshift({ ...fixes[i], t });
+  }
+  return rebased;
+}
+
+/** @param {Sample[]} samples @param {number} windowMs @param {number} [lastSeenMs] */
+function gpsFixesFromSamples(samples, windowMs, lastSeenMs) {
   if (!samples?.length) return [];
-  const cutoff = Date.now() - windowMs;
+  const now = Date.now();
+  const cutoff = now - windowMs;
   /** @type {{ t:number, lat:number, lon:number, acc:number|null, spd:number|null }[]} */
   const fixes = [];
   for (const s of samples) {
-    if (!s?.gps || s.t < cutoff) continue;
+    if (!s?.gps) continue;
     const lat = s.gps.lat;
     const lon = s.gps.lon;
     if (lat == null || lon == null || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const t = Number(s.t);
+    if (!Number.isFinite(t)) continue;
     fixes.push({
-      t: s.t,
+      t,
       lat,
       lon,
       acc: s.gps.acc ?? null,
       spd: s.gps.spd ?? null,
     });
   }
-  return fixes;
+  if (!fixes.length) return [];
+  fixes.sort((a, b) => a.t - b.t);
+
+  const recentTail = fixes.slice(-PATH_PACE_FIX_LIMIT);
+  const inWindow = recentTail.filter((f) => f.t >= cutoff);
+  if (inWindow.length >= 2) return inWindow;
+
+  const activelyIngesting =
+    lastSeenMs != null && Number.isFinite(lastSeenMs) && now - lastSeenMs <= 120000;
+  const latest = recentTail[recentTail.length - 1];
+  const fixClockLagSec = latest ? (now - latest.t) / 1000 : 0;
+  if (activelyIngesting && fixClockLagSec > 20 && recentTail.length >= 2) {
+    return rebaseFixTimestamps(recentTail, now);
+  }
+  return inWindow;
 }
 
 /**
@@ -596,6 +709,14 @@ async function loadPathPaceFixesByDevice(orgId, windowMs, telemetryByDevice) {
         PATH_PACE_FIX_LIMIT,
       );
       for (const [deviceId, fixes] of dbFixes) {
+        if (fixes.length >= 2) {
+          const latest = fixes[fixes.length - 1];
+          const lagSec = (Date.now() - latest.t) / 1000;
+          if (lagSec > 20) {
+            fixesByDevice.set(deviceId, rebaseFixTimestamps(fixes, Date.now()));
+            continue;
+          }
+        }
         fixesByDevice.set(deviceId, fixes);
       }
     } catch (err) {
@@ -604,10 +725,16 @@ async function loadPathPaceFixesByDevice(orgId, windowMs, telemetryByDevice) {
   }
   if (telemetryByDevice?.size) {
     for (const [deviceId, entry] of telemetryByDevice) {
-      const fromSamples = gpsFixesFromSamples(entry?.samples || [], windowMs + 5000);
+      const fromSamples = gpsFixesFromSamples(
+        entry?.samples || [],
+        windowMs + 5000,
+        entry?.lastSeenMs,
+      );
       if (!fromSamples.length) continue;
-      const merged = [...(fixesByDevice.get(deviceId) || []), ...fromSamples].sort(
-        (a, b) => a.t - b.t,
+      const merged = dedupePathFixes(
+        [...(fixesByDevice.get(deviceId) || []), ...fromSamples].sort(
+          (a, b) => a.t - b.t,
+        ),
       );
       fixesByDevice.set(deviceId, merged);
     }
@@ -1944,6 +2071,35 @@ function getRawMemoryMapPositions(orgId, onlineMs, now) {
   return out;
 }
 
+/** Prefer Postgres registry when ingest is fresh — avoids serverless memory drift. */
+function mergeMapPositionsPreferRegistry(
+  memoryPositions,
+  registryPositions,
+  registryTimes,
+  now,
+  onlineMs,
+) {
+  /** @type {Map<string, object>} */
+  const byDevice = new Map();
+  for (const p of registryPositions) {
+    if (p.latitude == null || p.longitude == null) continue;
+    byDevice.set(p.deviceId, p);
+  }
+  for (const p of memoryPositions) {
+    if (p.latitude == null || p.longitude == null) continue;
+    const reg = byDevice.get(p.deviceId);
+    const times = registryTimes?.get(p.deviceId);
+    const registryFresh =
+      times?.lastGpsIngestMs != null &&
+      now - times.lastGpsIngestMs <= onlineMs;
+    if (registryFresh && reg) continue;
+    if (!reg || (p.fixMs ?? 0) >= (reg.fixMs ?? 0)) {
+      byDevice.set(p.deviceId, { ...reg, ...p });
+    }
+  }
+  return [...byDevice.values()];
+}
+
 /** @param {object[][]} positionGroups later groups win on equal fixMs */
 function mergeMapPositionsByFixMs(positionGroups) {
   /** @type {Map<string, object>} */
@@ -2149,7 +2305,11 @@ function samplesByDeviceForWindow(orgId, windowMs) {
   const byDevice = new Map();
   for (const row of sessions.values()) {
     if (row.orgId !== orgId) continue;
-    const samples = row.samples.filter((s) => s.t >= cutoff);
+    const sessionActive = row.updatedAt >= cutoff;
+    let samples = row.samples.filter((s) => s.t >= cutoff);
+    if (!samples.length && sessionActive) {
+      samples = row.samples.slice(-PATH_PACE_FIX_LIMIT);
+    }
     if (!samples.length) continue;
     const prev = byDevice.get(row.deviceId);
     if (!prev || row.updatedAt > prev.lastSeenMs) {
@@ -2185,10 +2345,13 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
         loadDbCapsizeAlerts(orgId),
       ]);
 
-      const rawMerged = mergeMapPositionsByFixMs([
+      const rawMerged = mergeMapPositionsPreferRegistry(
         getRawMemoryMapPositions(orgId, onlineMs, now),
         registryPositions,
-      ]);
+        registryTimes,
+        now,
+        onlineMs,
+      );
       await warmGpsTracksFromRecentDbFixes(orgId, telemetryWindowMs, trackOpts);
       warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
       const positions = attachSmoothMapCoords(rawMerged, predictMode, orgId);

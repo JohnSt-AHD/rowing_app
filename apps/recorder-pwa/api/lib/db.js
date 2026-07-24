@@ -1429,16 +1429,23 @@ async function getRecentGpsFixesByDevice(orgId, windowMs = 120000, limitPerDevic
   const sql = await getSql();
   await ensureOrgsBootstrapped();
   const cutoff = Date.now() - windowMs;
-  const cap = Math.max(3, Math.min(Number(limitPerDevice) || 8, 20));
+  const cap = Math.max(3, Math.min(Number(limitPerDevice) || 8, 40));
   const rows = await sql`
     SELECT unique_id, t_ms, latitude, longitude, accuracy, speed FROM (
       SELECT unique_id, t_ms, latitude, longitude, accuracy, speed,
         ROW_NUMBER() OVER (PARTITION BY unique_id ORDER BY t_ms DESC) AS rn
       FROM rnz_samples
       WHERE org_id = ${orgId}
-        AND t_ms >= ${cutoff}
         AND latitude IS NOT NULL
         AND longitude IS NOT NULL
+        AND (
+          t_ms >= ${cutoff}
+          OR unique_id IN (
+            SELECT unique_id FROM rnz_devices
+            WHERE org_id = ${orgId}
+              AND last_gps_ingest_at >= NOW() - INTERVAL '2 minutes'
+          )
+        )
     ) sub
     WHERE rn <= ${cap}
     ORDER BY unique_id, t_ms ASC
