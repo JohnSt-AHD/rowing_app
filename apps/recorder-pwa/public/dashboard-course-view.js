@@ -670,7 +670,7 @@
       if (deviceId) paceHoldByDevice.delete(deviceId);
       return null;
     }
-    const mps = p?.displaySpeedMps ?? p?.pathSpeedMps ?? null;
+    const mps = p?.pathSpeedMps ?? p?.displaySpeedMps ?? null;
     if (mps != null && Number.isFinite(mps) && mps >= 0.25) {
       if (deviceId) paceHoldByDevice.set(deviceId, { mps, at: now });
       return mps;
@@ -774,8 +774,6 @@
   }
 
   function speedFromPosition(p, prev, dtSec) {
-    const spd = p.speed ?? p.attributes?.speed;
-    if (Number.isFinite(spd) && spd > 0) return spd;
     if (!prev || dtSec <= 0) return null;
     const cur = posFromRecord(p);
     if (!cur) return null;

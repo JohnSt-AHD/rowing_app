@@ -96,9 +96,8 @@ export function trackSpeedMps(deviceId: string): number | null {
 }
 
 export function resolveSpeedMps(p: MapPosition): number | null {
-  const display = p.displaySpeedMps ?? p.pathSpeedMps;
-  if (display != null && Number.isFinite(display) && display >= 0) return display;
-  if (p.speed != null && Number.isFinite(p.speed) && p.speed >= 0) return p.speed;
+  const path = p.pathSpeedMps ?? p.displaySpeedMps;
+  if (path != null && Number.isFinite(path) && path >= 0.25) return path;
   return trackSpeedMps(p.deviceId);
 }
 
@@ -117,14 +116,14 @@ export function syncMapTracks(positions: MapPosition[]) {
     const fixMs = fixMsFor(p);
     const { lat, lon } = anchorLatLon(p);
     const prev = tracks.get(p.deviceId);
-    let speedMps = p.speed ?? null;
+    let speedMps = p.pathSpeedMps ?? p.displaySpeedMps ?? null;
     let courseDeg = p.course ?? null;
 
     if (prev && prev.fixMs !== fixMs) {
       const dt = (fixMs - prev.fixMs) / 1000;
       if (dt > 0.05) {
         const dist = haversineM(prev.lat, prev.lon, lat, lon);
-        speedMps = dist / dt;
+        if (speedMps == null) speedMps = dist / dt;
         courseDeg = bearingDeg(prev.lat, prev.lon, lat, lon);
       }
     } else if (prev) {

@@ -237,10 +237,10 @@ function isDataStale(p) {
   return age != null && age > TELEMETRY_STALE_SEC;
 }
 
-/** Coach-facing pace: smoothed 15s path average (never instant GPS). */
+/** Coach-facing pace: 15s path average (never phone gps.spd). */
 function paceMpsForPosition(p) {
   if (isDataStale(p)) return null;
-  const mps = p.displaySpeedMps ?? p.pathSpeedMps ?? null;
+  const mps = p.pathSpeedMps ?? p.displaySpeedMps ?? null;
   if (mps == null || !Number.isFinite(mps) || mps < 0.25) return null;
   return mps;
 }
@@ -308,14 +308,14 @@ function syncDeviceTrackState(positions) {
     const fixMs = positionFixMs(p);
     const { lat, lon } = mapAnchorLatLon(p);
     const prev = deviceTrackState.get(p.deviceId);
-    let speedMps = p.speed ?? null;
+    let speedMps = p.pathSpeedMps ?? p.displaySpeedMps ?? null;
     let courseDeg = p.course ?? null;
 
     if (prev && prev.fixMs !== fixMs) {
       const dt = (fixMs - prev.fixMs) / 1000;
       if (dt > 0.05) {
         const dist = haversineM(prev.lat, prev.lon, lat, lon);
-        speedMps = dist / dt;
+        if (speedMps == null) speedMps = dist / dt;
         courseDeg = bearingDeg(prev.lat, prev.lon, lat, lon);
       }
     } else if (prev) {
@@ -583,7 +583,7 @@ function deviceSummaryLine(d) {
   }
   if (d.battery?.pct != null) parts.push(`${fmtBatteryPct(d.battery.pct)} bat`);
   if (!isDeviceDataStale(d) && window.RowingSpeed) {
-    const paceMps = d.displaySpeedMps ?? d.pathSpeedMps ?? null;
+    const paceMps = d.pathSpeedMps ?? d.displaySpeedMps ?? null;
     if (paceMps != null && paceMps >= 0.25) {
       parts.push(
         window.RowingSpeed.formatPaceWithPrognostic(
@@ -1072,7 +1072,6 @@ function mergeMapWithDeviceGps(devices, positions) {
       fixAgeSec: devAge,
       fixMs: Date.now() - devAge * 1000,
       accuracy: gps.acc ?? prev?.accuracy ?? null,
-      speed: gps.spd ?? prev?.speed ?? null,
       lastSeenAgoSec: d.lastSeenAgoSec ?? prev?.lastSeenAgoSec ?? devAge,
       online: d.online ?? prev?.online ?? false,
       hr: prev?.hr ?? d.hr?.last?.bpm ?? null,

@@ -641,16 +641,14 @@ function gpsDistanceMeters(aLat, aLon, bLat, bLon) {
   return Math.hypot(dLatM, dLonM);
 }
 
-/** Android Location.getSpeed() often understates rowing; blend toward position-derived speed. */
+/** Android Location.getSpeed() often understates rowing; prefer position-derived speed. */
 function mergeGpsSpeedMps(derived, android) {
   const d = Math.min(Math.max(Number(derived) || 0, 0), 12);
+  if (d > 0) return Math.round(d * 100) / 100;
   if (android == null || !Number.isFinite(Number(android)) || Number(android) <= 0) {
-    return d > 0 ? d : null;
+    return null;
   }
-  const a = Math.min(Math.max(Number(android), 0), 12);
-  if (d <= 0) return a;
-  if (a < d * 0.75) return Math.round(d * 100) / 100;
-  return Math.round((0.5 * d + 0.5 * a) * 100) / 100;
+  return Math.round(Math.min(Math.max(Number(android), 0), 12) * 100) / 100;
 }
 
 function derivedGpsSpeedMps(prev, next) {

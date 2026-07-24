@@ -511,7 +511,7 @@ function resetGpsSmoothState(fix) {
     lon: fix.lon,
     smoothLat: fix.lat,
     smoothLon: fix.lon,
-    speedMps: fix.spd,
+    speedMps: null,
     courseDeg: resolveMapHeading(fix),
   };
 }
@@ -546,7 +546,7 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
       lon: fix.lon,
       smoothLat: fix.lat,
       smoothLon: fix.lon,
-      speedMps: fix.spd ?? prev.speedMps,
+      speedMps: prev.speedMps,
       courseDeg: resolveMapHeading(fix) ?? prev.courseDeg,
     });
     return true;
@@ -558,11 +558,8 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
     return true;
   }
 
-  let speedMps = jumpM / dtSec;
+  const speedMps = jumpM / dtSec;
   let courseDeg = bearingDeg(prev.lat, prev.lon, fix.lat, fix.lon);
-  if (fix.spd != null && Number.isFinite(fix.spd)) {
-    speedMps = prev.speedMps != null ? 0.85 * speedMps + 0.15 * fix.spd : speedMps;
-  }
   const resolved = resolveMapHeading(fix);
   if (resolved != null && Number.isFinite(resolved)) {
     courseDeg = resolved;
@@ -590,19 +587,18 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
   return true;
 }
 
-function displayMapSpeedMps(registrySpeed, trackSpeed) {
+/** Position-derived track speed; ignore phone gps.spd when track is available. */
+function displayMapSpeedMps(_registrySpeed, trackSpeed) {
   const track =
-    trackSpeed != null && Number.isFinite(trackSpeed) && trackSpeed > 0
-      ? Math.max(0, trackSpeed)
+    trackSpeed != null && Number.isFinite(trackSpeed) && trackSpeed >= 0.25
+      ? trackSpeed
       : null;
+  if (track != null) return track;
   const registry =
-    registrySpeed != null && Number.isFinite(registrySpeed) && registrySpeed > 0
-      ? registrySpeed
+    _registrySpeed != null && Number.isFinite(_registrySpeed) && _registrySpeed >= 0.25
+      ? _registrySpeed
       : null;
-  if (track != null) {
-    if (registry == null || track >= registry * 0.85) return track;
-  }
-  return registry ?? track ?? null;
+  return registry;
 }
 
 /**
@@ -776,6 +772,10 @@ function attachPathPaceToMapPositions(positions, fixesByDevice, orgId) {
     p.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
     const live = p.online !== false && p.telemetryStale !== true;
     p.displaySpeedMps = resolveDisplayPathSpeedMps(orgId, p.deviceId, pathSpeed, live);
+    const coachSpeed = p.displaySpeedMps ?? p.pathSpeedMps;
+    if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
+      p.speed = coachSpeed;
+    }
   }
   return positions;
 }
@@ -2365,17 +2365,6 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
           p.strokeRate = tel.strokeRate ?? p.strokeRate ?? null;
           p.tiltDeg = tel.tiltDeg ?? p.tiltDeg ?? null;
         }
-        if (p.speed == null || !Number.isFinite(p.speed) || p.speed <= 0) {
-          const entry = telemetryByDevice.get(p.deviceId);
-          const samples = entry?.samples || [];
-          for (let i = samples.length - 1; i >= 0; i--) {
-            const spd = samples[i].gps?.spd;
-            if (spd != null && Number.isFinite(spd) && spd > 0) {
-              p.speed = spd;
-              break;
-            }
-          }
-        }
       }
       forceCapsizeAlertsOnPositions(positions, dbCapsizeAlerts);
       forceCapsizeAlertsOnPositions(positions, getStickyCapsizeAlerts(orgId));
@@ -2519,17 +2508,6 @@ async function enrichTraccarSnapshotRowing(orgId, snapshot, onlineMs) {
       if (rowing?.strokeRate != null) attrs.strokeRate = rowing.strokeRate;
     }
 
-    if (!Number.isFinite(p.speed) || p.speed <= 0) {
-      const entry = byDevice.get(uid);
-      const samples = entry?.samples || [];
-      for (let i = samples.length - 1; i >= 0; i--) {
-        const spd = samples[i].gps?.spd;
-        if (spd != null && Number.isFinite(spd) && spd > 0) {
-          p.speed = spd;
-          break;
-        }
-      }
-    }
   }
   return snapshot;
 }
