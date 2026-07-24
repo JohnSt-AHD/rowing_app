@@ -1,5 +1,6 @@
 const store = require('./lib/ingest-store');
 const { requireOrg } = require('./lib/require-org');
+const { getCachedMapPositionsResponse } = require('./lib/map-positions-cache');
 
 /** Latest GPS positions for dashboard map (online + stale offline). */
 module.exports = async function handler(req, res) {
@@ -27,23 +28,20 @@ module.exports = async function handler(req, res) {
 
   const predictMode = store.parsePredictMode(req.query?.predictMode);
 
-  const positions = await store.getMapPositions(
-    org.id,
-    onlineSec * 1000,
-    staleSec * 1000,
-    { predictMode },
-  );
-
-  return res.status(200).json({
-    ok: true,
-    org: org.slug,
-    polledAt: Date.now(),
+  const payload = await getCachedMapPositionsResponse({
+    org,
+    onlineSec,
+    staleSec,
     predictMode,
-    onlineThresholdSec: onlineSec,
-    staleThresholdSec: staleSec,
-    activeCount: positions.filter((p) => p.online).length,
-    positionCount: positions.length,
-    positions,
-    persisted: store.hasDb(),
   });
+
+  if (payload.cache?.hit) {
+    res.setHeader('X-Map-Positions-Cache', 'HIT');
+  } else if (payload.cache?.enabled) {
+    res.setHeader('X-Map-Positions-Cache', 'MISS');
+  } else {
+    res.setHeader('X-Map-Positions-Cache', 'OFF');
+  }
+
+  return res.status(200).json(payload);
 };

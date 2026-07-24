@@ -25,4 +25,4 @@ jobs:
         run: npm run build
 
       - name: Verify API modules load
-        run: node -e "require('./apps/recorder-pwa/api/history.js'); require('./apps/recorder-pwa/api/ingest.js'); console.log('api ok')"
+        run: node -e "require('./apps/recorder-pwa/api/history.js'); require('./apps/recorder-pwa/api/ingest.js'); require('./apps/recorder-pwa/api/lib/map-positions-cache.js'); console.log('api ok')"

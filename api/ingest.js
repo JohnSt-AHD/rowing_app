@@ -83,6 +83,9 @@ module.exports = async function handler(req, res) {
     req.headers['x-idempotency-key'] || req.headers['X-Idempotency-Key'],
   );
 
+  const { warmMapPositionsCacheAfterIngest } = require('./lib/map-positions-cache');
+  warmMapPositionsCacheAfterIngest(org, samples);
+
   const response = {
     ok: true,
     sessionId: String(sessionId),
