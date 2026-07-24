@@ -641,14 +641,12 @@ function gpsDistanceMeters(aLat, aLon, bLat, bLon) {
   return Math.hypot(dLatM, dLonM);
 }
 
-/** Android Location.getSpeed() often understates rowing; prefer position-derived speed. */
-function mergeGpsSpeedMps(derived, android) {
-  const d = Math.min(Math.max(Number(derived) || 0, 0), 12);
-  if (d > 0) return Math.round(d * 100) / 100;
-  if (android == null || !Number.isFinite(Number(android)) || Number(android) <= 0) {
+/** Registry speed from position delta only — never phone gps.spd. */
+function mergeGpsSpeedMps(derived) {
+  if (derived == null || !Number.isFinite(Number(derived)) || Number(derived) <= 0) {
     return null;
   }
-  return Math.round(Math.min(Math.max(Number(android), 0), 12) * 100) / 100;
+  return Math.round(Math.min(Math.max(Number(derived), 0), 12) * 100) / 100;
 }
 
 function derivedGpsSpeedMps(prev, next) {
@@ -681,10 +679,7 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
           s.gps?.acc != null && Number.isFinite(Number(s.gps.acc))
             ? Number(s.gps.acc)
             : null,
-        spd:
-          s.gps?.spd != null && Number.isFinite(Number(s.gps.spd))
-            ? Math.max(0, Number(s.gps.spd))
-            : null,
+        spd: null,
       };
     }
   }
@@ -706,7 +701,7 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
       },
       best,
     );
-    if (derived != null) best.spd = mergeGpsSpeedMps(derived, best.spd);
+    if (derived != null) best.spd = mergeGpsSpeedMps(derived);
   }
   await sql`
     UPDATE rnz_devices
@@ -1532,10 +1527,7 @@ async function getRegistryMapPositions(orgId, onlineMs, staleMs) {
       latitude: row.last_lat,
       longitude: row.last_lon,
       accuracy: row.last_gps_accuracy,
-      speed:
-        row.last_gps_speed != null && Number.isFinite(Number(row.last_gps_speed))
-          ? Number(row.last_gps_speed)
-          : null,
+      speed: null,
       fixMs,
       fixAgeSec: Math.round((now - fixMs) / 1000),
       lastSeenAgoSec: Math.round((now - lastSeenMs) / 1000),

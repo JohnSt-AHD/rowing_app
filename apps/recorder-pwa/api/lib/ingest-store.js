@@ -596,18 +596,11 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
   return true;
 }
 
-/** Position-derived track speed; ignore phone gps.spd when track is available. */
+/** Position-derived track speed only — no phone gps.spd or registry fallback. */
 function displayMapSpeedMps(_registrySpeed, trackSpeed) {
-  const track =
-    trackSpeed != null && Number.isFinite(trackSpeed) && trackSpeed >= 0.25
-      ? trackSpeed
-      : null;
-  if (track != null) return track;
-  const registry =
-    _registrySpeed != null && Number.isFinite(_registrySpeed) && _registrySpeed >= 0.25
-      ? _registrySpeed
-      : null;
-  return registry;
+  return trackSpeed != null && Number.isFinite(trackSpeed) && trackSpeed >= 0.25
+    ? trackSpeed
+    : null;
 }
 
 /**
@@ -1994,7 +1987,7 @@ function getPositionsSnapshot(orgId, onlineMs = 30000) {
       latitude: lastGps.gps.lat,
       longitude: lastGps.gps.lon,
       accuracy: lastGps.gps.acc ?? null,
-      speed: lastGps.gps.spd ?? null,
+      speed: null,
       course: resolveMapHeading(gpsFromSample(lastGps)) ?? lastGps.gps.hdg ?? null,
       altitude: lastGps.gps.alt ?? null,
       fixTime: new Date(fixMs).toISOString(),
@@ -2072,7 +2065,7 @@ function buildRawMapPositionFromFix({
     latitude: fix.lat,
     longitude: fix.lon,
     accuracy: fix.acc ?? null,
-    speed: fix.spd != null && Number.isFinite(fix.spd) ? fix.spd : null,
+    speed: null,
     course: fix.hdg != null && Number.isFinite(fix.hdg) ? fix.hdg : null,
     fixMs,
     fixAgeSec: Math.round((now - fixMs) / 1000),
