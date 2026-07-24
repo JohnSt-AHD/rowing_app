@@ -46,7 +46,12 @@ const PATH_PACE_WINDOW_MS = 15_000;
 /** Ignore GPS segments shorter than this when computing path pace. */
 const PATH_PACE_MIN_SEGMENT_M = 1;
 /** Ignore GPS segment speeds above this when computing path pace (rowing). */
-const PATH_PACE_MAX_SEGMENT_MPS = 8;
+const PATH_PACE_MAX_SEGMENT_MPS = 6.5;
+/** Keep segment speeds within this band of the window median (rejects GPS spikes). */
+const PATH_PACE_SEGMENT_BAND_LO = 0.72;
+const PATH_PACE_SEGMENT_BAND_HI = 1.28;
+/** Max single-step change in displayed path pace vs previous EMA (ratio). */
+const PATH_PACE_MAX_STEP_RATIO = 1.22;
 /** Minimum moving time/distance before reporting path pace. */
 const PATH_PACE_MIN_TIME_SEC = 4;
 const PATH_PACE_MIN_DIST_M = 8;
@@ -619,20 +624,43 @@ function pathSpeedMpsFromFixes(fixes, windowMs = PATH_PACE_WINDOW_MS) {
   );
   if (pts.length < 2) return null;
 
-  let distM = 0;
-  let timeSec = 0;
+  /** @type {{ d: number, dt: number, seg: number }[]} */
+  const segments = [];
   for (let i = 1; i < pts.length; i++) {
     const dt = (pts[i].t - pts[i - 1].t) / 1000;
     if (dt <= 0 || dt > 15) continue;
+    const acc = pts[i].acc ?? pts[i - 1].acc;
+    if (acc != null && Number.isFinite(acc) && acc > 25) continue;
     const d = distanceMeters(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
     if (d < PATH_PACE_MIN_SEGMENT_M) continue;
     const seg = d / dt;
     if (seg > PATH_PACE_MAX_SEGMENT_MPS) continue;
-    distM += d;
-    timeSec += dt;
+    segments.push({ d, dt, seg });
   }
-  if (timeSec < PATH_PACE_MIN_TIME_SEC || distM < PATH_PACE_MIN_DIST_M) return null;
-  return distM / timeSec;
+  if (segments.length < 2) return null;
+
+  const medianSeg = medianOf(segments.map((s) => s.seg));
+  if (medianSeg == null || medianSeg < 0.25) return null;
+
+  const lo = medianSeg * PATH_PACE_SEGMENT_BAND_LO;
+  const hi = medianSeg * PATH_PACE_SEGMENT_BAND_HI;
+  let distM = 0;
+  let timeSec = 0;
+  /** @type {number[]} */
+  const inBandSegs = [];
+  for (const s of segments) {
+    if (s.seg < lo || s.seg > hi) continue;
+    distM += s.d;
+    timeSec += s.dt;
+    inBandSegs.push(s.seg);
+  }
+  if (timeSec >= PATH_PACE_MIN_TIME_SEC && distM >= PATH_PACE_MIN_DIST_M) {
+    return distM / timeSec;
+  }
+  if (inBandSegs.length >= 2) {
+    return medianOf(inBandSegs);
+  }
+  return medianSeg;
 }
 
 /** Preserve fix spacing but anchor the latest fix to now (clock-lagged device timestamps). */
@@ -750,10 +778,17 @@ function resolveDisplayPathSpeedMps(orgId, deviceId, rawPath, live = true) {
   const prev = pathPaceDisplayByDevice.get(key);
   const now = Date.now();
   if (rawPath != null && Number.isFinite(rawPath) && rawPath >= 0.25) {
+    let accepted = rawPath;
+    if (prev?.ema != null && Number.isFinite(prev.ema) && prev.ema >= 0.25) {
+      const ratio = rawPath / prev.ema;
+      if (ratio > PATH_PACE_MAX_STEP_RATIO || ratio < 1 / PATH_PACE_MAX_STEP_RATIO) {
+        accepted = prev.ema;
+      }
+    }
     const ema =
       prev?.ema != null && Number.isFinite(prev.ema)
-        ? PATH_PACE_EMA_ALPHA * rawPath + (1 - PATH_PACE_EMA_ALPHA) * prev.ema
-        : rawPath;
+        ? PATH_PACE_EMA_ALPHA * accepted + (1 - PATH_PACE_EMA_ALPHA) * prev.ema
+        : accepted;
     pathPaceDisplayByDevice.set(key, { ema, raw: rawPath, at: now });
     return ema;
   }

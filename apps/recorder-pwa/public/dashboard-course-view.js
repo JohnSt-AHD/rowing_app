@@ -663,14 +663,14 @@
     return formatSplit500(mps);
   }
 
-  /** 15s path pace from API — avoid instant map speed for live coach readouts. */
+  /** Spike-filtered 15s path pace from API — ticket/graph use displaySpeedMps first. */
   function coachFacingSpeedMps(p, deviceId) {
     const now = Date.now();
     if (p?.telemetryStale === true) {
       if (deviceId) paceHoldByDevice.delete(deviceId);
       return null;
     }
-    const mps = p?.pathSpeedMps ?? p?.displaySpeedMps ?? null;
+    const mps = p?.displaySpeedMps ?? p?.pathSpeedMps ?? null;
     if (mps != null && Number.isFinite(mps) && mps >= 0.25) {
       if (deviceId) paceHoldByDevice.set(deviceId, { mps, at: now });
       return mps;

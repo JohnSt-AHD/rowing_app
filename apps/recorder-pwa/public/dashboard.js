@@ -237,10 +237,10 @@ function isDataStale(p) {
   return age != null && age > TELEMETRY_STALE_SEC;
 }
 
-/** Coach-facing pace: 15s path average (never phone gps.spd). */
+/** Coach-facing pace: spike-filtered display EMA (never raw path spikes). */
 function paceMpsForPosition(p) {
   if (isDataStale(p)) return null;
-  const mps = p.pathSpeedMps ?? p.displaySpeedMps ?? null;
+  const mps = p.displaySpeedMps ?? p.pathSpeedMps ?? null;
   if (mps == null || !Number.isFinite(mps) || mps < 0.25) return null;
   return mps;
 }
@@ -308,7 +308,7 @@ function syncDeviceTrackState(positions) {
     const fixMs = positionFixMs(p);
     const { lat, lon } = mapAnchorLatLon(p);
     const prev = deviceTrackState.get(p.deviceId);
-    let speedMps = p.pathSpeedMps ?? p.displaySpeedMps ?? null;
+    let speedMps = p.displaySpeedMps ?? p.pathSpeedMps ?? null;
     let courseDeg = p.course ?? null;
 
     if (prev && prev.fixMs !== fixMs) {
@@ -583,7 +583,7 @@ function deviceSummaryLine(d) {
   }
   if (d.battery?.pct != null) parts.push(`${fmtBatteryPct(d.battery.pct)} bat`);
   if (!isDeviceDataStale(d) && window.RowingSpeed) {
-    const paceMps = d.pathSpeedMps ?? d.displaySpeedMps ?? null;
+    const paceMps = d.displaySpeedMps ?? d.pathSpeedMps ?? null;
     if (paceMps != null && paceMps >= 0.25) {
       parts.push(
         window.RowingSpeed.formatPaceWithPrognostic(
