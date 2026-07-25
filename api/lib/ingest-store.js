@@ -2493,23 +2493,59 @@ async function enrichTraccarSnapshotCapsize(orgId, snapshot, _onlineMs) {
   return snapshot;
 }
 
-/** Fill snapshot speed/stroke from recent samples when DB row lacks them (RowSafe map). */
-/** Fill snapshot speed from position-derived track (RowSafe / overlay). */
+/** Coach-style path pace on snapshot positions (same as /api/map-positions). */
 async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
   if (!snapshot?.positions?.length) return snapshot;
   const windowMs = Math.min(Math.max(Number(onlineMs) || 120_000, 60_000), 180_000);
-  await warmGpsTracksFromRecentDbFixes(orgId, windowMs, {
-    maxTrackSpeedMps: MAX_ROWING_PREDICT_MPS,
-  });
+  const trackOpts = { maxTrackSpeedMps: MAX_ROWING_PREDICT_MPS };
+  const telemetryByDevice = samplesByDeviceForWindow(orgId, windowMs);
+  await warmGpsTracksFromRecentDbFixes(orgId, windowMs, trackOpts);
+  warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
+
   const idToUid = new Map(
     (snapshot.devices || []).map((d) => [d.id, d.uniqueId || d.name]),
   );
+  /** @type {Map<string, object>} */
+  const uidToSnapshotPos = new Map();
+  const pseudoPositions = [];
   for (const p of snapshot.positions) {
     const uid = idToUid.get(p.deviceId) || p.deviceName;
     if (!uid) continue;
-    const track = gpsTracks.get(orgDeviceKey(orgId, uid));
-    const next = displayMapSpeedMps(p.speed, track?.speedMps);
-    if (next != null && Number.isFinite(next)) p.speed = next;
+    uidToSnapshotPos.set(uid, p);
+    pseudoPositions.push({
+      deviceId: uid,
+      speed: p.speed,
+      online: true,
+      telemetryStale: false,
+    });
+  }
+  if (!pseudoPositions.length) return snapshot;
+
+  const pathFixesByDevice = await loadPathPaceFixesByDevice(
+    orgId,
+    PATH_PACE_WINDOW_MS,
+    telemetryByDevice,
+  );
+  attachPathPaceToMapPositions(pseudoPositions, pathFixesByDevice, orgId);
+
+  for (const pp of pseudoPositions) {
+    const p = uidToSnapshotPos.get(pp.deviceId);
+    if (!p) continue;
+    const attrs = p.attributes || (p.attributes = {});
+    if (pp.pathSpeedMps != null && Number.isFinite(pp.pathSpeedMps)) {
+      attrs.pathSpeedMps = pp.pathSpeedMps;
+    }
+    if (pp.displaySpeedMps != null && Number.isFinite(pp.displaySpeedMps)) {
+      attrs.displaySpeedMps = pp.displaySpeedMps;
+    }
+    const coachSpeed = pp.displaySpeedMps ?? pp.pathSpeedMps;
+    if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
+      p.speed = coachSpeed;
+      continue;
+    }
+    const track = gpsTracks.get(orgDeviceKey(orgId, pp.deviceId));
+    const fallback = displayMapSpeedMps(p.speed, track?.speedMps);
+    if (fallback != null && Number.isFinite(fallback)) p.speed = fallback;
   }
   return snapshot;
 }
