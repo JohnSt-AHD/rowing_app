@@ -1116,16 +1116,18 @@ async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
   const now = Date.now();
   const staleCutoff = now - Math.max(onlineMs, 3600_000);
   const telCutoff = now - Math.max(onlineMs, 120_000);
+  // GPS lat/lon/fix time from device registry (same source as /api/map-positions).
+  // Latest sample row supplies telemetry only (stroke, compass, HR, etc.).
   const rows = await sql`
     SELECT DISTINCT ON (d.id)
       COALESCE(s.id, d.id) AS id,
       d.id AS device_ref,
       d.unique_id,
-      COALESCE(s.t_ms, d.last_gps_t_ms) AS t_ms,
-      COALESCE(s.latitude, d.last_lat) AS latitude,
-      COALESCE(s.longitude, d.last_lon) AS longitude,
-      COALESCE(s.accuracy, d.last_gps_accuracy) AS accuracy,
-      s.speed,
+      d.last_gps_t_ms AS t_ms,
+      d.last_lat AS latitude,
+      d.last_lon AS longitude,
+      d.last_gps_accuracy AS accuracy,
+      d.last_gps_speed AS speed,
       s.course,
       s.compass_deg,
       s.altitude,
@@ -1144,8 +1146,6 @@ async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
       FROM rnz_samples
       WHERE org_id = ${orgId}
         AND unique_id = d.unique_id
-        AND latitude IS NOT NULL
-        AND longitude IS NOT NULL
         AND t_ms >= ${telCutoff}
       ORDER BY t_ms DESC
       LIMIT 1
@@ -1155,7 +1155,7 @@ async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
       AND d.last_lat IS NOT NULL
       AND d.last_lon IS NOT NULL
       AND d.last_gps_t_ms >= ${staleCutoff}
-    ORDER BY d.id, s.t_ms DESC NULLS LAST
+    ORDER BY d.id
   `;
   // deviceId must match listRegistryDevices().id so RowSafe can join positions[d.id].
   return rows.rows.map((row) =>
