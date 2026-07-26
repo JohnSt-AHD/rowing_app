@@ -181,6 +181,41 @@ const WARM_PRESETS = [
  * @param {{ id: number, slug: string }} org
  * @param {object[]|undefined} samples
  */
+/**
+ * Read warmed map-positions speeds from KV (RowSafe snapshot enrichment).
+ * @param {number} orgId
+ * @returns {Promise<Map<string, { pathSpeedMps?: number|null, displaySpeedMps?: number|null }>|null>}
+ */
+async function readCachedMapPositionsByDevice(orgId) {
+  const redis = getRedis();
+  if (!redis || !cacheEnabled()) return null;
+  /** @type {Map<string, { pathSpeedMps?: number|null, displaySpeedMps?: number|null }>} */
+  const byDevice = new Map();
+  for (const preset of WARM_PRESETS) {
+    try {
+      const key = cacheKey(orgId, preset.onlineSec, preset.staleSec, preset.predictMode);
+      const cached = await redis.get(key);
+      const positions = cached?.body?.positions;
+      if (!Array.isArray(positions)) continue;
+      for (const p of positions) {
+        if (!p?.deviceId) continue;
+        const path = p.pathSpeedMps;
+        if (path == null || !Number.isFinite(path)) continue;
+        const prev = byDevice.get(p.deviceId);
+        if (!prev || path >= (prev.pathSpeedMps ?? 0)) {
+          byDevice.set(p.deviceId, {
+            pathSpeedMps: p.pathSpeedMps,
+            displaySpeedMps: p.displaySpeedMps ?? null,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[map-positions-cache] snapshot speed read failed:', err);
+    }
+  }
+  return byDevice.size ? byDevice : null;
+}
+
 function warmMapPositionsCacheAfterIngest(org, samples) {
   if (!cacheEnabled()) return;
   if (!Array.isArray(samples) || !samples.some((s) => s?.gps?.lat != null && s?.gps?.lon != null)) {
@@ -208,5 +243,6 @@ module.exports = {
   cacheEnabled,
   cacheTtlSec,
   getCachedMapPositionsResponse,
+  readCachedMapPositionsByDevice,
   warmMapPositionsCacheAfterIngest,
 };

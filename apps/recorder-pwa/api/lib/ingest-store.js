@@ -701,17 +701,19 @@ function gpsFixesFromSamples(samples, windowMs, lastSeenMs) {
   fixes.sort((a, b) => a.t - b.t);
 
   const recentTail = fixes.slice(-PATH_PACE_FIX_LIMIT);
-  const inWindow = recentTail.filter((f) => f.t >= cutoff);
+  const latest = recentTail[recentTail.length - 1];
+  // Anchor the pace window on the latest fix (matches pathSpeedMpsFromFixes), not server clock.
+  const anchorCutoff = latest ? latest.t - windowMs : cutoff;
+  const inWindow = recentTail.filter((f) => f.t >= anchorCutoff);
   if (inWindow.length >= 2) return inWindow;
 
   const activelyIngesting =
     lastSeenMs != null && Number.isFinite(lastSeenMs) && now - lastSeenMs <= 120000;
-  const latest = recentTail[recentTail.length - 1];
   const fixClockLagSec = latest ? (now - latest.t) / 1000 : 0;
   if (activelyIngesting && fixClockLagSec > 20 && recentTail.length >= 2) {
     return rebaseFixTimestamps(recentTail, now);
   }
-  return inWindow;
+  return recentTail.length >= 2 ? recentTail : inWindow;
 }
 
 /**
@@ -809,8 +811,14 @@ function attachPathPaceToMapPositions(positions, fixesByDevice, orgId) {
     p.pathSpeedMps = pathSpeed;
     p.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
     const live = p.online !== false && p.telemetryStale !== true;
-    p.displaySpeedMps = resolveDisplayPathSpeedMps(orgId, p.deviceId, pathSpeed, live);
-    const coachSpeed = p.displaySpeedMps ?? p.pathSpeedMps;
+    if (p.preferPathSpeed && pathSpeed != null && Number.isFinite(pathSpeed)) {
+      p.displaySpeedMps = pathSpeed;
+    } else {
+      p.displaySpeedMps = resolveDisplayPathSpeedMps(orgId, p.deviceId, pathSpeed, live);
+    }
+    const coachSpeed = p.preferPathSpeed
+      ? p.pathSpeedMps ?? p.displaySpeedMps
+      : p.displaySpeedMps ?? p.pathSpeedMps;
     if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
       p.speed = coachSpeed;
     }
@@ -2502,9 +2510,19 @@ async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
       speed: p.speed,
       online: true,
       telemetryStale: false,
+      preferPathSpeed: true,
     });
   }
   if (!pseudoPositions.length) return snapshot;
+
+  /** @type {Map<string, { pathSpeedMps?: number|null, displaySpeedMps?: number|null }>|null} */
+  let cachedSpeedByDevice = null;
+  try {
+    const cache = require('./map-positions-cache');
+    cachedSpeedByDevice = await cache.readCachedMapPositionsByDevice(orgId);
+  } catch (err) {
+    console.error('[ingest-store] snapshot speed cache read failed:', err);
+  }
 
   const pathFixesByDevice = await loadPathPaceFixesByDevice(
     orgId,
@@ -2516,6 +2534,16 @@ async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
   for (const pp of pseudoPositions) {
     const p = uidToSnapshotPos.get(pp.deviceId);
     if (!p) continue;
+    const cached = cachedSpeedByDevice?.get(pp.deviceId);
+    if (cached?.pathSpeedMps != null && Number.isFinite(cached.pathSpeedMps)) {
+      pp.pathSpeedMps = cached.pathSpeedMps;
+      if (cached.displaySpeedMps != null && Number.isFinite(cached.displaySpeedMps)) {
+        pp.displaySpeedMps = cached.displaySpeedMps;
+      }
+    }
+    if (pp.preferPathSpeed && pp.pathSpeedMps != null && Number.isFinite(pp.pathSpeedMps)) {
+      pp.displaySpeedMps = pp.pathSpeedMps;
+    }
     const attrs = p.attributes || (p.attributes = {});
     if (pp.pathSpeedMps != null && Number.isFinite(pp.pathSpeedMps)) {
       attrs.pathSpeedMps = pp.pathSpeedMps;
@@ -2523,7 +2551,7 @@ async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
     if (pp.displaySpeedMps != null && Number.isFinite(pp.displaySpeedMps)) {
       attrs.displaySpeedMps = pp.displaySpeedMps;
     }
-    const coachSpeed = pp.displaySpeedMps ?? pp.pathSpeedMps;
+    const coachSpeed = pp.pathSpeedMps ?? pp.displaySpeedMps;
     if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
       p.speed = coachSpeed;
       continue;
