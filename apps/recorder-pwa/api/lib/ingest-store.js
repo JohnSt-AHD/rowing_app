@@ -25,7 +25,7 @@ const RING_TRIM_TO = 3000;
 const MAX_GPS_ACCURACY_M = 150;
 const MAX_TRACK_SPEED_MPS = 25;
 /** Max seconds to project track forward from last fix timestamp to now. */
-const MAX_PREDICT_SEC = 2.5;
+const MAX_PREDICT_SEC = 1;
 /** Keep smoothed marker within this distance of the latest raw fix. */
 const MAX_SMOOTH_OFFSET_M = 10;
 /** Min speed before predict-to-now (m/s). */

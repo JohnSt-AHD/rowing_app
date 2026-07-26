@@ -1,7 +1,7 @@
 import type { MapPosition } from './api';
 
 const TICK_MS = 100;
-const MAX_EXTRAPOLATE_SEC = 6;
+const MAX_EXTRAPOLATE_SEC = 1;
 const MIN_SPEED_MPS = 0.25;
 const GPS_LIVE_SEC = 30;
 
@@ -73,9 +73,7 @@ function destinationLatLon(
 }
 
 function anchorLatLon(p: MapPosition): { lat: number; lon: number } {
-  const slat = p.smoothLatitude ?? p.latitude;
-  const slon = p.smoothLongitude ?? p.longitude;
-  return { lat: slat, lon: slon };
+  return { lat: p.latitude, lon: p.longitude };
 }
 
 function fixMsFor(p: MapPosition): number {

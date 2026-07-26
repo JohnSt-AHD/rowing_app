@@ -18,7 +18,7 @@ const GPS_LIVE_SEC = 30;
 const TELEMETRY_STALE_SEC = GPS_LIVE_SEC;
 const GPS_STALE_SEC = 300;
 /** Dead-reckoning cap after last fix (seconds). */
-const MAP_INTERPOLATE_MAX_SEC = 8;
+const MAP_INTERPOLATE_MAX_SEC = 1;
 const MAP_INTERPOLATE_MIN_SPEED_MPS = 0.25;
 const MAP_INTERPOLATE_TICK_MS = 100;
 const EARTH_RADIUS_M = 6371000;
@@ -291,12 +291,7 @@ function positionFixMs(p) {
 }
 
 function mapAnchorLatLon(p) {
-  if (!isSmoothLiveMapEnabled()) {
-    return { lat: p.latitude, lon: p.longitude };
-  }
-  const slat = p.smoothLatitude ?? p.latitude;
-  const slon = p.smoothLongitude ?? p.longitude;
-  if (slat != null && slon != null) return { lat: slat, lon: slon };
+  // Display glide extrapolates from raw fixes (max MAP_INTERPOLATE_MAX_SEC); ignore server smooth* here.
   return { lat: p.latitude, lon: p.longitude };
 }
 
