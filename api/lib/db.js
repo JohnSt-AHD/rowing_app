@@ -1656,9 +1656,16 @@ async function listHistoryDevicesDetailed(orgId) {
 }
 
 async function getTraccarSnapshot(orgId, onlineMs = 120000) {
+  const { listTraccarGeofences } = require('./geofence');
   const devices = await listRegistryDevices(orgId);
   const positions = await getLatestTraccarPositions(orgId, onlineMs);
-  return { devices, positions, geofences: [], groups: [] };
+  let geofences = [];
+  try {
+    geofences = listTraccarGeofences(await listGeofences(orgId));
+  } catch (err) {
+    console.error('[db] geofence list for snapshot failed:', err);
+  }
+  return { devices, positions, geofences, groups: [] };
 }
 
 async function listSessions(orgId, uniqueId, limit = 100) {

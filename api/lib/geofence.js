@@ -200,6 +200,56 @@ function findSuppressRecordingAt(lat, lon, geofences) {
   return null;
 }
 
+/** Traccar WKT `area` string for RowSafe / traccar-overlay consumers. */
+function toTraccarArea(g) {
+  if (!g || g.enabled === false) return null;
+  if (g.shapeType === 'polygon') {
+    const ring = g.polygonCoords;
+    if (!Array.isArray(ring) || ring.length < 3) return null;
+    const pts = ring
+      .map((pt) => {
+        const lat = Number(pt[0]);
+        const lon = Number(pt[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+        return `${lat} ${lon}`;
+      })
+      .filter(Boolean);
+    if (pts.length < 3) return null;
+    return `POLYGON ((${pts.join(', ')}))`;
+  }
+  const lat = Number(g.centerLat);
+  const lon = Number(g.centerLon);
+  const radiusM = Number(g.radiusM);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(radiusM) || radiusM <= 0) {
+    return null;
+  }
+  return `CIRCLE (${lat} ${lon}, ${radiusM})`;
+}
+
+/** Traccar-compatible geofence object ({ id, name, area }) for live maps. */
+function toTraccarGeofence(g) {
+  const norm = g && g.shapeType != null ? g : normalizeGeofence(g);
+  const area = toTraccarArea(norm);
+  if (!area) return null;
+  return {
+    id: norm.id,
+    name: norm.name,
+    area,
+    attributes: {},
+  };
+}
+
+/** Map CrewSight geofences to Traccar snapshot shape (skips disabled / invalid geometry). */
+function listTraccarGeofences(geofences) {
+  if (!Array.isArray(geofences)) return [];
+  const out = [];
+  for (const g of geofences) {
+    const t = toTraccarGeofence(g);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
 module.exports = {
   distanceM,
   pointInCircle,
@@ -215,4 +265,7 @@ module.exports = {
   economyIntervalSecFromInput,
   sessionDwellSecFromInput,
   boolFromInput,
+  toTraccarArea,
+  toTraccarGeofence,
+  listTraccarGeofences,
 };
