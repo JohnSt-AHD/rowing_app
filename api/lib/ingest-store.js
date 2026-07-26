@@ -1751,17 +1751,17 @@ async function listDevices(orgId, opts = {}) {
 
   if (hasPostgres) {
     try {
-      // Registry-only for live polls. Do NOT scan rnz_samples here; those
-      // queries can outlive request handling and trigger Vercel 504s.
-      const [registryGps, registryTimes, rowingTel, dbCapsizeAlerts, batteryByDevice, strokeByDevice, motionByDevice] =
+      // Registry-only for live polls. Do NOT scan rnz_samples for motion/path-pace
+      // here — those queries duplicate /api/map-positions and can 504 on Vercel.
+      const telemetryWindowMs = Math.min(Math.max(windowMs, 60000), 120000);
+      const [registryGps, registryTimes, rowingTel, dbCapsizeAlerts, batteryByDevice, strokeByDevice] =
         await Promise.all([
         db.getRegistryGpsByDevice(orgId),
         db.getDeviceRegistryTimes(orgId),
-        db.getLatestRowingTelemetry(orgId, Math.max(windowMs, 120000)),
+        db.getLatestRowingTelemetry(orgId, telemetryWindowMs),
         loadDbCapsizeAlerts(orgId),
         db.getLatestBatteryByDevice(orgId),
-        db.getLatestStrokeByDevice(orgId, Math.max(windowMs, 120000)),
-        db.getRecentMotionByDevice(orgId, Math.max(windowMs, 90000)),
+        db.getLatestStrokeByDevice(orgId, telemetryWindowMs),
       ]);
 
       for (const [deviceId, regFix] of registryGps) {
@@ -1830,7 +1830,7 @@ async function listDevices(orgId, opts = {}) {
           rowingTel.get(dev.deviceId),
           batteryByDevice.get(dev.deviceId),
           strokeByDevice.get(dev.deviceId),
-          motionByDevice.get(dev.deviceId),
+          null,
           now,
         );
       }
@@ -1865,22 +1865,7 @@ async function listDevices(orgId, opts = {}) {
   const devices = [...byDevice.values()].sort(
     (a, b) => b.lastSeenMs - a.lastSeenMs,
   );
-  const pathTelemetry = samplesByDeviceForWindow(
-    orgId,
-    Math.max(windowMs, PATH_PACE_WINDOW_MS),
-  );
-  const pathFixesByDevice = await loadPathPaceFixesByDevice(
-    orgId,
-    PATH_PACE_WINDOW_MS,
-    pathTelemetry,
-  );
-  attachPathPaceToDevices(devices, pathFixesByDevice, orgId);
-  const strokeReadingsByDevice = await loadStrokeRateReadingsByDevice(
-    orgId,
-    STROKE_MEDIAN_WINDOW_MS,
-    pathTelemetry,
-  );
-  attachStrokeMedianToDevices(devices, strokeReadingsByDevice);
+  // Path pace + stroke median live on /api/map-positions (dashboard/coach merge map data).
   const onlineDevices = devices.filter((d) => d.online);
   const gpsAges = onlineDevices
     .map((d) => gpsHealthAgeSec(d.gps))
