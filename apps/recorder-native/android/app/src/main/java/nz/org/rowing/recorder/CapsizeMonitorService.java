@@ -186,6 +186,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private double lastUploadedLon = Double.NaN;
     private Location latestGpsLocation;
     private long latestGpsCachedWallMs;
+    /** Raw Android fix clock from last fused/legacy delivery (debug: gps.fixMs). */
+    private long latestGpsRawFixClockMs;
     /** Last fused/legacy callback — detect when Android stops delivering fixes. */
     private long lastFusedDeliveryWallMs;
     private final ArrayList<GpsWindowFix> gpsWindowBuffer = new ArrayList<>();
@@ -305,6 +307,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastBatteryReportMs = 0L;
         lastGpsUploadWallMs = 0L;
         lastGpsSampleOfferedMs = 0L;
+        latestGpsRawFixClockMs = 0L;
         lastUploadedFixTimeMs = 0L;
         lastUploadedGpsBucket = -1L;
         lastStaleGpsPiggybackWallMs = 0L;
@@ -477,6 +480,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (!enableGps || location == null) return;
         latestGpsLocation = location;
         latestGpsCachedWallMs = System.currentTimeMillis();
+        long rawFix = location.getTime();
+        long now = System.currentTimeMillis();
+        if (rawFix > 0L && rawFix <= now + 5_000L) {
+            latestGpsRawFixClockMs = rawFix;
+        }
         saveLastGpsToPrefs(location, ingestTimeMs(location), nativeGpsCount);
     }
 
@@ -984,6 +992,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (location.hasAltitude()) {
             gps.put("alt", Math.round(location.getAltitude() * 10) / 10.0);
         }
+        if (latestGpsRawFixClockMs > 0L) {
+            gps.put("fixMs", latestGpsRawFixClockMs);
+        }
         return gps;
     }
 
@@ -1368,19 +1379,23 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void saveLastGpsToPrefs(Location location, long t, int count) {
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-            .edit()
-            .putLong("lastGpsT", t)
-            .putFloat("lastGpsLat", (float) location.getLatitude())
-            .putFloat("lastGpsLon", (float) location.getLongitude())
-            .putFloat(
-                "lastGpsSpd",
-                location.hasSpeed() && location.getSpeed() >= 0f ? location.getSpeed() : -1f)
-            .putFloat(
-                "lastGpsAcc",
-                location.hasAccuracy() ? location.getAccuracy() : -1f)
-            .putInt("nativeGpsCount", count)
-            .apply();
+        SharedPreferences.Editor ed =
+            getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putLong("lastGpsT", t)
+                .putFloat("lastGpsLat", (float) location.getLatitude())
+                .putFloat("lastGpsLon", (float) location.getLongitude())
+                .putFloat(
+                    "lastGpsSpd",
+                    location.hasSpeed() && location.getSpeed() >= 0f ? location.getSpeed() : -1f)
+                .putFloat(
+                    "lastGpsAcc",
+                    location.hasAccuracy() ? location.getAccuracy() : -1f)
+                .putInt("nativeGpsCount", count);
+        if (latestGpsRawFixClockMs > 0L) {
+            ed.putLong("lastGpsFixMs", latestGpsRawFixClockMs);
+        }
+        ed.apply();
     }
 
     private void saveConfigFromIntent(Intent intent) {
@@ -1485,6 +1500,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             if (spd >= 0f) gps.put("spd", spd);
             float acc = p.getFloat("lastGpsAcc", -1f);
             if (acc >= 0f) gps.put("acc", acc);
+            long fixMs = p.getLong("lastGpsFixMs", 0L);
+            if (fixMs > 0L) gps.put("fixMs", fixMs);
             ret.put("lastGps", gps);
         }
         ret.put("nativeGpsCount", p.getInt("nativeGpsCount", 0));
@@ -2473,6 +2490,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastBatteryReportMs = 0L;
         lastGpsUploadWallMs = 0L;
         lastGpsSampleOfferedMs = 0L;
+        latestGpsRawFixClockMs = 0L;
         lastUploadedFixTimeMs = 0L;
         lastUploadedGpsBucket = -1L;
         lastStaleGpsPiggybackWallMs = 0L;

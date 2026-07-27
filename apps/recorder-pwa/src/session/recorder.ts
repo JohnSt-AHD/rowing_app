@@ -753,6 +753,7 @@ export async function startRecorder(
                 spd: r.spd,
                 hdg: r.hdg,
                 alt: r.alt,
+                ...(r.fixMs != null ? { fixMs: r.fixMs } : {}),
               },
               hr: latestHr,
               motion: latestMotion,

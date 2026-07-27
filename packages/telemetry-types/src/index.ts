@@ -10,6 +10,8 @@ export type GpsSample = {
   /** Magnetometer / device compass (degrees). Omitted when hardware has no compass. */
   compass?: number;
   alt?: number;
+  /** Android/Geolocation fix clock (ms) — when the position was measured, not upload time. */
+  fixMs?: number;
 };
 
 export type MotionSample = {

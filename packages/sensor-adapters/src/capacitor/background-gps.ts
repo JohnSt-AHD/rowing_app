@@ -49,6 +49,7 @@ export function startBackgroundGpsWatcher(
 
       onReading({
         t: fixMs,
+        fixMs,
         lat: location.latitude,
         lon: location.longitude,
         acc: location.accuracy,

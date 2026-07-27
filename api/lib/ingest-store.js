@@ -339,7 +339,38 @@ function gpsFromSample(sample, { forTrack = false } = {}) {
     sample.gps.compass != null && Number.isFinite(Number(sample.gps.compass))
       ? Number(sample.gps.compass)
       : null;
-  return { t, lat, lon, acc, spd, hdg, compass };
+  const fixMs = gpsFixMsFromSample(sample);
+  return {
+    t,
+    lat,
+    lon,
+    acc,
+    spd,
+    hdg,
+    compass,
+    ...(fixMs != null ? { fixMs } : {}),
+  };
+}
+
+/** Debug timing from upload sample clock vs satellite fix clock (Phase 1 — no behaviour change). */
+function gpsDebugTiming(now, uploadT, fixMs) {
+  const uploadMs = Number(uploadT);
+  const fixClockMs = Number(fixMs);
+  if (!Number.isFinite(uploadMs)) return { gpsFixAgeSec: null, uploadLagSec: null };
+  const gpsFixAgeSec =
+    Number.isFinite(fixClockMs) && fixClockMs > 0
+      ? Math.max(0, Math.round((now - fixClockMs) / 1000))
+      : null;
+  const uploadLagSec =
+    Number.isFinite(fixClockMs) && fixClockMs > 0
+      ? Math.max(0, Math.round((uploadMs - fixClockMs) / 1000))
+      : null;
+  return { gpsFixAgeSec, uploadLagSec };
+}
+
+function gpsFixMsFromSample(sample) {
+  const fixMs = Number(sample?.gps?.fixMs);
+  return Number.isFinite(fixMs) && fixMs > 0 ? fixMs : null;
 }
 
 function sampleHasCapsize(sample) {
@@ -1253,7 +1284,14 @@ function sensorStats(samples, windowMs, deviceId) {
     if (s.gps && s.gps.lat != null && s.gps.lon != null) {
       gpsCount++;
       gpsTimes.push(s.t);
-      lastGps = { t: s.t, lat: s.gps.lat, lon: s.gps.lon, acc: s.gps.acc };
+      const fixMs = gpsFixMsFromSample(s);
+      lastGps = {
+        t: s.t,
+        lat: s.gps.lat,
+        lon: s.gps.lon,
+        acc: s.gps.acc,
+        ...(fixMs != null ? { fixMs } : {}),
+      };
     }
     if (s.motion && s.motion.ax != null) {
       motionCount++;
@@ -1296,6 +1334,7 @@ function sensorStats(samples, windowMs, deviceId) {
   const latestGpsFix = latestGpsFromSamples(samples);
   const gpsLast = latestGpsFix ?? lastGps;
   const gpsAgeSec = gpsLast ? Math.round((now - gpsLast.t) / 1000) : null;
+  const { gpsFixAgeSec, uploadLagSec } = gpsDebugTiming(now, gpsLast?.t, gpsLast?.fixMs);
 
   return {
     gps: {
@@ -1304,6 +1343,8 @@ function sensorStats(samples, windowMs, deviceId) {
       count: gpsCount,
       last: gpsLast,
       ageSec: gpsAgeSec,
+      gpsFixAgeSec,
+      uploadLagSec,
     },
     motion: {
       present: motionCount > 0,
@@ -1651,6 +1692,8 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
   const gpsDisplayAgeSec = displayGpsAgeSec(fixAgeSec, gpsIngestAgoSec);
   const fixClockLagSec =
     fixAgeSec != null && gpsIngestAgoSec != null ? fixAgeSec - gpsIngestAgoSec : null;
+  const gpsFixAgeSec = stats.gps?.gpsFixAgeSec ?? null;
+  const uploadLagSec = stats.gps?.uploadLagSec ?? null;
   return {
     deviceId: entry.deviceId,
     athleteId: entry.athleteId || null,
@@ -1666,6 +1709,8 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
       ingestAgoSec: gpsIngestAgoSec,
       displayAgeSec: gpsDisplayAgeSec,
       fixClockLagSec,
+      gpsFixAgeSec,
+      uploadLagSec,
     },
     heartbeat,
     battery,
@@ -2052,6 +2097,7 @@ function buildRawMapPositionFromFix({
 }) {
   const fixMs = fix.t;
   const lastSeen = Math.max(fixMs, lastSeenMs || 0);
+  const { gpsFixAgeSec, uploadLagSec } = gpsDebugTiming(now, fix.t, fix.fixMs);
   return {
     deviceId: String(deviceId),
     athleteId: athleteId || null,
@@ -2062,6 +2108,9 @@ function buildRawMapPositionFromFix({
     course: fix.hdg != null && Number.isFinite(fix.hdg) ? fix.hdg : null,
     fixMs,
     fixAgeSec: Math.round((now - fixMs) / 1000),
+    gpsFixMs: fix.fixMs ?? null,
+    gpsFixAgeSec,
+    uploadLagSec,
     lastSeenAgoSec: Math.round((now - lastSeen) / 1000),
     online: Boolean(online),
     hr: hr ?? null,
@@ -2213,6 +2262,7 @@ function applyRegistryGpsToDevice(device, registryFix, now) {
   const currentT = gps.last?.t ?? 0;
   if (registryFix.t <= currentT) return device;
   const ageSec = Math.round((now - registryFix.t) / 1000);
+  const { gpsFixAgeSec, uploadLagSec } = gpsDebugTiming(now, registryFix.t, registryFix.fixMs);
   return {
     ...device,
     gps: {
@@ -2223,9 +2273,12 @@ function applyRegistryGpsToDevice(device, registryFix, now) {
         lat: registryFix.lat,
         lon: registryFix.lon,
         acc: registryFix.acc,
+        ...(registryFix.fixMs != null ? { fixMs: registryFix.fixMs } : {}),
         ...(registryFix.spd != null ? { spd: registryFix.spd } : {}),
       },
       ageSec,
+      gpsFixAgeSec,
+      uploadLagSec,
     },
   };
 }

@@ -430,6 +430,11 @@ export function mountApp(root: HTMLElement): void {
         const upSec = up >= 0 ? Math.round(up / 1000) : '?';
         const fusedSec = fused >= 0 ? Math.round(fused / 1000) : '?';
         gpsDiag = `GPS↑${upSec}s fused↑${fusedSec}s`;
+        const lastFixMs = np.lastGps?.fixMs;
+        const uploadT = np.lastGps?.t;
+        if (lastFixMs != null && uploadT != null && uploadT > lastFixMs) {
+          gpsDiag += ` lag↑${Math.round((uploadT - lastFixMs) / 1000)}s`;
+        }
         if ((np.heartbeatGpsCount ?? 0) > 0) {
           gpsDiag += ` hbGps=${np.heartbeatGpsCount}`;
         }

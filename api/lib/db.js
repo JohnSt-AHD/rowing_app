@@ -158,6 +158,8 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_accuracy DOUBLE PRECISION`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_speed DOUBLE PRECISION`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_ingest_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE rnz_samples ADD COLUMN IF NOT EXISTS gps_fix_ms BIGINT`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_fix_ms BIGINT`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_active BOOLEAN NOT NULL DEFAULT false`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_at TIMESTAMPTZ`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_cleared_at TIMESTAMPTZ`;
@@ -601,18 +603,23 @@ async function insertSamples(orgId, sessionId, deviceRef, uniqueId, samples) {
           ? Math.round(Number(d.batteryPct))
           : null,
       heartbeat: d.heartbeat === true ? true : null,
+      gps_fix_ms:
+        s.gps?.fixMs != null && Number.isFinite(Number(s.gps.fixMs))
+          ? Number(s.gps.fixMs)
+          : null,
     };
   });
   await sql`
     INSERT INTO rnz_samples (
       org_id, session_id, device_ref, unique_id, t_ms,
       latitude, longitude, accuracy, speed, course, compass_deg, altitude,
-      hr, ax, ay, az, stroke_rate, capsize, tilt_deg, battery_pct, heartbeat
+      hr, ax, ay, az, stroke_rate, capsize, tilt_deg, battery_pct, heartbeat, gps_fix_ms
     )
     SELECT
       ${orgId}::int, ${sessionId}::text, ${deviceRef}::int, ${uniqueId}::text,
       x.t_ms, x.latitude, x.longitude, x.accuracy, x.speed, x.course, x.compass_deg, x.altitude,
-      x.hr, x.ax, x.ay, x.az, x.stroke_rate, x.capsize, x.tilt_deg, x.battery_pct, x.heartbeat
+      x.hr, x.ax, x.ay, x.az, x.stroke_rate, x.capsize, x.tilt_deg, x.battery_pct, x.heartbeat,
+      x.gps_fix_ms
     FROM jsonb_to_recordset(${JSON.stringify(packed)}::jsonb) AS x(
       t_ms bigint,
       latitude double precision,
@@ -630,7 +637,8 @@ async function insertSamples(orgId, sessionId, deviceRef, uniqueId, samples) {
       capsize boolean,
       tilt_deg double precision,
       battery_pct smallint,
-      heartbeat boolean
+      heartbeat boolean,
+      gps_fix_ms bigint
     )
   `;
 }
@@ -671,8 +679,13 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
     const t = Number(s.t);
     if (!Number.isFinite(t)) continue;
     if (!best || t >= best.t) {
+      const fixMs =
+        s.gps?.fixMs != null && Number.isFinite(Number(s.gps.fixMs))
+          ? Number(s.gps.fixMs)
+          : null;
       best = {
         t,
+        fixMs,
         lat: Number(lat),
         lon: Number(lon),
         acc:
@@ -706,6 +719,7 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
   await sql`
     UPDATE rnz_devices
     SET last_gps_t_ms = ${best.t},
+        last_gps_fix_ms = ${best.fixMs ?? null},
         last_lat = ${best.lat},
         last_lon = ${best.lon},
         last_gps_accuracy = ${best.acc},
@@ -1507,7 +1521,7 @@ async function getRegistryMapPositions(orgId, onlineMs, staleMs) {
   const staleCutoff = now - staleMs;
   const rows = await sql`
     SELECT unique_id, athlete_id, last_seen_at,
-      last_gps_t_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed
+      last_gps_t_ms, last_gps_fix_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed
     FROM rnz_devices
     WHERE org_id = ${orgId}
       AND last_gps_t_ms IS NOT NULL
@@ -1517,10 +1531,18 @@ async function getRegistryMapPositions(orgId, onlineMs, staleMs) {
   `;
   return rows.rows.map((row) => {
     const fixMs = Number(row.last_gps_t_ms);
+    const gpsFixMs =
+      row.last_gps_fix_ms != null && Number.isFinite(Number(row.last_gps_fix_ms))
+        ? Number(row.last_gps_fix_ms)
+        : null;
     const lastSeenMs = Math.max(
       fixMs,
       new Date(row.last_seen_at).getTime(),
     );
+    const gpsFixAgeSec =
+      gpsFixMs != null ? Math.max(0, Math.round((now - gpsFixMs) / 1000)) : null;
+    const uploadLagSec =
+      gpsFixMs != null ? Math.max(0, Math.round((fixMs - gpsFixMs) / 1000)) : null;
     return {
       deviceId: String(row.unique_id),
       athleteId: row.athlete_id || null,
@@ -1530,6 +1552,9 @@ async function getRegistryMapPositions(orgId, onlineMs, staleMs) {
       speed: null,
       fixMs,
       fixAgeSec: Math.round((now - fixMs) / 1000),
+      gpsFixMs,
+      gpsFixAgeSec,
+      uploadLagSec,
       lastSeenAgoSec: Math.round((now - lastSeenMs) / 1000),
       online: now - lastSeenMs <= onlineMs,
       hr: null,
@@ -1584,18 +1609,23 @@ async function getRegistryGpsByDevice(orgId) {
   const sql = await getSql();
   await ensureOrgsBootstrapped();
   const rows = await sql`
-    SELECT unique_id, last_gps_t_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed
+    SELECT unique_id, last_gps_t_ms, last_gps_fix_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed
     FROM rnz_devices
     WHERE org_id = ${orgId}
       AND last_gps_t_ms IS NOT NULL
       AND last_lat IS NOT NULL
       AND last_lon IS NOT NULL
   `;
-  /** @type {Map<string, { t: number, lat: number, lon: number, acc: number|null }>} */
+  /** @type {Map<string, { t: number, fixMs?: number|null, lat: number, lon: number, acc: number|null }>} */
   const byDevice = new Map();
   for (const row of rows.rows) {
+    const fixMs =
+      row.last_gps_fix_ms != null && Number.isFinite(Number(row.last_gps_fix_ms))
+        ? Number(row.last_gps_fix_ms)
+        : null;
     byDevice.set(String(row.unique_id), {
       t: Number(row.last_gps_t_ms),
+      ...(fixMs != null ? { fixMs } : {}),
       lat: row.last_lat,
       lon: row.last_lon,
       acc: row.last_gps_accuracy,

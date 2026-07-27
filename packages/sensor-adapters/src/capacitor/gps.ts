@@ -29,6 +29,7 @@ function startForegroundGpsWatcher(
       const c = pos.coords;
       last = {
         t: pos.timestamp ?? Date.now(),
+        fixMs: pos.timestamp ?? undefined,
         lat: c.latitude,
         lon: c.longitude,
         acc: c.accuracy,
@@ -55,6 +56,7 @@ function startForegroundGpsWatcher(
         const c = pos.coords;
         last = {
           t: pos.timestamp ?? Date.now(),
+          fixMs: pos.timestamp ?? undefined,
           lat: c.latitude,
           lon: c.longitude,
           acc: c.accuracy,

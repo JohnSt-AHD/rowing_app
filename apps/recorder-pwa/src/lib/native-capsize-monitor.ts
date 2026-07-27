@@ -44,7 +44,7 @@ export type NativeGeofenceStandbyConfig = {
 };
 
 export type NativeRecordingPulse = {
-  lastGps?: { t: number; lat: number; lon: number; spd?: number; acc?: number };
+  lastGps?: { t: number; lat: number; lon: number; spd?: number; acc?: number; fixMs?: number };
   nativeGpsCount?: number;
   /** GPS fixes sent on heartbeat fallback (timer stall). */
   heartbeatGpsCount?: number;

@@ -4,6 +4,7 @@ function positionToReading(pos: GeolocationPosition): GpsReading {
   const c = pos.coords;
   return {
     t: pos.timestamp,
+    fixMs: pos.timestamp,
     lat: c.latitude,
     lon: c.longitude,
     acc: c.accuracy,
