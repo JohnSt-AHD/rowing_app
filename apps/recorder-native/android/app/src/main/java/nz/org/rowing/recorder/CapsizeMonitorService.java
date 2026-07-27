@@ -1124,11 +1124,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 }
             }
             if (appendFreshStrokeRate(derived)) hasDerived = true;
-            loadEconomyFromPrefs();
-            if (economyActive) {
-                derived.put("inBoatPark", true);
-                hasDerived = true;
-            }
+            if (appendEconomyDerived(derived)) hasDerived = true;
             if (hasDerived) sample.put("derived", derived);
             offerIngestSample(sample, flushNow);
             markGpsSampleOffered(t);
@@ -1148,6 +1144,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 lastBatteryReportMs = t;
                 Log.i(TAG, "Session start battery " + batteryPct + "%");
             }
+            appendEconomyDerived(derived);
             JSONObject sample = new JSONObject();
             sample.put("t", t);
             sample.put("derived", derived);
@@ -1177,6 +1174,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                     Log.i(TAG, "Including battery " + batteryPct + "% on heartbeat");
                 }
             }
+            appendEconomyDerived(derived);
             JSONObject sample = new JSONObject();
             sample.put("t", t);
             sample.put("derived", derived);
@@ -1210,6 +1208,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             JSONObject derived = new JSONObject();
             derived.put("capsize", true);
             derived.put("tiltDeg", tiltDeg);
+            appendEconomyDerived(derived);
             JSONObject motion = new JSONObject();
             motion.put("ax", Math.round(ax * 100) / 100.0);
             motion.put("ay", Math.round(ay * 100) / 100.0);
@@ -2179,6 +2178,14 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return true;
     }
 
+    /** Mirrors recorder.ts derived.inBoatPark for server/debug visibility. */
+    private boolean appendEconomyDerived(JSONObject derived) throws org.json.JSONException {
+        loadEconomyFromPrefs();
+        if (!economyActive) return false;
+        derived.put("inBoatPark", true);
+        return true;
+    }
+
     private void normalizeUpright() {
         float mag = (float) Math.sqrt(uprightX * uprightX + uprightY * uprightY + uprightZ * uprightZ);
         if (mag < 1e-3f) return;
@@ -2504,7 +2511,24 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         mirrorSessionPrefsToDeviceProtected(getApplicationContext());
         Log.i(TAG, "Geofence auto-start — new session " + sessionId.substring(0, 8));
         enterRecordingModeFromStandby();
-        uploadExecutor.execute(() -> enqueueSessionStartSample(startedAt));
+        final String ingestToken = p.getString("ingestToken", "");
+        uploadExecutor.execute(
+                () -> {
+                    boolean synced =
+                            GeofenceSyncHelper.fetchAndSaveGeofences(
+                                    getApplicationContext(), ingestUrl, ingestToken);
+                    if (synced) {
+                        mainHandler.post(
+                                () -> {
+                                    Location loc = latestGpsLocation;
+                                    if (loc != null) {
+                                        maybeApplyGeofenceEconomy(
+                                                loc.getLatitude(), loc.getLongitude());
+                                    }
+                                });
+                    }
+                    enqueueSessionStartSample(startedAt);
+                });
         updateRecordingNotification("Session auto-started — GPS tracking active");
     }
 

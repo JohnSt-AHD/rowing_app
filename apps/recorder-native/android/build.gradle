@@ -17,6 +17,17 @@ buildscript {
 
 apply from: "variables.gradle"
 
+// Use the locally installed JDK (Gradle/Kotlin plugins request 21; JDK 25 is compatible).
+subprojects { sub ->
+    sub.afterEvaluate {
+        if (sub.extensions.findByName("kotlin") != null) {
+            sub.kotlin {
+                jvmToolchain(25)
+            }
+        }
+    }
+}
+
 allprojects {
     repositories {
         google()

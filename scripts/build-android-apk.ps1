@@ -1,6 +1,48 @@
 # Build a sideloadable Android APK (no Android Studio Run button needed).
 # Requires: JDK 17+ and Android SDK (install Android Studio once, or command-line tools).
 $ErrorActionPreference = "Stop"
+
+function Test-JavaHome([string]$javaHome) {
+  if ([string]::IsNullOrWhiteSpace($javaHome)) { return $false }
+  $java = Join-Path $javaHome.TrimEnd('\') "bin\java.exe"
+  return Test-Path $java
+}
+
+function Resolve-JavaHome {
+  param([string]$Preferred)
+
+  if (Test-JavaHome $Preferred) { return $Preferred.TrimEnd('\') }
+
+  $searchRoots = @(
+    "$env:ProgramFiles\Microsoft\jdk*",
+    "$env:ProgramFiles\Eclipse Adoptium\jdk*",
+    "$env:ProgramFiles\Java\jdk*",
+    "$env:ProgramFiles\Android\Android Studio\jbr",
+    "$env:LOCALAPPDATA\Programs\Eclipse Adoptium\jdk*",
+    "$env:LOCALAPPDATA\Programs\Android\Android Studio\jbr"
+  )
+
+  $found = [System.Collections.Generic.List[string]]::new()
+  foreach ($pattern in $searchRoots) {
+    Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object {
+      if (Test-JavaHome $_.FullName) { [void]$found.Add($_.FullName) }
+    }
+  }
+
+  if ($found.Count -eq 0) { return $null }
+  return ($found | Sort-Object Name -Descending | Select-Object -First 1)
+}
+
+$resolvedJavaHome = Resolve-JavaHome $env:JAVA_HOME
+if (-not $resolvedJavaHome) {
+  Write-Host "No JDK found. Install JDK 17+ or Android Studio, or set JAVA_HOME." -ForegroundColor Red
+  exit 1
+}
+if ($env:JAVA_HOME -ne $resolvedJavaHome) {
+  Write-Host "Using JAVA_HOME: $resolvedJavaHome" -ForegroundColor Yellow
+  $env:JAVA_HOME = $resolvedJavaHome
+}
+
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $native = Join-Path $root "apps\recorder-native"
 $android = Join-Path $native "android"
@@ -24,7 +66,8 @@ if (-not (Test-Path (Join-Path $android "gradlew.bat"))) {
 
 Write-Host "==> Gradle assembleDebug (first run may take several minutes)..." -ForegroundColor Cyan
 Push-Location $android
-.\gradlew.bat assembleDebug
+$gradleHomeArg = "-Dorg.gradle.java.home=$resolvedJavaHome"
+.\gradlew.bat assembleDebug $gradleHomeArg "-Dorg.gradle.java.installations.auto-download=false"
 if ($LASTEXITCODE -ne 0) {
   Write-Host "Gradle failed. Install Android Studio and open the project once, or set ANDROID_HOME." -ForegroundColor Red
   exit $LASTEXITCODE

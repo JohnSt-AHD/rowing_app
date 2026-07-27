@@ -835,6 +835,9 @@ export function mountApp(root: HTMLElement): void {
     if (recording) return;
     clearStandbyUi();
     const s = loadSettings();
+    if (IS_NATIVE && opts?.skipNativeStart) {
+      await syncGeofencesToNative(s);
+    }
     if (IS_NATIVE && !opts?.skipPermissions) {
       try {
         const p = await requestNativePermissions();
@@ -978,6 +981,9 @@ export function mountApp(root: HTMLElement): void {
       const persisted = getPersistedRecording();
       const native = await getNativeActiveSession();
       const s = loadSettings();
+      if (IS_NATIVE) {
+        await syncGeofencesToNative(s);
+      }
       const resumeSessionId = native?.sessionId ?? persisted?.sessionId ?? '';
       const storedResume = resumeSessionId
         ? await getSession(resumeSessionId)
@@ -1159,8 +1165,12 @@ export function mountApp(root: HTMLElement): void {
   if (IS_NATIVE) {
     const onForegroundResume = () => {
       if (document.visibilityState !== 'visible') return;
-      if (recording) return;
       void (async () => {
+        const s = loadSettings();
+        if (IS_NATIVE) {
+          await syncGeofencesToNative(s);
+        }
+        if (recording) return;
         const native = await getNativeActiveSession();
         if (native?.active) {
           await tryAutoResume('Recording still active — restoring session controls…');
