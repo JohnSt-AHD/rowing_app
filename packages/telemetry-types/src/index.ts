@@ -12,6 +12,10 @@ export type GpsSample = {
   alt?: number;
   /** Android/Geolocation fix clock (ms) — when the position was measured, not upload time. */
   fixMs?: number;
+  /** fused / gps / network — underlying Android provider when known. */
+  provider?: string;
+  /** How this fix was produced on device (window_avg, heartbeat_cache, etc.). */
+  sampleSource?: string;
 };
 
 export type MotionSample = {

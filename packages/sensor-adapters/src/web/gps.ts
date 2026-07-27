@@ -11,6 +11,7 @@ function positionToReading(pos: GeolocationPosition): GpsReading {
     spd: c.speed ?? undefined,
     hdg: c.heading ?? undefined,
     alt: c.altitude ?? undefined,
+    sampleSource: 'web',
   };
 }
 

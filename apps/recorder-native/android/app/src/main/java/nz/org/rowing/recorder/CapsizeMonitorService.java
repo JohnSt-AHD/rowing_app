@@ -188,6 +188,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private long latestGpsCachedWallMs;
     /** Raw Android fix clock from last fused/legacy delivery (debug: gps.fixMs). */
     private long latestGpsRawFixClockMs;
+    /** Underlying fused/gps/network provider from last real delivery. */
+    private String latestGpsProvider;
     /** Last fused/legacy callback — detect when Android stops delivering fixes. */
     private long lastFusedDeliveryWallMs;
     private final ArrayList<GpsWindowFix> gpsWindowBuffer = new ArrayList<>();
@@ -480,6 +482,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (!enableGps || location == null) return;
         latestGpsLocation = location;
         latestGpsCachedWallMs = System.currentTimeMillis();
+        String provider = location.getProvider();
+        if (provider != null
+                && !provider.isEmpty()
+                && !"weighted".equals(provider)
+                && !"cached".equals(provider)) {
+            latestGpsProvider = provider;
+        }
         long rawFix = location.getTime();
         long now = System.currentTimeMillis();
         if (rawFix > 0L && rawFix <= now + 5_000L) {
@@ -641,6 +650,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /** One accuracy-weighted GPS sample per report interval (KRI window model). */
     private void uploadWindowAverageGps(boolean scheduledTick) {
+        uploadWindowAverageGps(scheduledTick, null);
+    }
+
+    private void uploadWindowAverageGps(boolean scheduledTick, String forcedSampleSource) {
         if (!enableGps || uploadExecutor == null || uploadExecutor.isShutdown()) return;
         long interval = Math.max(GPS_COLLECT_INTERVAL_MS, effectiveGpsIntervalMs());
         long ingestT = System.currentTimeMillis();
@@ -649,7 +662,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             if (System.currentTimeMillis() - lastGpsUploadWallMs < interval) return;
             bucket = lastUploadedGpsBucket + 1;
         }
-        Location uploadLoc = weightedAverageWindowLocation();
+        Location windowAvg = weightedAverageWindowLocation();
+        Location uploadLoc = windowAvg;
         if (uploadLoc == null) {
             uploadLoc = latestGpsLocation;
         }
@@ -670,7 +684,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         gpsWindowBuffer.clear();
         final Location averagedLoc = uploadLoc;
         final long sampleT = ingestT;
-        uploadExecutor.execute(() -> enqueueGpsSample(averagedLoc, sampleT));
+        final String sampleSource =
+                forcedSampleSource != null
+                        ? forcedSampleSource
+                        : windowAvg != null
+                                ? "window_avg"
+                                : isGpsFixFresh(uploadLoc) ? "direct" : "scheduled_cache";
+        uploadExecutor.execute(() -> enqueueGpsSample(averagedLoc, sampleT, false, sampleSource));
     }
 
     /** In-memory cache, then SharedPreferences last good fix. */
@@ -972,10 +992,18 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void enqueueGpsSample(Location location, long t) {
-        enqueueGpsSample(location, t, false);
+        enqueueGpsSample(location, t, false, "direct");
     }
 
-    private JSONObject buildGpsJson(Location location) throws Exception {
+    private String resolveGpsProvider(Location location) {
+        if (location == null) return latestGpsProvider;
+        String provider = location.getProvider();
+        if (provider == null || provider.isEmpty()) return latestGpsProvider;
+        if ("weighted".equals(provider) || "cached".equals(provider)) return latestGpsProvider;
+        return provider;
+    }
+
+    private JSONObject buildGpsJson(Location location, String sampleSource) throws Exception {
         JSONObject gps = new JSONObject();
         gps.put("lat", location.getLatitude());
         gps.put("lon", location.getLongitude());
@@ -995,6 +1023,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (latestGpsRawFixClockMs > 0L) {
             gps.put("fixMs", latestGpsRawFixClockMs);
         }
+        String provider = resolveGpsProvider(location);
+        if (provider != null && !provider.isEmpty()) gps.put("provider", provider);
+        if (sampleSource != null && !sampleSource.isEmpty()) gps.put("sampleSource", sampleSource);
         return gps;
     }
 
@@ -1009,7 +1040,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return false;
         }
         try {
-            sample.put("gps", buildGpsJson(loc));
+            sample.put("gps", buildGpsJson(loc, "heartbeat_cache"));
             return true;
         } catch (Exception e) {
             Log.w(TAG, "Heartbeat GPS attach failed", e);
@@ -1054,7 +1085,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         + sinceOffered
                         + "ms ago, ingest still active");
 
-        uploadWindowAverageGps(true);
+        uploadWindowAverageGps(true, "stale_piggyback");
     }
 
     private void markGpsSampleOffered(long t) {
@@ -1063,7 +1094,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         savePulseDiagnostics();
     }
 
-    private void enqueueGpsSample(Location location, long t, boolean flushNow) {
+    private void enqueueGpsSample(Location location, long t, boolean flushNow, String sampleSource) {
         loadEconomyFromPrefs();
         if (suppressRecordingActive) {
             // Keep location cache for geofence checks; do not upload while in suppress zone.
@@ -1072,7 +1103,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         try {
             JSONObject sample = new JSONObject();
             sample.put("t", t);
-            sample.put("gps", buildGpsJson(location));
+            sample.put("gps", buildGpsJson(location, sampleSource));
             if (enableMotion && (lastAx != 0f || lastAy != 0f || lastAz != 0f)) {
                 JSONObject motion = new JSONObject();
                 motion.put("ax", Math.round(lastAx * 100) / 100.0);

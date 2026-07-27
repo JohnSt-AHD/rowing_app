@@ -36,6 +36,7 @@ function startForegroundGpsWatcher(
         spd: c.speed ?? undefined,
         hdg: c.heading ?? undefined,
         alt: c.altitude ?? undefined,
+        sampleSource: 'web',
       };
       onReading(last);
     },
@@ -63,6 +64,7 @@ function startForegroundGpsWatcher(
           spd: c.speed ?? undefined,
           hdg: c.heading ?? undefined,
           alt: c.altitude ?? undefined,
+          sampleSource: 'web',
         };
         onReading(last);
       })

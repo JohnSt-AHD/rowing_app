@@ -160,6 +160,11 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_ingest_at TIMESTAMPTZ`;
   await sql`ALTER TABLE rnz_samples ADD COLUMN IF NOT EXISTS gps_fix_ms BIGINT`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_fix_ms BIGINT`;
+  await sql`ALTER TABLE rnz_samples ADD COLUMN IF NOT EXISTS gps_provider TEXT`;
+  await sql`ALTER TABLE rnz_samples ADD COLUMN IF NOT EXISTS gps_sample_source TEXT`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_compass DOUBLE PRECISION`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_provider TEXT`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS last_gps_sample_source TEXT`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_active BOOLEAN NOT NULL DEFAULT false`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_at TIMESTAMPTZ`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_cleared_at TIMESTAMPTZ`;
@@ -607,19 +612,28 @@ async function insertSamples(orgId, sessionId, deviceRef, uniqueId, samples) {
         s.gps?.fixMs != null && Number.isFinite(Number(s.gps.fixMs))
           ? Number(s.gps.fixMs)
           : null,
+      gps_provider:
+        typeof s.gps?.provider === 'string' && s.gps.provider.trim()
+          ? s.gps.provider.trim().slice(0, 32)
+          : null,
+      gps_sample_source:
+        typeof s.gps?.sampleSource === 'string' && s.gps.sampleSource.trim()
+          ? s.gps.sampleSource.trim().slice(0, 32)
+          : null,
     };
   });
   await sql`
     INSERT INTO rnz_samples (
       org_id, session_id, device_ref, unique_id, t_ms,
       latitude, longitude, accuracy, speed, course, compass_deg, altitude,
-      hr, ax, ay, az, stroke_rate, capsize, tilt_deg, battery_pct, heartbeat, gps_fix_ms
+      hr, ax, ay, az, stroke_rate, capsize, tilt_deg, battery_pct, heartbeat, gps_fix_ms,
+      gps_provider, gps_sample_source
     )
     SELECT
       ${orgId}::int, ${sessionId}::text, ${deviceRef}::int, ${uniqueId}::text,
       x.t_ms, x.latitude, x.longitude, x.accuracy, x.speed, x.course, x.compass_deg, x.altitude,
       x.hr, x.ax, x.ay, x.az, x.stroke_rate, x.capsize, x.tilt_deg, x.battery_pct, x.heartbeat,
-      x.gps_fix_ms
+      x.gps_fix_ms, x.gps_provider, x.gps_sample_source
     FROM jsonb_to_recordset(${JSON.stringify(packed)}::jsonb) AS x(
       t_ms bigint,
       latitude double precision,
@@ -638,7 +652,9 @@ async function insertSamples(orgId, sessionId, deviceRef, uniqueId, samples) {
       tilt_deg double precision,
       battery_pct smallint,
       heartbeat boolean,
-      gps_fix_ms bigint
+      gps_fix_ms bigint,
+      gps_provider text,
+      gps_sample_source text
     )
   `;
 }
@@ -692,6 +708,18 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
           s.gps?.acc != null && Number.isFinite(Number(s.gps.acc))
             ? Number(s.gps.acc)
             : null,
+        compass:
+          s.gps?.compass != null && Number.isFinite(Number(s.gps.compass))
+            ? Number(s.gps.compass)
+            : null,
+        provider:
+          typeof s.gps?.provider === 'string' && s.gps.provider.trim()
+            ? s.gps.provider.trim().slice(0, 32)
+            : null,
+        sampleSource:
+          typeof s.gps?.sampleSource === 'string' && s.gps.sampleSource.trim()
+            ? s.gps.sampleSource.trim().slice(0, 32)
+            : null,
         spd: null,
       };
     }
@@ -724,6 +752,9 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
         last_lon = ${best.lon},
         last_gps_accuracy = ${best.acc},
         last_gps_speed = ${best.spd},
+        last_gps_compass = ${best.compass ?? null},
+        last_gps_provider = ${best.provider ?? null},
+        last_gps_sample_source = ${best.sampleSource ?? null},
         last_gps_ingest_at = NOW()
     WHERE org_id = ${orgId}
       AND unique_id = ${String(uniqueId)}
@@ -1521,7 +1552,8 @@ async function getRegistryMapPositions(orgId, onlineMs, staleMs) {
   const staleCutoff = now - staleMs;
   const rows = await sql`
     SELECT unique_id, athlete_id, last_seen_at,
-      last_gps_t_ms, last_gps_fix_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed
+      last_gps_t_ms, last_gps_fix_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed,
+      last_gps_compass, last_gps_provider, last_gps_sample_source
     FROM rnz_devices
     WHERE org_id = ${orgId}
       AND last_gps_t_ms IS NOT NULL
@@ -1558,6 +1590,12 @@ async function getRegistryMapPositions(orgId, onlineMs, staleMs) {
       lastSeenAgoSec: Math.round((now - lastSeenMs) / 1000),
       online: now - lastSeenMs <= onlineMs,
       hr: null,
+      compass:
+        row.last_gps_compass != null && Number.isFinite(Number(row.last_gps_compass))
+          ? Number(row.last_gps_compass)
+          : null,
+      gpsProvider: row.last_gps_provider || null,
+      gpsSampleSource: row.last_gps_sample_source || null,
     };
   });
 }
@@ -1609,7 +1647,8 @@ async function getRegistryGpsByDevice(orgId) {
   const sql = await getSql();
   await ensureOrgsBootstrapped();
   const rows = await sql`
-    SELECT unique_id, last_gps_t_ms, last_gps_fix_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed
+    SELECT unique_id, last_gps_t_ms, last_gps_fix_ms, last_lat, last_lon, last_gps_accuracy, last_gps_speed,
+      last_gps_compass, last_gps_provider, last_gps_sample_source
     FROM rnz_devices
     WHERE org_id = ${orgId}
       AND last_gps_t_ms IS NOT NULL
@@ -1629,6 +1668,12 @@ async function getRegistryGpsByDevice(orgId) {
       lat: row.last_lat,
       lon: row.last_lon,
       acc: row.last_gps_accuracy,
+      compass:
+        row.last_gps_compass != null && Number.isFinite(Number(row.last_gps_compass))
+          ? Number(row.last_gps_compass)
+          : null,
+      provider: row.last_gps_provider || null,
+      sampleSource: row.last_gps_sample_source || null,
       spd:
         row.last_gps_speed != null && Number.isFinite(Number(row.last_gps_speed))
           ? Number(row.last_gps_speed)
@@ -1921,12 +1966,23 @@ function buildDashboardHistoryFromRows(rows, meta = {}) {
       t,
       lat: hasGps ? row.latitude : null,
       lon: hasGps ? row.longitude : null,
+      acc: hasGps && row.accuracy != null ? Number(row.accuracy) : null,
       speed: row.speed != null ? Number(row.speed) : null,
       hr: row.hr != null ? Number(row.hr) : null,
       strokeRate:
         row.stroke_rate != null ? Number(row.stroke_rate) : null,
       capsize: row.capsize === true,
       tiltDeg: row.tilt_deg != null ? Number(row.tilt_deg) : null,
+      compass:
+        row.compass_deg != null && Number.isFinite(Number(row.compass_deg))
+          ? Number(row.compass_deg)
+          : null,
+      fixMs:
+        row.gps_fix_ms != null && Number.isFinite(Number(row.gps_fix_ms))
+          ? Number(row.gps_fix_ms)
+          : null,
+      gpsProvider: row.gps_provider || null,
+      gpsSampleSource: row.gps_sample_source || null,
     });
     if (row.capsize === true && hasGps) {
       capsizeEvents.push({
@@ -1979,7 +2035,8 @@ async function getDashboardHistory(orgId, uniqueId, fromIso, toIso) {
   if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return null;
 
   const rows = await sql`
-    SELECT t_ms, latitude, longitude, speed, hr, stroke_rate, capsize, tilt_deg
+    SELECT t_ms, latitude, longitude, accuracy, speed, hr, stroke_rate, capsize, tilt_deg,
+      compass_deg, gps_fix_ms, gps_provider, gps_sample_source
     FROM rnz_samples
     WHERE org_id = ${orgId}
       AND unique_id = ${String(uniqueId)}
@@ -2009,7 +2066,8 @@ async function getDashboardHistoryBySession(orgId, sessionId) {
   if (!meta.rows[0]) return null;
   const row = meta.rows[0];
   const samples = await sql`
-    SELECT t_ms, latitude, longitude, speed, hr, stroke_rate, capsize, tilt_deg
+    SELECT t_ms, latitude, longitude, accuracy, speed, hr, stroke_rate, capsize, tilt_deg,
+      compass_deg, gps_fix_ms, gps_provider, gps_sample_source
     FROM rnz_samples
     WHERE org_id = ${orgId} AND session_id = ${String(sessionId)}
     ORDER BY t_ms ASC
@@ -2039,7 +2097,7 @@ async function getSessionFromDb(orgId, sessionId) {
   if (!meta.rows[0]) return null;
   const samples = await sql`
     SELECT t_ms AS t, latitude, longitude, accuracy, speed, course, compass_deg, altitude, hr, ax, ay, az,
-      stroke_rate, capsize, tilt_deg, battery_pct, heartbeat
+      stroke_rate, capsize, tilt_deg, battery_pct, heartbeat, gps_fix_ms, gps_provider, gps_sample_source
     FROM rnz_samples
     WHERE org_id = ${orgId} AND session_id = ${sessionId}
     ORDER BY t_ms ASC
@@ -2066,6 +2124,11 @@ async function getSessionFromDb(orgId, sessionId) {
               ...(s.compass_deg != null && Number.isFinite(Number(s.compass_deg))
                 ? { compass: Number(s.compass_deg) }
                 : {}),
+              ...(s.gps_fix_ms != null && Number.isFinite(Number(s.gps_fix_ms))
+                ? { fixMs: Number(s.gps_fix_ms) }
+                : {}),
+              ...(s.gps_provider ? { provider: s.gps_provider } : {}),
+              ...(s.gps_sample_source ? { sampleSource: s.gps_sample_source } : {}),
             }
           : undefined,
       hr: s.hr != null ? { bpm: s.hr } : undefined,

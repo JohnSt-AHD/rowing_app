@@ -34,6 +34,10 @@ export type MapPosition = {
   telemetryStale?: boolean;
   online?: boolean;
   athleteId?: string | null;
+  accuracy?: number | null;
+  compass?: number | null;
+  gpsProvider?: string | null;
+  gpsSampleSource?: string | null;
   pathSpeedMps?: number | null;
   displaySpeedMps?: number | null;
   displayStrokeRate?: number | null;

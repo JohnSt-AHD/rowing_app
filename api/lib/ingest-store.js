@@ -340,6 +340,8 @@ function gpsFromSample(sample, { forTrack = false } = {}) {
       ? Number(sample.gps.compass)
       : null;
   const fixMs = gpsFixMsFromSample(sample);
+  const provider = sanitizeGpsProvider(sample.gps.provider);
+  const sampleSource = sanitizeGpsSampleSource(sample.gps.sampleSource);
   return {
     t,
     lat,
@@ -349,6 +351,8 @@ function gpsFromSample(sample, { forTrack = false } = {}) {
     hdg,
     compass,
     ...(fixMs != null ? { fixMs } : {}),
+    ...(provider ? { provider } : {}),
+    ...(sampleSource ? { sampleSource } : {}),
   };
 }
 
@@ -371,6 +375,27 @@ function gpsDebugTiming(now, uploadT, fixMs) {
 function gpsFixMsFromSample(sample) {
   const fixMs = Number(sample?.gps?.fixMs);
   return Number.isFinite(fixMs) && fixMs > 0 ? fixMs : null;
+}
+
+const GPS_SAMPLE_SOURCES = new Set([
+  'window_avg',
+  'direct',
+  'scheduled_cache',
+  'heartbeat_cache',
+  'stale_piggyback',
+  'web',
+]);
+
+function sanitizeGpsProvider(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().slice(0, 32);
+  return /^[\w.-]+$/.test(trimmed) ? trimmed : null;
+}
+
+function sanitizeGpsSampleSource(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().slice(0, 32);
+  return GPS_SAMPLE_SOURCES.has(trimmed) ? trimmed : null;
 }
 
 function sampleHasCapsize(sample) {
@@ -2106,6 +2131,9 @@ function buildRawMapPositionFromFix({
     accuracy: fix.acc ?? null,
     speed: null,
     course: fix.hdg != null && Number.isFinite(fix.hdg) ? fix.hdg : null,
+    compass: fix.compass != null && Number.isFinite(fix.compass) ? fix.compass : null,
+    gpsProvider: fix.provider ?? null,
+    gpsSampleSource: fix.sampleSource ?? null,
     fixMs,
     fixAgeSec: Math.round((now - fixMs) / 1000),
     gpsFixMs: fix.fixMs ?? null,
@@ -2275,6 +2303,9 @@ function applyRegistryGpsToDevice(device, registryFix, now) {
         acc: registryFix.acc,
         ...(registryFix.fixMs != null ? { fixMs: registryFix.fixMs } : {}),
         ...(registryFix.spd != null ? { spd: registryFix.spd } : {}),
+        ...(registryFix.compass != null ? { compass: registryFix.compass } : {}),
+        ...(registryFix.provider ? { provider: registryFix.provider } : {}),
+        ...(registryFix.sampleSource ? { sampleSource: registryFix.sampleSource } : {}),
       },
       ageSec,
       gpsFixAgeSec,
