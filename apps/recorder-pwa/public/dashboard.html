@@ -361,7 +361,7 @@
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-monitor-stats">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
-            <h2 class="hub-section-title">Live stats over time</h2>
+            <h2 class="hub-section-title">GPS &amp; upload debug</h2>
           </button>
         </div>
         <div class="dashboard-section__body" id="section-body-monitor-stats" hidden>
@@ -374,7 +374,7 @@
             </label>
           </div>
           <p class="poll-line monitor-stats-hint" id="monitorStatsHint">
-            Collecting data from each refresh…
+            Collecting GPS fix clock age, upload lag, and geofence economy from each refresh…
           </p>
           <div class="monitor-chart-wrap">
             <div class="monitor-chart-legend" id="monitorChartLegend" aria-live="polite"></div>
@@ -382,7 +382,7 @@
               id="monitorChartCombined"
               class="monitor-chart monitor-chart--combined"
               height="110"
-              aria-label="Combined live stats: fleet health, GPS, upload lag, stroke rate, and capsize"
+              aria-label="GPS and upload debug: fix clock age, upload lag, ingest rate, boat park economy, and capsize"
             ></canvas>
           </div>
         </div>

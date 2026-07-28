@@ -663,7 +663,7 @@
     return formatSplit500(mps);
   }
 
-  /** Spike-filtered 30s path pace from API — ticket/graph use displaySpeedMps first. */
+  /** Ticket pace from API (recent-ground EMA); falls back to 30s path. */
   function coachFacingSpeedMps(p, deviceId) {
     const now = Date.now();
     if (p?.telemetryStale === true) {

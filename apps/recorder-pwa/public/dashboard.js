@@ -237,7 +237,7 @@ function isDataStale(p) {
   return age != null && age > TELEMETRY_STALE_SEC;
 }
 
-/** Coach-facing pace: spike-filtered display EMA (never raw path spikes). */
+/** Coach-facing pace: recent-ground EMA (tracks fix-to-fix speed on tickets). */
 function paceMpsForPosition(p) {
   if (isDataStale(p)) return null;
   const mps = p.displaySpeedMps ?? p.pathSpeedMps ?? null;
@@ -1123,6 +1123,17 @@ function enrichDeviceWithMapPosition(d, p) {
   if (fixAge != null || p.latitude != null) {
     gps.present = true;
     if (fixAge != null) gps.ageSec = fixAge;
+    if (p.gpsFixAgeSec != null) gps.gpsFixAgeSec = p.gpsFixAgeSec;
+    if (p.uploadLagSec != null) gps.uploadLagSec = p.uploadLagSec;
+    if (p.displayFixAgeSec != null) gps.displayAgeSec = p.displayFixAgeSec;
+    if (p.ingestAgoSec != null) gps.ingestAgoSec = p.ingestAgoSec;
+    if (
+      gps.fixClockLagSec == null &&
+      gps.ageSec != null &&
+      gps.ingestAgoSec != null
+    ) {
+      gps.fixClockLagSec = gps.ageSec - gps.ingestAgoSec;
+    }
     gps.last = {
       t: p.fixMs ?? (fixAge != null ? Date.now() - fixAge * 1000 : Date.now()),
       lat,
@@ -1167,6 +1178,12 @@ function mapPositionToDeviceCard(p, windowSec) {
       count: 0,
       last: { lat, lon, acc: p.accuracy ?? null, t: p.fixMs ?? Date.now() },
       ageSec: fixAge,
+      gpsFixAgeSec: p.gpsFixAgeSec ?? null,
+      uploadLagSec: p.uploadLagSec ?? null,
+      displayAgeSec: p.displayFixAgeSec ?? fixAge,
+      ingestAgoSec: p.ingestAgoSec ?? null,
+      fixClockLagSec:
+        fixAge != null && p.ingestAgoSec != null ? fixAge - p.ingestAgoSec : null,
     },
     motion: { present: false, rateHz: 0, count: 0 },
     hr: { present: false, rateHz: 0, count: 0 },

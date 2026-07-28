@@ -39,6 +39,7 @@ export type MapPosition = {
   gpsProvider?: string | null;
   gpsSampleSource?: string | null;
   pathSpeedMps?: number | null;
+  recentPathSpeedMps?: number | null;
   displaySpeedMps?: number | null;
   displayStrokeRate?: number | null;
   strokeRateMedian?: number | null;

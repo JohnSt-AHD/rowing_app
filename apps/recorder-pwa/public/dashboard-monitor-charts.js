@@ -1,11 +1,11 @@
 /**
- * Live monitor — combined stats chart (updates each poll).
+ * Live monitor — GPS/upload debug chart (updates each poll).
  */
 (function () {
   const MAX_POINTS = 450;
   const LS_DEVICE = 'rnz_monitor_chart_device';
 
-  /** @type {{ t: number, online: number, ingestHz: number, gpsHz: number, gpsAgeSec: number, serverLagSec: number, delayedGps: number, capsize: number, strokeSpm: number, heartbeatHz: number, batteryPct: number }[]} */
+  /** @type {{ t: number, online: number, ingestHz: number, gpsHz: number, fixClockAgeSec: number, uploadLagSec: number, displayFixAgeSec: number, fixClockLagSec: number, lastSeenAgoSec: number, inBoatPark: number, delayedGps: number, capsize: number, strokeSpm: number, heartbeatHz: number, batteryPct: number }[]} */
   const fleetHistory = [];
   /** @type {Map<string, typeof fleetHistory>} */
   const deviceHistory = new Map();
@@ -25,6 +25,13 @@
       format: (v) => String(Math.round(v)),
     },
     {
+      key: 'ingestHz',
+      label: 'Ingest (Hz)',
+      color: '#22d3ee',
+      pick: (p) => p.ingestHz,
+      format: (v) => v.toFixed(2),
+    },
+    {
       key: 'gpsHz',
       label: 'GPS (Hz)',
       color: '#38bdf8',
@@ -32,11 +39,61 @@
       format: (v) => v.toFixed(2),
     },
     {
-      key: 'ingestHz',
-      label: 'Ingest (Hz)',
-      color: '#22d3ee',
-      pick: (p) => p.ingestHz,
-      format: (v) => v.toFixed(2),
+      key: 'fixClockAgeSec',
+      label: 'Fix clock age (s)',
+      labelDevice: 'Fix clock age (s)',
+      color: '#fbbf24',
+      pick: (p) => p.fixClockAgeSec,
+      format: (v) => v.toFixed(1),
+    },
+    {
+      key: 'uploadLagSec',
+      label: 'Upload lag (s)',
+      color: '#f97316',
+      pick: (p) => p.uploadLagSec,
+      format: (v) => v.toFixed(1),
+    },
+    {
+      key: 'displayFixAgeSec',
+      label: 'Display fix age (s)',
+      labelDevice: 'Display fix age (s)',
+      color: '#fcd34d',
+      pick: (p) => p.displayFixAgeSec,
+      format: (v) => v.toFixed(1),
+    },
+    {
+      key: 'fixClockLagSec',
+      label: 'Fix clock lag (s)',
+      labelDevice: 'Fix clock lag (s)',
+      color: '#fb923c',
+      pick: (p) => p.fixClockLagSec,
+      format: (v) => v.toFixed(1),
+      hideWhenZero: true,
+    },
+    {
+      key: 'lastSeenAgoSec',
+      label: 'Last seen (s)',
+      color: '#94a3b8',
+      pick: (p) => p.lastSeenAgoSec,
+      format: (v) => v.toFixed(0),
+    },
+    {
+      key: 'inBoatPark',
+      label: 'Boat park devices',
+      labelDevice: 'Boat park',
+      color: '#2dd4bf',
+      pick: (p) => p.inBoatPark,
+      format: (v) => String(Math.round(v)),
+      hideWhenZero: true,
+    },
+    {
+      key: 'delayedGps',
+      label: 'Delayed GPS',
+      labelDevice: 'GPS delayed',
+      color: '#fb7185',
+      pick: (p) => p.delayedGps,
+      format: (v) => String(Math.round(v)),
+      hideWhenZero: true,
     },
     {
       key: 'heartbeatHz',
@@ -49,33 +106,10 @@
     {
       key: 'batteryPct',
       label: 'Battery (%)',
-      color: '#fcd34d',
+      color: '#fde047',
       pick: (p) => p.batteryPct,
       format: (v) => (v > 0 ? String(Math.round(v)) : '—'),
       hideWhenZero: true,
-    },
-    {
-      key: 'gpsAgeSec',
-      label: 'GPS age (s)',
-      color: '#fbbf24',
-      pick: (p) => p.gpsAgeSec,
-      format: (v) => v.toFixed(1),
-    },
-    {
-      key: 'serverLagSec',
-      label: 'Upload lag (s)',
-      labelDevice: 'Last seen (s)',
-      color: '#f97316',
-      pick: (p) => p.serverLagSec,
-      format: (v) => v.toFixed(0),
-    },
-    {
-      key: 'delayedGps',
-      label: 'Delayed GPS',
-      labelDevice: 'GPS delayed',
-      color: '#fb7185',
-      pick: (p) => p.delayedGps,
-      format: (v) => String(Math.round(v)),
     },
     {
       key: 'strokeSpm',
@@ -106,6 +140,22 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function numOrNaN(value) {
+    return Number.isFinite(value) ? value : NaN;
+  }
+
+  /** @param {object|undefined} gps */
+  function gpsDebugFromGps(gps) {
+    const g = gps || {};
+    const displayFixAgeSec = g.displayAgeSec ?? g.ageSec;
+    return {
+      fixClockAgeSec: numOrNaN(g.gpsFixAgeSec),
+      uploadLagSec: numOrNaN(g.uploadLagSec),
+      displayFixAgeSec: numOrNaN(displayFixAgeSec),
+      fixClockLagSec: numOrNaN(g.fixClockLagSec),
+    };
   }
 
   function downsample(points, maxPoints) {
@@ -146,8 +196,12 @@
       online: health.onlineDevices ?? data.activeCount ?? 0,
       ingestHz: health.avgIngestHz ?? 0,
       gpsHz: health.avgGpsHz ?? 0,
-      gpsAgeSec: health.avgGpsAgeSec ?? 0,
-      serverLagSec: health.serverDataLagSec ?? 0,
+      fixClockAgeSec: health.avgGpsFixAgeSec ?? health.avgGpsAgeSec ?? 0,
+      uploadLagSec: health.avgUploadLagSec ?? 0,
+      displayFixAgeSec: health.avgGpsAgeSec ?? 0,
+      fixClockLagSec: health.avgFixClockLagSec ?? 0,
+      lastSeenAgoSec: health.avgLastSeenAgoSec ?? health.serverDataLagSec ?? 0,
+      inBoatPark: health.devicesInBoatPark ?? 0,
       delayedGps: health.delayedGpsDevices ?? 0,
       capsize: health.capsizeDevices ?? 0,
       strokeSpm: health.avgStrokeSpm ?? 0,
@@ -157,15 +211,20 @@
   }
 
   function devicePoint(d, t) {
-    const gpsAge = d.gps?.ageSec;
+    const gpsDebug = gpsDebugFromGps(d.gps);
+    const displayFixAgeSec = gpsDebug.displayFixAgeSec;
     return {
       t,
       online: d.online ? 1 : 0,
       ingestHz: d.ingestRateHz ?? 0,
       gpsHz: d.gps?.rateHz ?? 0,
-      gpsAgeSec: gpsAge != null ? gpsAge : NaN,
-      serverLagSec: d.lastSeenAgoSec ?? 0,
-      delayedGps: gpsAge != null && gpsAge > 30 ? 1 : 0,
+      fixClockAgeSec: gpsDebug.fixClockAgeSec,
+      uploadLagSec: gpsDebug.uploadLagSec,
+      displayFixAgeSec,
+      fixClockLagSec: gpsDebug.fixClockLagSec,
+      lastSeenAgoSec: d.lastSeenAgoSec ?? 0,
+      inBoatPark: d.derived?.inBoatPark === true ? 1 : 0,
+      delayedGps: Number.isFinite(displayFixAgeSec) && displayFixAgeSec > 30 ? 1 : 0,
       capsize: d.rowing?.capsize ? 1 : 0,
       strokeSpm: d.rowing?.strokeRate ?? 0,
       heartbeatHz: d.heartbeat?.rateHz ?? 0,
@@ -295,7 +354,7 @@
     ctx.fillText(new Date(t1).toLocaleTimeString(), pad.l + plotW - 56, h - 6);
     ctx.fillStyle = '#e2e8f0';
     ctx.font = '12px system-ui, sans-serif';
-    ctx.fillText(`Live stats — ${scope} (standardised)`, pad.l, 16);
+    ctx.fillText(`GPS & upload debug — ${scope} (standardised)`, pad.l, 16);
   }
 
   function renderStatsChart() {
@@ -305,11 +364,11 @@
     const hint = $('#monitorStatsHint');
     if (hint && pts.length >= 2) {
       const spanMin = Math.round((pts[pts.length - 1].t - pts[0].t) / 60000);
-      hint.textContent = `${chartScopeLabel()} · last ${spanMin} min · ${pts.length} samples · z-scores per metric vs window mean (±${Z_CLIP}σ); legend shows actual values`;
+      hint.textContent = `${chartScopeLabel()} · last ${spanMin} min · ${pts.length} samples · fix clock age, upload lag, display age, boat-park economy; legend shows actual values`;
     } else if (hint) {
       hint.textContent = selectedDeviceId
         ? `Waiting for polls from ${selectedDeviceId}…`
-        : 'Collecting fleet averages from each refresh…';
+        : 'Collecting fleet GPS/upload debug metrics from each refresh…';
     }
   }
 
