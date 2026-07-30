@@ -539,6 +539,18 @@
   letter-spacing: 0.06em;
 }
 
+.capsize-help-btn {
+  flex-shrink: 0;
+  background: rgba(13, 148, 136, 0.95);
+  color: #ecfdf5;
+  border: 1px solid rgba(153, 246, 228, 0.9);
+  font-weight: 600;
+}
+
+.capsize-help-btn:disabled {
+  opacity: 0.55;
+}
+
 .capsize-clear-btn {
   flex-shrink: 0;
   background: rgba(254, 252, 232, 0.95);

@@ -10,6 +10,42 @@
   let lastPollRefreshAt = 0;
 
   const ALL_DEVICES_VALUE = '__all__';
+  const HELP_ON_WAY_TEXT = 'Help is on the way — stay with the boat.';
+
+  async function postRegattaMessage(payload) {
+    const res = await fetch(`${apiBase()}/api/messages`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || 'Send failed');
+    }
+    return data;
+  }
+
+  /**
+   * Send preset help message to capsized device(s). Used by capsize alert bar.
+   * @param {string[]} deviceIds
+   * @returns {Promise<{ count: number, deviceIds: string[] }>}
+   */
+  window.dashboardSendHelpOnWay = async function (deviceIds) {
+    const ids = [...new Set((deviceIds || []).map((id) => String(id ?? '').trim()).filter(Boolean))];
+    if (!ids.length) {
+      throw new Error('No capsized devices to message.');
+    }
+    const payload =
+      ids.length === 1
+        ? { deviceId: ids[0], text: HELP_ON_WAY_TEXT }
+        : { allDevices: true, deviceIds: ids, text: HELP_ON_WAY_TEXT };
+    const data = await postRegattaMessage(payload);
+    await loadActiveMessages();
+    return {
+      count: Number(data.count) || ids.length,
+      deviceIds: ids,
+    };
+  };
 
   function headers() {
     if (typeof window.dashboardHeaders === 'function') return window.dashboardHeaders();
@@ -138,20 +174,11 @@
     const payload = sendToAll
       ? { allDevices: true, deviceIds: knownDeviceIds, text }
       : { deviceId, text };
-    const res = await fetch(`${apiBase()}/api/messages`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      setStatus(data.error || 'Send failed', true);
-      return;
-    }
+    await postRegattaMessage(payload);
     $('#regattaText').value = '';
     await loadActiveMessages();
     if (sendToAll) {
-      const count = Number(data.count) || knownDeviceIds.length;
+      const count = knownDeviceIds.length;
       setStatus(`Message sent to ${count} device(s). Appears on each HUD within ~15s.`);
       return;
     }

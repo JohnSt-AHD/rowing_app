@@ -45,6 +45,8 @@ let h6CompareInterp = null;
 let h6CompareTickTimer = null;
 /** @type {object[]} */
 let latestMapPositions = [];
+/** @type {string[]} device IDs from latest capsize banner update */
+let lastCapsizedDeviceIds = [];
 
 function apiBase() {
   return window.location.origin;
@@ -652,13 +654,16 @@ function updateCapsizeBanner(devices) {
   const bar = $('#capsizeAlertBar');
   const text = $('#capsizeAlertText');
   const clearBtn = $('#clearCapsizeBtn');
+  const helpBtn = $('#capsizeHelpBtn');
   if (!bar || !text) return;
   const capsized = (devices || []).filter((d) => d.rowing?.capsize);
+  lastCapsizedDeviceIds = capsized.map((d) => d.deviceId).filter(Boolean);
   if (!capsized.length) {
     bar.hidden = true;
     bar.setAttribute('aria-hidden', 'true');
     text.textContent = '';
     if (clearBtn) clearBtn.disabled = false;
+    if (helpBtn) helpBtn.disabled = true;
     return;
   }
   bar.hidden = false;
@@ -670,7 +675,37 @@ function updateCapsizeBanner(devices) {
     })
     .join(', ');
   if (clearBtn) clearBtn.disabled = false;
+  if (helpBtn) helpBtn.disabled = false;
   playCapsizeAlarm();
+}
+
+async function sendHelpOnWay() {
+  const btn = $('#capsizeHelpBtn');
+  if (btn) btn.disabled = true;
+  const status = $('#pollStatus');
+  const send =
+    typeof window.dashboardSendHelpOnWay === 'function' ? window.dashboardSendHelpOnWay : null;
+  try {
+    if (!send) {
+      throw new Error('Messaging not loaded — refresh the page.');
+    }
+    if (!lastCapsizedDeviceIds.length) {
+      throw new Error('No active capsize alert.');
+    }
+    const { count, deviceIds } = await send(lastCapsizedDeviceIds);
+    if (status) {
+      const names = deviceIds.join(', ');
+      status.textContent = `Help message sent to ${names} (${count}). Appears on device HUD within ~15s.`;
+      status.classList.remove('err');
+    }
+  } catch (e) {
+    if (status) {
+      status.textContent = `Help message failed: ${e instanceof Error ? e.message : String(e)}`;
+      status.classList.add('err');
+    }
+  } finally {
+    if (btn) btn.disabled = !lastCapsizedDeviceIds.length;
+  }
 }
 
 async function clearCapsizeAlert(deviceId) {
@@ -1654,6 +1689,7 @@ function init() {
     if (mapFollowFleet) followActiveDevicesOnMap(latestMapPositions);
   });
   $('#clearCapsizeBtn')?.addEventListener('click', () => void clearCapsizeAlert());
+  $('#capsizeHelpBtn')?.addEventListener('click', () => void sendHelpOnWay());
   $('#applyBtn')?.addEventListener('click', () => {
     startPolling();
     if (typeof window.reloadDashboardHistory === 'function') {
