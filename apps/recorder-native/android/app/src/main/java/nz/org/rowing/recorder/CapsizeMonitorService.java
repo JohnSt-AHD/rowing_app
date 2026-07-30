@@ -68,6 +68,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final int NOTIF_ID_FOREGROUND = 9101;
     private static final int NOTIF_ID_ALERT = 9102;
     private static final int NOTIF_ID_BOOT_RESUME = 9103;
+    private static final int NOTIF_ID_CREW_MESSAGE = 9105;
+    private static final int NOTIF_ID_ZONE_WARNING = 9106;
     private static final int BOOT_RESUME_ALARM_REQUEST = 9104;
     private static final String BOOT_RETRY_COUNT_KEY = "bootRetryCount";
     private static final int MAX_BOOT_RESUME_RETRIES = 20;
@@ -226,7 +228,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private final Runnable heartbeatRunnable =
             () -> {
                 if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
-                uploadExecutor.execute(() -> enqueueHeartbeatSample(System.currentTimeMillis()));
+                uploadExecutor.execute(
+                        () -> {
+                            enqueueHeartbeatSample(System.currentTimeMillis());
+                            CrewMessageHelper.pollMessages(getApplicationContext());
+                        });
                 scheduleHeartbeat();
             };
     private final Runnable pendingFlushRunnable =
@@ -508,9 +514,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         addFixToGpsWindow(location);
         maybeApplyGeofenceEconomy(location.getLatitude(), location.getLongitude());
+        maybeNotifyZoneEntry(location.getLatitude(), location.getLongitude());
     }
 
     private String lastNativeGeofenceSignature = "";
+    private String lastNotifyZoneKey = "";
+    private boolean notifyZoneInitialized = false;
 
     private void maybeApplyGeofenceEconomy(double lat, double lon) {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
@@ -567,6 +576,22 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                     true,
                     false);
             Log.i(TAG, "Native geofence cleared — user GPS interval restored");
+        }
+    }
+
+    private void maybeNotifyZoneEntry(double lat, double lon) {
+        JSONObject zone =
+                GeofenceHelper.findNotifyZoneAt(getApplicationContext(), lat, lon);
+        String key = zone != null ? GeofenceHelper.zoneNotifyKey(zone) : "";
+        if (!notifyZoneInitialized) {
+            lastNotifyZoneKey = key;
+            notifyZoneInitialized = true;
+            return;
+        }
+        if (key.equals(lastNotifyZoneKey)) return;
+        lastNotifyZoneKey = key;
+        if (zone != null && !key.isEmpty()) {
+            showZoneEntryNotification(zone);
         }
     }
 
@@ -2398,6 +2423,22 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 NotificationManager.IMPORTANCE_HIGH);
         alertCh.enableVibration(true);
         if (nm != null) nm.createNotificationChannel(alertCh);
+
+        NotificationChannel crewCh =
+            new NotificationChannel(
+                CrewMessageHelper.CHANNEL_ID,
+                "Coach messages",
+                NotificationManager.IMPORTANCE_HIGH);
+        crewCh.enableVibration(true);
+        if (nm != null) nm.createNotificationChannel(crewCh);
+
+        NotificationChannel zoneCh =
+            new NotificationChannel(
+                CHANNEL_ID + "_zone",
+                "Course warnings",
+                NotificationManager.IMPORTANCE_HIGH);
+        zoneCh.enableVibration(true);
+        if (nm != null) nm.createNotificationChannel(zoneCh);
     }
 
     private void loadStandbyFlagsFromPrefs() {
@@ -2437,6 +2478,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return;
         }
         standbyLastFreshFixMs = fixMs;
+        maybeNotifyZoneEntry(location.getLatitude(), location.getLongitude());
         boolean inside =
                 GeofenceHelper.isInsideAutoStartBlockingZone(
                         getApplicationContext(), location.getLatitude(), location.getLongitude());
@@ -2552,6 +2594,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         gpsWindowBuffer.clear();
         lastWindowCollectWallMs = 0L;
         lastNativeGeofenceSignature = "";
+        lastNotifyZoneKey = "";
+        notifyZoneInitialized = false;
         if (enableMotion || (enableGps && compassAvailable)) {
             registerSensors();
         }
@@ -2863,6 +2907,29 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
                 .build();
         nm.notify(NOTIF_ID_ALERT, n);
+    }
+
+    private void showZoneEntryNotification(JSONObject zone) {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm == null || zone == null) return;
+        Intent launch = new Intent(this, MainActivity.class);
+        PendingIntent pi =
+            PendingIntent.getActivity(
+                this, 3, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        String body = GeofenceHelper.entryNotifyMessage(zone);
+        Notification n =
+            new NotificationCompat.Builder(this, CHANNEL_ID + "_zone")
+                .setContentTitle("Course warning")
+                .setContentText(body)
+                .setSmallIcon(R.drawable.ic_stat_rowing_shell)
+                .setContentIntent(pi)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                .setAutoCancel(true)
+                .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
+                .build();
+        nm.notify(NOTIF_ID_ZONE_WARNING, n);
+        Log.i(TAG, "Geofence entry notification: " + zone.optString("name", "?"));
     }
 
     private void cancelAlertNotification() {

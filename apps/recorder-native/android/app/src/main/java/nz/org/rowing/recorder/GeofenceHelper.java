@@ -30,6 +30,39 @@ final class GeofenceHelper {
         return null;
     }
 
+    /** First enabled zone with notifyOnEnter at this point (any kind). */
+    static JSONObject findNotifyZoneAt(Context ctx, double lat, double lon) {
+        if (!Double.isFinite(lat) || !Double.isFinite(lon)) return null;
+        JSONArray geofences = loadGeofences(ctx);
+        for (int i = 0; i < geofences.length(); i++) {
+            JSONObject g = geofences.optJSONObject(i);
+            if (g != null && notifyOnEnter(g) && pointInZoneGeometry(g, lat, lon)) return g;
+        }
+        return null;
+    }
+
+    static boolean notifyOnEnter(JSONObject g) {
+        if (g == null) return false;
+        if (g.has("notifyOnEnter")) return g.optBoolean("notifyOnEnter", false);
+        return g.optBoolean("notify_on_enter", false);
+    }
+
+    static String entryNotifyMessage(JSONObject g) {
+        if (g == null) return "Check course ahead";
+        String custom = g.optString("entryNotifyMessage", g.optString("entry_notify_message", "")).trim();
+        if (!custom.isEmpty()) return custom;
+        String name = g.optString("name", "zone").trim();
+        if (name.isEmpty()) name = "zone";
+        return "Please check course, " + name + " ahead";
+    }
+
+    static String zoneNotifyKey(JSONObject g) {
+        if (g == null) return "";
+        int id = g.optInt("id", -1);
+        if (id > 0) return "id:" + id;
+        return "name:" + g.optString("name", "");
+    }
+
     private static JSONArray loadGeofences(Context ctx) {
         SharedPreferences p =
                 ctx.getSharedPreferences(CapsizeMonitorService.PREFS, Context.MODE_PRIVATE);
@@ -40,9 +73,8 @@ final class GeofenceHelper {
         }
     }
 
-    static boolean pointInGeofence(JSONObject g, double lat, double lon) {
-        if (g == null || g.optBoolean("enabled", true) == false) return false;
-        if (!"boat_park".equals(g.optString("kind", "boat_park"))) return false;
+    static boolean pointInZoneGeometry(JSONObject g, double lat, double lon) {
+        if (g == null || !g.optBoolean("enabled", true)) return false;
         String shape = g.optString("shapeType", g.optString("shape_type", "circle"));
         if ("polygon".equalsIgnoreCase(shape)) {
             return pointInPolygon(lat, lon, g.optJSONArray("polygonCoords"));
@@ -51,6 +83,12 @@ final class GeofenceHelper {
         double centerLon = g.optDouble("centerLon", g.optDouble("center_lon", Double.NaN));
         double radiusM = g.optDouble("radiusM", g.optDouble("radius_m", Double.NaN));
         return pointInCircle(lat, lon, centerLat, centerLon, radiusM);
+    }
+
+    static boolean pointInGeofence(JSONObject g, double lat, double lon) {
+        if (g == null || g.optBoolean("enabled", true) == false) return false;
+        if (!"boat_park".equals(g.optString("kind", "boat_park"))) return false;
+        return pointInZoneGeometry(g, lat, lon);
     }
 
     static int economyIntervalSec(JSONObject g) {

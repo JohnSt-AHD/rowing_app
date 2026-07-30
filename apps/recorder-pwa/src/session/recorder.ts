@@ -29,8 +29,12 @@ import {
   syncNativeCapsizeUpright,
   syncNativeStrokeRate,
 } from '../lib/native-capsize-monitor';
-import { findBoatParkAt, type GeofenceConfig } from '../lib/geofence';
+import { findBoatParkAt, entryNotifyMessageFor, findNotifyZoneAt, type GeofenceConfig } from '../lib/geofence';
 import { fetchGeofences } from '../lib/geofence-service';
+import {
+  maybeNotifyGeofenceEntry,
+  maybeNotifyRegattaMessage,
+} from '../lib/regatta-notification';
 import {
   fetchRegattaMessage,
   REGATTA_MESSAGE_POLL_MS,
@@ -219,6 +223,7 @@ export async function startRecorder(
   let liveMapPushTimer: ReturnType<typeof setInterval> | null = null;
   let lastLiveMapPushAt = 0;
   let lastEconomySignature = '';
+  let lastNotifyZoneKey = '';
   let lastNativeEconomySignature = '';
 
   const nativeEconomySignature = () =>
@@ -273,6 +278,9 @@ export async function startRecorder(
     stats.regattaMessage = msg;
     if (msg && msg.id !== prevId) {
       onLog(`Regatta control: ${msg.text}`, false);
+      if (!nativeCapsizeMonitorOn) {
+        void maybeNotifyRegattaMessage(msg, prevId);
+      }
     }
     emit();
   };
@@ -347,6 +355,16 @@ export async function startRecorder(
   const checkGeofenceAt = (lat: number, lon: number) => {
     if (!geofences.length || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
     applyEconomyMode(findBoatParkAt(lat, lon, geofences));
+
+    const notifyZone = findNotifyZoneAt(lat, lon, geofences);
+    const zoneKey = notifyZone ? `id:${notifyZone.id}` : '';
+    if (zoneKey !== lastNotifyZoneKey) {
+      const prev = lastNotifyZoneKey;
+      lastNotifyZoneKey = zoneKey;
+      if (notifyZone && zoneKey && !nativeCapsizeMonitorOn) {
+        void maybeNotifyGeofenceEntry(zoneKey, prev, entryNotifyMessageFor(notifyZone));
+      }
+    }
   };
 
   const recheckGeofenceFromLastPosition = () => {

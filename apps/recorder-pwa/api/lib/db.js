@@ -212,6 +212,8 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_geofences ALTER COLUMN suppress_recording SET DEFAULT false`;
   await sql`ALTER TABLE rnz_geofences ALTER COLUMN auto_stop_on_enter SET DEFAULT false`;
   await sql`ALTER TABLE rnz_geofences ALTER COLUMN auto_start_on_exit SET DEFAULT false`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS notify_on_enter BOOLEAN NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS entry_notify_message TEXT`;
 
   await sql`
     CREATE TABLE IF NOT EXISTS rnz_schema_migrations (
@@ -2325,6 +2327,7 @@ async function listGeofences(orgId) {
     SELECT id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
            economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
            suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
+           notify_on_enter, entry_notify_message,
            created_at, updated_at
     FROM rnz_geofences
     WHERE org_id = ${orgId}
@@ -2347,6 +2350,13 @@ async function createGeofence(orgId, body) {
   const suppressRecording = boolFromInput(body, 'suppressRecording', 'suppress_recording', false);
   const autoStopOnEnter = boolFromInput(body, 'autoStopOnEnter', 'auto_stop_on_enter', false);
   const autoStartOnExit = boolFromInput(body, 'autoStartOnExit', 'auto_start_on_exit', false);
+  const notifyOnEnter = boolFromInput(body, 'notifyOnEnter', 'notify_on_enter', false);
+  const entryNotifyMessage =
+    body.entryNotifyMessage != null
+      ? String(body.entryNotifyMessage).trim()
+      : body.entry_notify_message != null
+        ? String(body.entry_notify_message).trim()
+        : '';
   const sessionDwellSec = sessionDwellSecFromInput(body);
   const enabled = body.enabled !== false;
   const shapeType =
@@ -2385,33 +2395,39 @@ async function createGeofence(orgId, body) {
     INSERT INTO rnz_geofences (
       org_id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
       economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
-      suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec
+      suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
+      notify_on_enter, entry_notify_message
     )
     VALUES (
       ${orgId}, ${name}, ${kind}, ${shapeType}, ${centerLat}, ${centerLon}, ${radiusM},
       ${JSON.stringify(polygonRing)}::jsonb, ${enabled},
       ${economyGps}, ${economyUpload}, ${disableCapsize},
-      ${suppressRecording}, ${autoStopOnEnter}, ${autoStartOnExit}, ${sessionDwellSec}
+      ${suppressRecording}, ${autoStopOnEnter}, ${autoStartOnExit}, ${sessionDwellSec},
+      ${notifyOnEnter}, ${entryNotifyMessage || null}
     )
     RETURNING id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
               economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
               suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
+              notify_on_enter, entry_notify_message,
               created_at, updated_at
   `
       : await sql`
     INSERT INTO rnz_geofences (
       org_id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
       economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
-      suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec
+      suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
+      notify_on_enter, entry_notify_message
     )
     VALUES (
       ${orgId}, ${name}, ${kind}, ${shapeType}, ${centerLat}, ${centerLon}, ${radiusM}, NULL, ${enabled},
       ${economyGps}, ${economyUpload}, ${disableCapsize},
-      ${suppressRecording}, ${autoStopOnEnter}, ${autoStartOnExit}, ${sessionDwellSec}
+      ${suppressRecording}, ${autoStopOnEnter}, ${autoStartOnExit}, ${sessionDwellSec},
+      ${notifyOnEnter}, ${entryNotifyMessage || null}
     )
     RETURNING id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
               economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
               suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
+              notify_on_enter, entry_notify_message,
               created_at, updated_at
   `;
   return normalizeGeofence(rows.rows[0]);
@@ -2468,6 +2484,20 @@ async function updateGeofenceSettings(orgId, id, body = {}) {
   const sessionDwellSec =
     body.sessionDwellSec != null || body.session_dwell_sec != null
       ? sessionDwellSecFromInput(body)
+      : null;
+  const notifyOnEnter =
+    body.notifyOnEnter === true
+      ? true
+      : body.notifyOnEnter === false
+        ? false
+        : body.notify_on_enter === true
+          ? true
+          : body.notify_on_enter === false
+            ? false
+            : null;
+  const entryNotifyMessage =
+    body.entryNotifyMessage != null || body.entry_notify_message != null
+      ? String(body.entryNotifyMessage ?? body.entry_notify_message ?? '').trim()
       : null;
   const name = body.name != null ? String(body.name).trim() : null;
 
@@ -2529,11 +2559,14 @@ async function updateGeofenceSettings(orgId, id, body = {}) {
       auto_stop_on_enter = COALESCE(${autoStopOnEnter}, auto_stop_on_enter),
       auto_start_on_exit = COALESCE(${autoStartOnExit}, auto_start_on_exit),
       session_dwell_sec = COALESCE(${sessionDwellSec}, session_dwell_sec),
+      notify_on_enter = COALESCE(${notifyOnEnter}, notify_on_enter),
+      entry_notify_message = COALESCE(${entryNotifyMessage}, entry_notify_message),
       updated_at = NOW()
     WHERE org_id = ${orgId} AND id = ${n}
     RETURNING id, name, kind, shape_type, center_lat, center_lon, radius_m, polygon_coords, enabled,
               economy_gps_interval_sec, economy_upload_interval_sec, disable_capsize,
               suppress_recording, auto_stop_on_enter, auto_start_on_exit, session_dwell_sec,
+              notify_on_enter, entry_notify_message,
               created_at, updated_at
   `;
   if (!rows.rows.length) return null;

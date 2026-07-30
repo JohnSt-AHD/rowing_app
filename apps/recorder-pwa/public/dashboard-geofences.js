@@ -347,7 +347,7 @@
         <div class="geofence-item__main">
           <strong>${esc(g.name)}</strong>
           <span class="geofence-item__meta">${esc(shapeSummary(g))}</span>
-          <span class="geofence-item__meta">Economy: every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording ? 'paused' : 'on'} · dwell ${g.sessionDwellSec ?? 45}s · auto-stop ${g.autoStopOnEnter ? 'on' : 'off'} · auto-start ${g.autoStartOnExit ? 'on' : 'off'}</span>
+          <span class="geofence-item__meta">Economy: every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording ? 'paused' : 'on'} · dwell ${g.sessionDwellSec ?? 45}s · auto-stop ${g.autoStopOnEnter ? 'on' : 'off'} · auto-start ${g.autoStartOnExit ? 'on' : 'off'} · notify ${g.notifyOnEnter ? 'on' : 'off'}${g.notifyOnEnter && g.entryNotifyMessage ? ` · “${esc(g.entryNotifyMessage)}”` : ''}</span>
         </div>
         <button type="button" class="hub-btn hub-btn--danger geofence-delete-btn" data-id="${g.id}">Delete</button>
       </div>`,
@@ -383,6 +383,8 @@
     const suppressRecording = $('#geofenceSuppressRecording')?.checked === true;
     const autoStopOnEnter = $('#geofenceAutoStop')?.checked === true;
     const autoStartOnExit = $('#geofenceAutoStart')?.checked === true;
+    const notifyOnEnter = $('#geofenceNotifyEnter')?.checked === true;
+    const entryNotifyMessage = $('#geofenceNotifyMessage')?.value?.trim() || '';
 
     if (!name) {
       setStatus('Name is required.', true);
@@ -399,6 +401,8 @@
       suppressRecording,
       autoStopOnEnter,
       autoStartOnExit,
+      notifyOnEnter,
+      entryNotifyMessage,
     };
 
     if (shapeType === 'polygon') {
@@ -440,6 +444,8 @@
     if ($('#geofenceSuppressRecording')) $('#geofenceSuppressRecording').checked = false;
     if ($('#geofenceAutoStop')) $('#geofenceAutoStop').checked = false;
     if ($('#geofenceAutoStart')) $('#geofenceAutoStart').checked = false;
+    if ($('#geofenceNotifyEnter')) $('#geofenceNotifyEnter').checked = false;
+    if ($('#geofenceNotifyMessage')) $('#geofenceNotifyMessage').value = '';
     if ($('#geofenceShapeType')) $('#geofenceShapeType').value = 'circle';
     clearPolygonDraft();
     updateShapeFields();

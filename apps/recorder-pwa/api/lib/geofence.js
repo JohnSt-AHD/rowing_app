@@ -106,12 +106,17 @@ function polygonBoundingRadiusM(ring) {
   return maxR;
 }
 
-function pointInGeofence(g, lat, lon) {
-  if (!g || g.enabled === false || g.kind !== 'boat_park') return false;
+function pointInZoneGeometry(g, lat, lon) {
+  if (!g || g.enabled === false) return false;
   if (g.shapeType === 'polygon') {
     return pointInPolygon(lat, lon, g.polygonCoords);
   }
   return pointInCircle(lat, lon, g.centerLat, g.centerLon, g.radiusM);
+}
+
+function pointInGeofence(g, lat, lon) {
+  if (!g || g.enabled === false || g.kind !== 'boat_park') return false;
+  return pointInZoneGeometry(g, lat, lon);
 }
 
 /** @param {Array<object>} geofences */
@@ -167,6 +172,14 @@ function normalizeGeofence(row) {
     /** Start session after dwell outside zone (armed standby). */
     autoStartOnExit: row.auto_start_on_exit === true || row.autoStartOnExit === true,
     sessionDwellSec,
+    /** Phone notification when entering this zone (native + WebView). */
+    notifyOnEnter: row.notify_on_enter === true || row.notifyOnEnter === true,
+    entryNotifyMessage:
+      row.entry_notify_message != null
+        ? String(row.entry_notify_message)
+        : row.entryNotifyMessage != null
+          ? String(row.entryNotifyMessage)
+          : '',
     createdAt: row.created_at ?? row.createdAt ?? null,
     updatedAt: row.updated_at ?? row.updatedAt ?? null,
   };
@@ -187,6 +200,23 @@ function boolFromInput(input, camel, snake, defaultTrue = false) {
     return input[snake] === true;
   }
   return defaultTrue;
+}
+
+function entryNotifyMessageFor(g) {
+  const custom = String(g?.entryNotifyMessage ?? g?.entry_notify_message ?? '').trim();
+  if (custom) return custom;
+  const name = String(g?.name ?? 'zone').trim() || 'zone';
+  return `Please check course, ${name} ahead`;
+}
+
+/** First enabled zone with notifyOnEnter at this point (any kind). */
+function findNotifyZoneAt(lat, lon, geofences) {
+  if (!Array.isArray(geofences)) return null;
+  for (const g of geofences) {
+    if (!g || g.notifyOnEnter !== true) continue;
+    if (pointInZoneGeometry(g, lat, lon)) return g;
+  }
+  return null;
 }
 
 /** Find a boat-park zone that suppresses recording at this point. */
@@ -258,8 +288,11 @@ module.exports = {
   normalizePolygonInput,
   polygonCentroid,
   polygonBoundingRadiusM,
+  pointInZoneGeometry,
   pointInGeofence,
   findBoatParkAt,
+  findNotifyZoneAt,
+  entryNotifyMessageFor,
   findSuppressRecordingAt,
   normalizeGeofence,
   economyIntervalSecFromInput,

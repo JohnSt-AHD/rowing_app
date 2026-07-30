@@ -24,6 +24,10 @@ export type GeofenceConfig = {
   autoStartOnExit: boolean;
   /** Seconds of continuous inside/outside before auto start/stop. */
   sessionDwellSec: number;
+  /** Show phone notification on zone entry (background). */
+  notifyOnEnter?: boolean;
+  /** Custom notification body; default uses zone name. */
+  entryNotifyMessage?: string;
 };
 
 const EARTH_RADIUS_M = 6371000;
@@ -107,12 +111,36 @@ function parsePolygonCoords(raw: unknown): Array<[number, number]> {
   return ring.length >= 3 ? ring : [];
 }
 
-export function pointInGeofence(g: GeofenceConfig, lat: number, lon: number): boolean {
-  if (!g.enabled || g.kind !== 'boat_park') return false;
+export function pointInZoneGeometry(g: GeofenceConfig, lat: number, lon: number): boolean {
+  if (!g.enabled) return false;
   if (g.shapeType === 'polygon') {
     return pointInPolygon(lat, lon, g.polygonCoords);
   }
   return pointInCircle(lat, lon, g.centerLat, g.centerLon, g.radiusM);
+}
+
+export function pointInGeofence(g: GeofenceConfig, lat: number, lon: number): boolean {
+  if (!g.enabled || g.kind !== 'boat_park') return false;
+  return pointInZoneGeometry(g, lat, lon);
+}
+
+export function findNotifyZoneAt(
+  lat: number,
+  lon: number,
+  geofences: GeofenceConfig[],
+): GeofenceConfig | null {
+  for (const g of geofences) {
+    if (!g.notifyOnEnter) continue;
+    if (pointInZoneGeometry(g, lat, lon)) return g;
+  }
+  return null;
+}
+
+export function entryNotifyMessageFor(g: GeofenceConfig): string {
+  const custom = g.entryNotifyMessage?.trim();
+  if (custom) return custom;
+  const name = g.name.trim() || 'zone';
+  return `Please check course, ${name} ahead`;
 }
 
 export function findBoatParkAt(
@@ -164,6 +192,8 @@ export function normalizeGeofence(raw: Record<string, unknown>): GeofenceConfig 
     autoStopOnEnter: boolFlag(raw, 'autoStopOnEnter', 'auto_stop_on_enter'),
     autoStartOnExit: boolFlag(raw, 'autoStartOnExit', 'auto_start_on_exit'),
     sessionDwellSec: sessionDwellFromRaw(raw),
+    notifyOnEnter: boolFlag(raw, 'notifyOnEnter', 'notify_on_enter'),
+    entryNotifyMessage: String(raw.entryNotifyMessage ?? raw.entry_notify_message ?? ''),
   };
 }
 
