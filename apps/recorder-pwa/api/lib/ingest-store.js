@@ -54,8 +54,8 @@ const PATH_PACE_SEGMENT_BAND_HI = 1.28;
 const PATH_PACE_MAX_STEP_RATIO = 1.35;
 /** EMA below this is treated as rest/stale — re-seed when raw path shows rowing. */
 const PATH_PACE_REST_MAX_MPS = 1.5;
-/** Raw path above this after rest re-seeds display (piece start). ~2:36/500. */
-const PATH_PACE_ROWING_MIN_MPS = 3.2;
+/** Raw path above this after rest re-seeds display (piece start). ~3:20/500. */
+const PATH_PACE_ROWING_MIN_MPS = 2.5;
 /** Minimum moving time/distance before reporting path pace. */
 const PATH_PACE_MIN_TIME_SEC = 4;
 const PATH_PACE_MIN_DIST_M = 8;
@@ -918,14 +918,21 @@ function attachPathPaceToMapPositions(positions, fixesByDevice, orgId) {
     p.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
     const live = p.online !== false && p.telemetryStale !== true;
     const rawForDisplay = coachRawPathSpeedMps(pathSpeed, recentSpeed);
-    if (p.preferPathSpeed && pathSpeed != null && Number.isFinite(pathSpeed)) {
-      p.displaySpeedMps = pathSpeed;
+    if (p.preferPathSpeed) {
+      const direct =
+        rawForDisplay != null && Number.isFinite(rawForDisplay)
+          ? rawForDisplay
+          : pathSpeed != null && Number.isFinite(pathSpeed)
+            ? pathSpeed
+            : null;
+      p.displaySpeedMps =
+        direct != null
+          ? direct
+          : resolveDisplayPathSpeedMps(orgId, p.deviceId, rawForDisplay, live);
     } else {
       p.displaySpeedMps = resolveDisplayPathSpeedMps(orgId, p.deviceId, rawForDisplay, live);
     }
-    const coachSpeed = p.preferPathSpeed
-      ? p.pathSpeedMps ?? p.displaySpeedMps
-      : p.displaySpeedMps ?? p.pathSpeedMps;
+    const coachSpeed = p.displaySpeedMps ?? p.pathSpeedMps;
     if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
       p.speed = coachSpeed;
     }
@@ -2708,9 +2715,6 @@ async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
         pp.displaySpeedMps = cached.displaySpeedMps;
       }
     }
-    if (pp.preferPathSpeed && pp.pathSpeedMps != null && Number.isFinite(pp.pathSpeedMps)) {
-      pp.displaySpeedMps = pp.pathSpeedMps;
-    }
     const attrs = p.attributes || (p.attributes = {});
     if (pp.pathSpeedMps != null && Number.isFinite(pp.pathSpeedMps)) {
       attrs.pathSpeedMps = pp.pathSpeedMps;
@@ -2718,7 +2722,7 @@ async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
     if (pp.displaySpeedMps != null && Number.isFinite(pp.displaySpeedMps)) {
       attrs.displaySpeedMps = pp.displaySpeedMps;
     }
-    const coachSpeed = pp.pathSpeedMps ?? pp.displaySpeedMps;
+    const coachSpeed = pp.displaySpeedMps ?? pp.pathSpeedMps;
     if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
       p.speed = coachSpeed;
       continue;

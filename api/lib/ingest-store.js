@@ -51,11 +51,11 @@ const PATH_PACE_MAX_SEGMENT_MPS = 6.5;
 const PATH_PACE_SEGMENT_BAND_LO = 0.72;
 const PATH_PACE_SEGMENT_BAND_HI = 1.28;
 /** Max single-step change in displayed path pace vs previous EMA (ratio). */
-const PATH_PACE_MAX_STEP_RATIO = 1.22;
+const PATH_PACE_MAX_STEP_RATIO = 1.35;
 /** EMA below this is treated as rest/stale — re-seed when raw path shows rowing. */
 const PATH_PACE_REST_MAX_MPS = 1.5;
-/** Raw path above this after rest re-seeds display (piece start). ~2:36/500. */
-const PATH_PACE_ROWING_MIN_MPS = 3.2;
+/** Raw path above this after rest re-seeds display (piece start). ~3:20/500. */
+const PATH_PACE_ROWING_MIN_MPS = 2.5;
 /** Minimum moving time/distance before reporting path pace. */
 const PATH_PACE_MIN_TIME_SEC = 4;
 const PATH_PACE_MIN_DIST_M = 8;
@@ -63,8 +63,12 @@ const PATH_PACE_MIN_DIST_M = 8;
 const PATH_PACE_FIX_LIMIT = 35;
 /** Keep showing last path pace when a fresh window cannot be computed. */
 const PATH_PACE_HOLD_MS = 24_000;
-/** EMA weight for new raw path pace (lower = smoother display). */
-const PATH_PACE_EMA_ALPHA = 0.2;
+/** EMA weight for ticket pace (higher = follows ground speed faster). */
+const PATH_PACE_EMA_ALPHA = 0.45;
+/** Short window for recent fix-to-fix ground speed on tickets (~12s). */
+const PATH_PACE_RECENT_WINDOW_MS = 12_000;
+/** Max gap (s) between fixes when computing recent segment speed (covers 6s economy). */
+const PATH_PACE_RECENT_MAX_DT_SEC = 12;
 /** Rolling median window for coach-facing stroke rate. */
 const STROKE_MEDIAN_WINDOW_MS = 15_000;
 /** Minimum stroke readings before reporting median SPM. */
@@ -660,6 +664,62 @@ function displayMapSpeedMps(_registrySpeed, trackSpeed) {
 }
 
 /**
+ * Build validated GPS segment speeds from consecutive fixes.
+ * @param {{ t:number, lat:number, lon:number, acc?: number|null }[]} pts
+ * @param {number} [maxDtSec]
+ */
+function collectPathSegments(pts, maxDtSec = 15) {
+  /** @type {{ d: number, dt: number, seg: number }[]} */
+  const segments = [];
+  for (let i = 1; i < pts.length; i++) {
+    const dt = (pts[i].t - pts[i - 1].t) / 1000;
+    if (dt <= 0 || dt > maxDtSec) continue;
+    const acc = pts[i].acc ?? pts[i - 1].acc;
+    if (acc != null && Number.isFinite(acc) && acc > 25) continue;
+    const d = distanceMeters(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+    if (d < PATH_PACE_MIN_SEGMENT_M) continue;
+    const seg = d / dt;
+    if (seg > PATH_PACE_MAX_SEGMENT_MPS) continue;
+    segments.push({ d, dt, seg });
+  }
+  return segments;
+}
+
+/**
+ * Recent fix-to-fix ground speed (~12s) — closest to validated segment pace on tickets.
+ * @param {{ t:number, lat:number, lon:number, acc?: number|null }[]|null|undefined} fixes
+ * @param {number} [windowMs]
+ */
+function recentSegmentSpeedMpsFromFixes(fixes, windowMs = PATH_PACE_RECENT_WINDOW_MS) {
+  if (!fixes?.length) return null;
+  const sorted = [...fixes].sort((a, b) => a.t - b.t);
+  const endT = sorted[sorted.length - 1].t;
+  const cutoff = endT - windowMs;
+  const pts = sorted.filter(
+    (f) => f.t >= cutoff && Number.isFinite(f.lat) && Number.isFinite(f.lon),
+  );
+  if (pts.length < 2) return null;
+  const segments = collectPathSegments(pts, PATH_PACE_RECENT_MAX_DT_SEC);
+  if (segments.length < 2) return null;
+  const medianSeg = medianOf(segments.map((s) => s.seg));
+  return medianSeg != null && medianSeg >= 0.25 ? medianSeg : null;
+}
+
+/**
+ * Pick raw pace for ticket EMA — prefer recent ground speed when it agrees with the 30s path.
+ * @param {number|null|undefined} pathSpeed
+ * @param {number|null|undefined} recentSpeed
+ */
+function coachRawPathSpeedMps(pathSpeed, recentSpeed) {
+  if (recentSpeed != null && pathSpeed != null) {
+    const ratio = recentSpeed / pathSpeed;
+    if (ratio >= 0.55 && ratio <= 1.45) return recentSpeed;
+    return pathSpeed;
+  }
+  return recentSpeed ?? pathSpeed ?? null;
+}
+
+/**
  * Path speed from recent fixes: total distance / time (rejects GPS spikes).
  * @param {{ t:number, lat:number, lon:number }[]|null|undefined} fixes
  * @param {number} [windowMs]
@@ -677,19 +737,7 @@ function pathSpeedMpsFromFixes(fixes, windowMs = PATH_PACE_WINDOW_MS) {
   );
   if (pts.length < 2) return null;
 
-  /** @type {{ d: number, dt: number, seg: number }[]} */
-  const segments = [];
-  for (let i = 1; i < pts.length; i++) {
-    const dt = (pts[i].t - pts[i - 1].t) / 1000;
-    if (dt <= 0 || dt > 15) continue;
-    const acc = pts[i].acc ?? pts[i - 1].acc;
-    if (acc != null && Number.isFinite(acc) && acc > 25) continue;
-    const d = distanceMeters(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
-    if (d < PATH_PACE_MIN_SEGMENT_M) continue;
-    const seg = d / dt;
-    if (seg > PATH_PACE_MAX_SEGMENT_MPS) continue;
-    segments.push({ d, dt, seg });
-  }
+  const segments = collectPathSegments(pts);
   if (segments.length < 2) return null;
 
   const medianSeg = medianOf(segments.map((s) => s.seg));
@@ -864,17 +912,27 @@ function attachPathPaceToMapPositions(positions, fixesByDevice, orgId) {
   for (const p of positions) {
     const fixes = fixesByDevice.get(p.deviceId);
     const pathSpeed = pathSpeedMpsFromFixes(fixes);
+    const recentSpeed = recentSegmentSpeedMpsFromFixes(fixes);
     p.pathSpeedMps = pathSpeed;
+    p.recentPathSpeedMps = recentSpeed;
     p.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
     const live = p.online !== false && p.telemetryStale !== true;
-    if (p.preferPathSpeed && pathSpeed != null && Number.isFinite(pathSpeed)) {
-      p.displaySpeedMps = pathSpeed;
+    const rawForDisplay = coachRawPathSpeedMps(pathSpeed, recentSpeed);
+    if (p.preferPathSpeed) {
+      const direct =
+        rawForDisplay != null && Number.isFinite(rawForDisplay)
+          ? rawForDisplay
+          : pathSpeed != null && Number.isFinite(pathSpeed)
+            ? pathSpeed
+            : null;
+      p.displaySpeedMps =
+        direct != null
+          ? direct
+          : resolveDisplayPathSpeedMps(orgId, p.deviceId, rawForDisplay, live);
     } else {
-      p.displaySpeedMps = resolveDisplayPathSpeedMps(orgId, p.deviceId, pathSpeed, live);
+      p.displaySpeedMps = resolveDisplayPathSpeedMps(orgId, p.deviceId, rawForDisplay, live);
     }
-    const coachSpeed = p.preferPathSpeed
-      ? p.pathSpeedMps ?? p.displaySpeedMps
-      : p.displaySpeedMps ?? p.pathSpeedMps;
+    const coachSpeed = p.displaySpeedMps ?? p.pathSpeedMps;
     if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
       p.speed = coachSpeed;
     }
@@ -887,12 +945,15 @@ function attachPathPaceToDevices(devices, fixesByDevice, orgId) {
   for (const dev of devices) {
     const fixes = fixesByDevice.get(dev.deviceId);
     const pathSpeed = pathSpeedMpsFromFixes(fixes);
+    const recentSpeed = recentSegmentSpeedMpsFromFixes(fixes);
     dev.pathSpeedMps = pathSpeed;
+    dev.recentPathSpeedMps = recentSpeed;
     dev.pathPaceWindowSec = PATH_PACE_WINDOW_MS / 1000;
+    const rawForDisplay = coachRawPathSpeedMps(pathSpeed, recentSpeed);
     dev.displaySpeedMps = resolveDisplayPathSpeedMps(
       orgId,
       dev.deviceId,
-      pathSpeed,
+      rawForDisplay,
       dev.online !== false,
     );
   }
@@ -1402,6 +1463,9 @@ function sensorStats(samples, windowMs, deviceId) {
     },
     totalInWindow: recent.length,
     ingestRateHz: activeRateHz(recent.length, sampleTimes, windowSec),
+    derived: {
+      inBoatPark: lastDerived?.inBoatPark === true,
+    },
   };
 }
 
@@ -1948,6 +2012,18 @@ async function listDevices(orgId, opts = {}) {
   const gpsAges = onlineDevices
     .map((d) => gpsHealthAgeSec(d.gps))
     .filter((v) => Number.isFinite(v));
+  const gpsFixClockAges = onlineDevices
+    .map((d) => d.gps?.gpsFixAgeSec)
+    .filter((v) => Number.isFinite(v));
+  const uploadLags = onlineDevices
+    .map((d) => d.gps?.uploadLagSec)
+    .filter((v) => Number.isFinite(v));
+  const fixClockLags = onlineDevices
+    .map((d) => d.gps?.fixClockLagSec)
+    .filter((v) => Number.isFinite(v));
+  const lastSeenAgos = onlineDevices
+    .map((d) => d.lastSeenAgoSec)
+    .filter((v) => Number.isFinite(v));
   const ingestRates = onlineDevices
     .map((d) => d.ingestRateHz)
     .filter((v) => Number.isFinite(v));
@@ -1984,6 +2060,20 @@ async function listDevices(orgId, opts = {}) {
     avgGpsAgeSec: gpsAges.length
       ? Math.round((gpsAges.reduce((a, b) => a + b, 0) / gpsAges.length) * 10) / 10
       : null,
+    avgGpsFixAgeSec: gpsFixClockAges.length
+      ? Math.round((gpsFixClockAges.reduce((a, b) => a + b, 0) / gpsFixClockAges.length) * 10) /
+        10
+      : null,
+    avgUploadLagSec: uploadLags.length
+      ? Math.round((uploadLags.reduce((a, b) => a + b, 0) / uploadLags.length) * 10) / 10
+      : null,
+    avgFixClockLagSec: fixClockLags.length
+      ? Math.round((fixClockLags.reduce((a, b) => a + b, 0) / fixClockLags.length) * 10) / 10
+      : null,
+    avgLastSeenAgoSec: lastSeenAgos.length
+      ? Math.round((lastSeenAgos.reduce((a, b) => a + b, 0) / lastSeenAgos.length) * 10) / 10
+      : null,
+    devicesInBoatPark: onlineDevices.filter((d) => d.derived?.inBoatPark === true).length,
     avgIngestHz: ingestRates.length
       ? Math.round((ingestRates.reduce((a, b) => a + b, 0) / ingestRates.length) * 10) / 10
       : null,
@@ -2625,9 +2715,6 @@ async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
         pp.displaySpeedMps = cached.displaySpeedMps;
       }
     }
-    if (pp.preferPathSpeed && pp.pathSpeedMps != null && Number.isFinite(pp.pathSpeedMps)) {
-      pp.displaySpeedMps = pp.pathSpeedMps;
-    }
     const attrs = p.attributes || (p.attributes = {});
     if (pp.pathSpeedMps != null && Number.isFinite(pp.pathSpeedMps)) {
       attrs.pathSpeedMps = pp.pathSpeedMps;
@@ -2635,7 +2722,7 @@ async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
     if (pp.displaySpeedMps != null && Number.isFinite(pp.displaySpeedMps)) {
       attrs.displaySpeedMps = pp.displaySpeedMps;
     }
-    const coachSpeed = pp.pathSpeedMps ?? pp.displaySpeedMps;
+    const coachSpeed = pp.displaySpeedMps ?? pp.pathSpeedMps;
     if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
       p.speed = coachSpeed;
       continue;
