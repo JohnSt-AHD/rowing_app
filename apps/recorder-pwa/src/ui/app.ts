@@ -21,7 +21,6 @@ import {
   getNativeActiveSession,
   getNativeStandbyStatus,
   prepareNativeRecordingSetup,
-  checkNativeRecordingSetup,
   recordingSetupLogLines,
   setNativeLiveMapMode,
   setNativeGeofences,
@@ -1211,20 +1210,15 @@ export function mountApp(root: HTMLElement): void {
           requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
         });
         try {
-          const setup = await checkNativeRecordingSetup();
-          if (setup && !setup.ready) {
-            pushLog(
-              'Phone setup incomplete — use Start session or Settings → Phone permissions & battery.',
-              false,
-            );
-            for (const line of recordingSetupLogLines(setup)) {
-              pushLog(line, false);
-            }
-          }
+          const p = await requestNativePermissions();
+          pushLog(
+            `Permissions — notifications: ${p.notifications}, location: ${p.location}, accelerometer: ${p.accelerometer}`,
+            false,
+          );
           refreshLogPre();
         } catch (e) {
           pushLog(
-            `Permission check error: ${e instanceof Error ? e.message : String(e)}`,
+            `Permission setup error: ${e instanceof Error ? e.message : String(e)}`,
             false,
           );
           refreshLogPre();
