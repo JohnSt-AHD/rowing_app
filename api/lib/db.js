@@ -96,6 +96,25 @@ async function initSchema() {
   const sql = await getSql();
   if (!sql) return;
 
+  // Existing production DBs: skip dozens of DDL round-trips on every cold start.
+  try {
+    const existing = await sql`
+      SELECT 1 AS ok FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'rnz_orgs'
+      LIMIT 1
+    `;
+    if (existing.rows.length) {
+      await sql`
+        INSERT INTO rnz_schema_migrations (id) VALUES ('core_schema_v2')
+        ON CONFLICT (id) DO NOTHING
+      `.catch(() => {});
+      schemaReady = true;
+      return;
+    }
+  } catch {
+    /* first install — run full bootstrap below */
+  }
+
   await sql`
     CREATE TABLE IF NOT EXISTS rnz_devices (
       id SERIAL PRIMARY KEY,
@@ -325,6 +344,10 @@ async function initSchema() {
     });
   }
 
+  await sql`
+    INSERT INTO rnz_schema_migrations (id) VALUES ('core_schema_v2')
+    ON CONFLICT (id) DO NOTHING
+  `;
   schemaReady = true;
 }
 
@@ -1334,12 +1357,15 @@ async function getLatestRowingTelemetry(orgId, windowMs = 120000) {
 async function getLatestBatteryByDevice(orgId) {
   const sql = await getSql();
   await ensureOrgsBootstrapped();
+  // Battery is reported ~every 10 min — limit scan to recent samples (full-table DISTINCT ON timed out).
+  const cutoff = Date.now() - 7 * 86400000;
   const rows = await sql`
     SELECT DISTINCT ON (unique_id)
       unique_id, t_ms, battery_pct
     FROM rnz_samples
     WHERE org_id = ${orgId}
       AND battery_pct IS NOT NULL
+      AND t_ms >= ${cutoff}
     ORDER BY unique_id, t_ms DESC
   `;
   /** @type {Map<string, { t: number, pct: number }>} */

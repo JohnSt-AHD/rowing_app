@@ -1477,14 +1477,34 @@ async function poll() {
       throw devicesRes.reason;
     }
     const res = devicesRes.value;
+    let data;
     if (!res.ok) {
       const text = await res.text();
-      if (res.status === 401) {
+      if (
+        res.status === 504 &&
+        mapResult.status === 'fulfilled' &&
+        mapResult.value?.positions?.length
+      ) {
+        const positions = mapResult.value.positions;
+        data = {
+          ok: true,
+          devices: [],
+          activeCount: positions.filter((p) => p.online !== false).length,
+          deviceCount: positions.length,
+          polledAt: Date.now(),
+          persisted: true,
+          windowSec: Number(windowSec),
+          warning:
+            'Device telemetry API timed out — map and cards show live GPS only. Retry in a few seconds.',
+        };
+      } else if (res.status === 401) {
         throw new Error('401 Unauthorized — ingest token on this page must match INGEST_TOKEN in Vercel.');
+      } else {
+        throw new Error(`${res.status} ${text.slice(0, 120)}`);
       }
-      throw new Error(`${res.status} ${text.slice(0, 120)}`);
+    } else {
+      data = await res.json();
     }
-    const data = await res.json();
 
     if (mapResult.status === 'rejected') {
       const mapStatus = $('#mapStatus');
