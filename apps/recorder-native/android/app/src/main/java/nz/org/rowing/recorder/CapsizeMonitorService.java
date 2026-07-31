@@ -304,6 +304,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         loadUprightFromPrefs();
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        boolean hasSession = hasActiveSessionPrefs(prefs) || hasStandbyPrefs(prefs);
+        if (!hasSession) {
+            Log.w(TAG, "Service started with no active session — stopping");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
         boolean recordingActive = prefs.getBoolean("recordingActive", false);
         if (standbyMode && !recordingActive) {
             return startStandbyCommand(bootResume || standbyResume);
@@ -321,7 +328,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastStaleGpsPiggybackWallMs = 0L;
         gpsWindowBuffer.clear();
         lastWindowCollectWallMs = 0L;
-        startForegroundWithTypes();
+        if (!startForegroundWithTypes()) {
+            return START_NOT_STICKY;
+        }
         clearBootResumeNotification();
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putInt(BOOT_RETRY_COUNT_KEY, 0).apply();
         mirrorSessionPrefsToDeviceProtected(getApplicationContext());
@@ -357,7 +366,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private int startStandbyCommand(boolean resumed) {
-        startForegroundWithTypes();
+        if (!startForegroundWithTypes()) {
+            return START_NOT_STICKY;
+        }
         clearBootResumeNotification();
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putInt(BOOT_RETRY_COUNT_KEY, 0).apply();
         mirrorSessionPrefsToDeviceProtected(getApplicationContext());
@@ -1910,16 +1921,24 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (nm != null) nm.cancel(NOTIF_ID_BOOT_RESUME);
     }
 
-    private void startForegroundWithTypes() {
+    private boolean startForegroundWithTypes() {
         Notification notification = buildForegroundNotification();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            int types = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
-            if (Build.VERSION.SDK_INT >= 34) {
-                types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                int types = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+                if (Build.VERSION.SDK_INT >= 34) {
+                    types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+                }
+                ServiceCompat.startForeground(this, NOTIF_ID_FOREGROUND, notification, types);
+            } else {
+                startForeground(NOTIF_ID_FOREGROUND, notification);
             }
-            ServiceCompat.startForeground(this, NOTIF_ID_FOREGROUND, notification, types);
-        } else {
-            startForeground(NOTIF_ID_FOREGROUND, notification);
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "startForeground failed: " + e.getMessage());
+            clearRecordingSession(getApplicationContext());
+            stopSelf();
+            return false;
         }
     }
 

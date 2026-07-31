@@ -1,6 +1,8 @@
 package nz.org.rowing.recorder;
 
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import androidx.annotation.NonNull;
 import com.getcapacitor.BridgeActivity;
 
@@ -14,7 +16,15 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onResume() {
         super.onResume();
-        CapsizeMonitorService.requestBootResume(getApplicationContext());
+        new Handler(Looper.getMainLooper())
+                .post(
+                        () -> {
+                            try {
+                                CapsizeMonitorService.requestBootResume(getApplicationContext());
+                            } catch (Exception ignored) {
+                                /* optional resume */
+                            }
+                        });
     }
 
     @Override

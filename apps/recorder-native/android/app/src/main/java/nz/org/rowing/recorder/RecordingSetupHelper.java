@@ -214,11 +214,17 @@ public final class RecordingSetupHelper {
     /** True when Data Saver is off or this app may use background mobile data. */
     private static boolean isDataSaverBypassed(Context ctx) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return true;
-        ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (cm == null) return true;
-        int status = cm.getRestrictBackgroundStatus();
-        return status == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED
-                || status == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_WHITELISTED;
+        try {
+            ConnectivityManager cm =
+                    (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return true;
+            int status = cm.getRestrictBackgroundStatus();
+            return status == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED
+                    || status == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_WHITELISTED;
+        } catch (Exception e) {
+            Log.w(TAG, "Data saver status unavailable: " + e.getMessage());
+            return true;
+        }
     }
 
     /** True when "Remove/Pause app if unused" style restrictions are off for this app. */
