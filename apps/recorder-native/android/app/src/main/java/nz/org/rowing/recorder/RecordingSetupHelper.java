@@ -5,12 +5,14 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
 import android.provider.Settings;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.IntentCompat;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -111,6 +113,18 @@ public final class RecordingSetupHelper {
         }
         out.put("openedBatterySettings", openedBatterySettings);
 
+        boolean openedDataSaverSettings = false;
+        if (!isDataSaverBypassed(ctx)) {
+            openedDataSaverSettings = openDataSaverBypassSettings(activity);
+        }
+        out.put("openedDataSaverSettings", openedDataSaverSettings);
+
+        boolean openedUnusedAppSettings = false;
+        if (!isUnusedAppRestrictionsDisabled(ctx)) {
+            openedUnusedAppSettings = openUnusedAppRestrictionsSettings(activity);
+        }
+        out.put("openedUnusedAppSettings", openedUnusedAppSettings);
+
         PluginCall call = pendingCall;
         clearPending();
         call.resolve(out);
@@ -128,15 +142,24 @@ public final class RecordingSetupHelper {
         boolean background =
                 Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || hasBackgroundLocation(ctx);
         boolean battery = isBatteryUnrestricted(ctx);
+        boolean dataSaverBypass = isDataSaverBypassed(ctx);
+        boolean unusedAppRestrictionsDisabled = isUnusedAppRestrictionsDisabled(ctx);
         JSObject o = new JSObject();
         o.put("notifications", notif);
         o.put("locationForeground", fine);
         o.put("locationBackground", background);
         o.put("locationAlways", fine && background);
         o.put("batteryUnrestricted", battery);
+        o.put("dataSaverBypass", dataSaverBypass);
+        o.put("unusedAppRestrictionsDisabled", unusedAppRestrictionsDisabled);
         o.put(
                 "ready",
-                notif && fine && background && battery);
+                notif
+                        && fine
+                        && background
+                        && battery
+                        && dataSaverBypass
+                        && unusedAppRestrictionsDisabled);
         return o;
     }
 
@@ -162,6 +185,26 @@ public final class RecordingSetupHelper {
         PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
         if (pm == null) return true;
         return pm.isIgnoringBatteryOptimizations(ctx.getPackageName());
+    }
+
+    /** True when Data Saver is off or this app may use background mobile data. */
+    private static boolean isDataSaverBypassed(Context ctx) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return true;
+        ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return true;
+        int status = cm.getRestrictBackgroundStatus();
+        return status == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED
+                || status == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_WHITELISTED;
+    }
+
+    /** True when "Remove/Pause app if unused" style restrictions are off for this app. */
+    private static boolean isUnusedAppRestrictionsDisabled(Context ctx) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return true;
+        try {
+            return ctx.getPackageManager().isAutoRevokeWhitelisted(ctx.getPackageName());
+        } catch (Exception e) {
+            return true;
+        }
     }
 
     private static boolean openAppDetailsSettings(Activity activity) {
@@ -190,6 +233,31 @@ public final class RecordingSetupHelper {
             } catch (Exception e2) {
                 return false;
             }
+        }
+    }
+
+    private static boolean openDataSaverBypassSettings(Activity activity) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false;
+        try {
+            Intent intent = new Intent(Settings.ACTION_IGNORE_BACKGROUND_DATA_RESTRICTIONS_SETTINGS);
+            intent.setData(Uri.parse("package:" + activity.getPackageName()));
+            activity.startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            return openAppDetailsSettings(activity);
+        }
+    }
+
+    private static boolean openUnusedAppRestrictionsSettings(Activity activity) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false;
+        try {
+            Intent intent =
+                    IntentCompat.createManageUnusedAppRestrictionsIntent(
+                            activity, activity.getPackageName());
+            activity.startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            return openAppDetailsSettings(activity);
         }
     }
 }

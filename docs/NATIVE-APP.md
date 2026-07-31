@@ -57,7 +57,11 @@ Copy that file to the phone and tap it to install. Windows Explorer opens the fo
 
 1. **Settings → Apps → CrewSight → Battery** → **Unrestricted**
 2. **Location** → **Allow all the time**
-3. In the app: **Settings** → Device ID → **Start session**
+3. **Mobile data** → turn on **Allow data usage while Data saver is on** (if you use Data saver)
+4. Turn **off** **Pause app activity if unused** (Android 13+) or **Remove permissions if app isn't used** (Android 11–12)
+5. In the app: **Settings** → **Phone permissions & battery** (runs the setup wizard), then **Start session**
+
+The app can open each system screen for you, but Android requires you to confirm each toggle — it cannot flip them silently on install.
 
 ---
 
@@ -128,6 +132,8 @@ On **Start session** (and **Settings → Phone permissions & battery**), the nat
 2. Location while using (precise)
 3. Location **all the time** prompt (Android 10+), or the app info screen if the OS requires it
 4. Battery optimization exemption dialog (Unrestricted)
+5. Data saver bypass screen when Data saver would block background uploads
+6. Unused-app restrictions screen (**Pause app activity if unused** / **Remove permissions if unused**)
 
 Android does not allow apps to toggle these silently — the user must confirm each system screen.
 - `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_LOCATION`

@@ -87,8 +87,12 @@ export type NativeRecordingSetupStatus = {
   locationBackground: boolean;
   locationAlways: boolean;
   batteryUnrestricted: boolean;
+  dataSaverBypass?: boolean;
+  unusedAppRestrictionsDisabled?: boolean;
   openedLocationSettings?: boolean;
   openedBatterySettings?: boolean;
+  openedDataSaverSettings?: boolean;
+  openedUnusedAppSettings?: boolean;
 };
 
 export type NativeGeofenceZone = {
@@ -317,8 +321,18 @@ export function recordingSetupLogLines(
       'When asked, allow unrestricted battery (Not optimized / Unrestricted).',
     );
   }
+  if (setup.openedDataSaverSettings) {
+    lines.push(
+      'Turn on Allow data usage while Data saver is on (or Unrestricted data), then return to the app.',
+    );
+  }
+  if (setup.openedUnusedAppSettings) {
+    lines.push(
+      'Turn off Pause app activity if unused / Remove permissions if app is unused, then return to the app.',
+    );
+  }
   if (setup.ready) {
-    lines.push('Phone setup OK — notifications, location (Always), and battery.');
+    lines.push('Phone setup OK — notifications, location (Always), battery, and data settings.');
   } else {
     if (!setup.notifications) {
       lines.push('Allow notifications so recording can run in the background.');
@@ -330,6 +344,12 @@ export function recordingSetupLogLines(
     }
     if (!setup.batteryUnrestricted) {
       lines.push('Set battery to Unrestricted / Not optimized for this app.');
+    }
+    if (setup.dataSaverBypass === false) {
+      lines.push('Allow mobile data while Data saver is on for this app.');
+    }
+    if (setup.unusedAppRestrictionsDisabled === false) {
+      lines.push('Turn off unused-app restrictions (Pause / Remove permissions if unused).');
     }
   }
   return lines;
