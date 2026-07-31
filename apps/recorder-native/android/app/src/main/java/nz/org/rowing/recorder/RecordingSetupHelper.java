@@ -8,11 +8,14 @@ import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.IntentCompat;
+import android.util.Log;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -23,6 +26,7 @@ import com.getcapacitor.PluginCall;
  */
 public final class RecordingSetupHelper {
 
+    private static final String TAG = "RecordingSetup";
     private static final int REQ_NOTIFICATIONS = 9101;
     private static final int REQ_FINE_LOCATION = 9102;
     private static final int REQ_BACKGROUND_LOCATION = 9103;
@@ -101,33 +105,58 @@ public final class RecordingSetupHelper {
         Context ctx = activity.getApplicationContext();
         JSObject out = buildStatus(ctx);
 
-        boolean openedLocationSettings = false;
-        if (hasFineLocation(ctx) && !hasBackgroundLocation(ctx)) {
-            openedLocationSettings = openAppDetailsSettings(activity);
-        }
-        out.put("openedLocationSettings", openedLocationSettings);
-
-        boolean openedBatterySettings = false;
-        if (!isBatteryUnrestricted(ctx)) {
-            openedBatterySettings = openBatteryUnrestrictedSettings(activity);
-        }
-        out.put("openedBatterySettings", openedBatterySettings);
-
-        boolean openedDataSaverSettings = false;
-        if (!isDataSaverBypassed(ctx)) {
-            openedDataSaverSettings = openDataSaverBypassSettings(activity);
-        }
-        out.put("openedDataSaverSettings", openedDataSaverSettings);
-
-        boolean openedUnusedAppSettings = false;
-        if (!isUnusedAppRestrictionsDisabled(ctx)) {
-            openedUnusedAppSettings = openUnusedAppRestrictionsSettings(activity);
-        }
-        out.put("openedUnusedAppSettings", openedUnusedAppSettings);
+        String settingsStep = nextSettingsStep(ctx);
+        out.put("openedLocationSettings", "location".equals(settingsStep));
+        out.put("openedBatterySettings", "battery".equals(settingsStep));
+        out.put("openedDataSaverSettings", "dataSaver".equals(settingsStep));
+        out.put("openedUnusedAppSettings", "unusedApp".equals(settingsStep));
 
         PluginCall call = pendingCall;
         clearPending();
         call.resolve(out);
+
+        if (settingsStep != null) {
+            final String step = settingsStep;
+            new Handler(Looper.getMainLooper())
+                    .post(
+                            () -> {
+                                if (activity.isFinishing()) return;
+                                openSettingsStep(activity, step);
+                            });
+        }
+    }
+
+    /** Highest-priority missing setting — only one screen per prepareRecording call. */
+    private static String nextSettingsStep(Context ctx) {
+        if (hasFineLocation(ctx) && !hasBackgroundLocation(ctx)) return "location";
+        if (!isBatteryUnrestricted(ctx)) return "battery";
+        if (!isDataSaverBypassed(ctx)) return "dataSaver";
+        if (!isUnusedAppRestrictionsDisabled(ctx)) return "unusedApp";
+        return null;
+    }
+
+    private static void openSettingsStep(Activity activity, String step) {
+        if (activity.isFinishing()) return;
+        try {
+            switch (step) {
+                case "location":
+                    openAppDetailsSettings(activity);
+                    break;
+                case "battery":
+                    openBatteryUnrestrictedSettings(activity);
+                    break;
+                case "dataSaver":
+                    openDataSaverBypassSettings(activity);
+                    break;
+                case "unusedApp":
+                    openUnusedAppRestrictionsSettings(activity);
+                    break;
+                default:
+                    break;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Settings step " + step + " failed: " + e.getMessage());
+        }
     }
 
     private static void clearPending() {
@@ -154,12 +183,7 @@ public final class RecordingSetupHelper {
         o.put("unusedAppRestrictionsDisabled", unusedAppRestrictionsDisabled);
         o.put(
                 "ready",
-                notif
-                        && fine
-                        && background
-                        && battery
-                        && dataSaverBypass
-                        && unusedAppRestrictionsDisabled);
+                notif && fine && background && battery);
         return o;
     }
 
@@ -244,7 +268,8 @@ public final class RecordingSetupHelper {
             activity.startActivity(intent);
             return true;
         } catch (Exception e) {
-            return openAppDetailsSettings(activity);
+            Log.w(TAG, "Data saver settings intent failed: " + e.getMessage());
+            return false;
         }
     }
 
@@ -257,7 +282,8 @@ public final class RecordingSetupHelper {
             activity.startActivity(intent);
             return true;
         } catch (Exception e) {
-            return openAppDetailsSettings(activity);
+            Log.w(TAG, "Unused-app settings intent failed: " + e.getMessage());
+            return false;
         }
     }
 }

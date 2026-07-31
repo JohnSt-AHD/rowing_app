@@ -332,7 +332,7 @@ export function recordingSetupLogLines(
     );
   }
   if (setup.ready) {
-    lines.push('Phone setup OK — notifications, location (Always), battery, and data settings.');
+    lines.push('Phone setup OK — notifications, location (Always), and battery.');
   } else {
     if (!setup.notifications) {
       lines.push('Allow notifications so recording can run in the background.');
@@ -350,6 +350,12 @@ export function recordingSetupLogLines(
     }
     if (setup.unusedAppRestrictionsDisabled === false) {
       lines.push('Turn off unused-app restrictions (Pause / Remove permissions if unused).');
+    }
+    if (
+      setup.dataSaverBypass === false ||
+      setup.unusedAppRestrictionsDisabled === false
+    ) {
+      lines.push('Run setup again after each system screen until all recommended settings are done.');
     }
   }
   return lines;
