@@ -129,6 +129,36 @@
         max-width: none;
         margin: 0;
       }
+      .install-dl-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 1.25rem;
+        margin: 0.75rem 0;
+      }
+      .install-qr {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.65rem;
+        border-radius: 12px;
+        border: 1px solid var(--ahd-border, rgba(148, 180, 220, 0.22));
+        background: rgba(255, 255, 255, 0.96);
+        max-width: 180px;
+      }
+      .install-qr img {
+        display: block;
+        width: 148px;
+        height: 148px;
+      }
+      .install-qr-caption {
+        margin: 0;
+        font-size: 0.8rem;
+        line-height: 1.35;
+        text-align: center;
+        color: #334155;
+      }
     </style>
   </head>
   <body class="hub-page">
@@ -156,13 +186,27 @@
         <p class="install-note">
           v1.0.7+ · arm64 build (~10 MB). Background GPS needs location <strong>Always</strong> and notifications.
         </p>
-        <p>
-          <a
-            class="btn-dl"
-            href="https://github.com/JohnSt-AHD/rowing_app/releases/download/android-apk-latest/CrewSight.apk"
-            ><strong>Download CrewSight.apk</strong></a
-          >
-        </p>
+        <div class="install-dl-row">
+          <p style="margin: 0">
+            <a
+              class="btn-dl"
+              href="https://github.com/JohnSt-AHD/rowing_app/releases/download/android-apk-latest/CrewSight.apk"
+              ><strong>Download CrewSight.apk</strong></a
+            >
+          </p>
+          <figure class="install-qr" aria-label="QR code to download CrewSight APK">
+            <img
+              src="/assets/crewsight/install/crewsight-apk-qr.png"
+              width="148"
+              height="148"
+              alt="QR code — scan to download CrewSight.apk on your phone"
+              loading="lazy"
+            />
+            <figcaption class="install-qr-caption">
+              Scan with your phone camera to download the APK
+            </figcaption>
+          </figure>
+        </div>
         <p class="guide-jump install-note">
           New to sideloading? Follow the
           <a href="#android-guide"><strong>Android install guide</strong></a> below (with screenshots).
@@ -217,7 +261,7 @@
         <div class="guide-step">
           <h3 class="guide-step-title"><span class="guide-step-num">1</span>Download the APK</h3>
           <p>
-            On this page, tap <strong>Download CrewSight.apk</strong> above (or open the download from Chrome).
+            Scan the <strong>QR code</strong> above, or tap <strong>Download CrewSight.apk</strong> (or open the download from Chrome).
           </p>
           <img
             class="guide-shot"
