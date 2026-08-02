@@ -1186,6 +1186,7 @@
           : '—';
       html += `<tr><td><span class="course-view-table__dot" style="background:${colorForDevice(deviceId)}"></span><strong>${esc(deviceId)}</strong></td>`;
       html += `<td>${startLabel}</td>`;
+      let prevCrossingMs = tStart;
       for (const seg of segments) {
         const t = crossingTimeForLine(deviceId, seg.line, course);
         if (!t || !tStart) {
@@ -1193,9 +1194,15 @@
           continue;
         }
         const elapsed = formatElapsed(t - tStart);
-        const segSpeed = avgSpeedInSegment(trace, seg.from, seg.to);
-        const segProg = formatPrognosticForDevice(segSpeed, deviceId, live.athleteId);
+        const segDistM = seg.to - seg.from;
+        const segElapsedMs = prevCrossingMs != null ? t - prevCrossingMs : null;
+        let segProg = null;
+        if (segDistM > 0 && segElapsedMs != null && segElapsedMs > 0) {
+          const speedMps = segDistM / (segElapsedMs / 1000);
+          segProg = formatPrognosticForDevice(speedMps, deviceId, live.athleteId);
+        }
         html += `<td>${esc(elapsed)}${segProg ? ` · ${esc(segProg)}` : ''}</td>`;
+        prevCrossingMs = t;
       }
       let paceCell;
       if (finished) {
