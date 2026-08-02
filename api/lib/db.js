@@ -712,6 +712,7 @@ function derivedGpsSpeedMps(prev, next) {
  * @param {Array<{ t: number, gps?: object }>} samples
  */
 async function updateDeviceLatestGps(orgId, uniqueId, samples) {
+  const { isGpsFixOutlier } = require('./gps-outlier');
   let best = null;
   for (const s of samples) {
     const lat = s.gps?.lat;
@@ -752,21 +753,26 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
   if (!best) return;
   const sql = await getSql();
   const prevRows = await sql`
-    SELECT last_gps_t_ms, last_lat, last_lon
+    SELECT last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
     FROM rnz_devices
     WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
     LIMIT 1
   `;
   const prev = prevRows.rows[0];
   if (prev?.last_lat != null && prev?.last_lon != null && prev?.last_gps_t_ms != null) {
-    const derived = derivedGpsSpeedMps(
-      {
-        t: Number(prev.last_gps_t_ms),
-        lat: Number(prev.last_lat),
-        lon: Number(prev.last_lon),
-      },
-      best,
-    );
+    const prevFix = {
+      t: Number(prev.last_gps_t_ms),
+      lat: Number(prev.last_lat),
+      lon: Number(prev.last_lon),
+      acc:
+        prev.last_gps_accuracy != null && Number.isFinite(Number(prev.last_gps_accuracy))
+          ? Number(prev.last_gps_accuracy)
+          : null,
+    };
+    if (isGpsFixOutlier(prevFix, best)) {
+      return;
+    }
+    const derived = derivedGpsSpeedMps(prevFix, best);
     if (derived != null) best.spd = mergeGpsSpeedMps(derived);
   }
   await sql`

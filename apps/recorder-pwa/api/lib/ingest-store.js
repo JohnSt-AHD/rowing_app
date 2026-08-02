@@ -1,4 +1,9 @@
 const db = require('./db');
+const {
+  GPS_OUTLIER_MAX_ROWING_MPS,
+  isGpsFixOutlier,
+  filterOutlierGpsFixes,
+} = require('./gps-outlier');
 
 const CAPSIZE_ALERT_MAX_AGE_MS = db.CAPSIZE_ALERT_MAX_AGE_MS ?? 12 * 60 * 60 * 1000;
 const CAPSIZE_GPS_BACKFILL_MAX_AGE_MS = 60 * 1000;
@@ -9,6 +14,9 @@ const { findSuppressRecordingAt } = require('./geofence');
 /** Last known GPS per org:device — used to suppress motion/HR while parked. */
 const lastGpsByDevice = globalThis.__rnzLastGpsByDevice ?? new Map();
 globalThis.__rnzLastGpsByDevice = lastGpsByDevice;
+/** Last accepted GPS fix per org:device — used to reject teleports on ingest. */
+const lastAcceptedGpsFix = globalThis.__rnzLastAcceptedGpsFix ?? new Map();
+globalThis.__rnzLastAcceptedGpsFix = lastAcceptedGpsFix;
 
 function orgSessionKey(orgId, sessionId) {
   return `${orgId}:${sessionId}`;
@@ -101,7 +109,7 @@ function predictLimitsForMode(predictMode) {
   return {
     maxSpeedMps: MAX_ROWING_PREDICT_MPS,
     maxOffsetM: MAX_SMOOTH_OFFSET_M,
-    maxTrackSpeedMps: MAX_TRACK_SPEED_MPS,
+    maxTrackSpeedMps: GPS_OUTLIER_MAX_ROWING_MPS,
   };
 }
 
@@ -144,8 +152,23 @@ const metrics = globalThis.__rnzIngestMetrics ?? {
   lastPersistError: null,
   lastPersistAt: null,
   mapPolls: 0,
+  gpsOutliersRejected: 0,
 };
 globalThis.__rnzIngestMetrics = metrics;
+
+function lastAcceptedGpsFixFor(deviceId) {
+  return lastAcceptedGpsFix.get(String(deviceId)) ?? null;
+}
+
+function rememberAcceptedGpsFix(deviceId, fix) {
+  if (!fix) return;
+  lastAcceptedGpsFix.set(String(deviceId), {
+    t: fix.t,
+    lat: fix.lat,
+    lon: fix.lon,
+    acc: fix.acc ?? null,
+  });
+}
 
 /**
  * @typedef {{
@@ -621,11 +644,18 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
     return true;
   }
 
-  const jumpM = distanceMeters(fix.lat, fix.lon, prev.lat, prev.lon);
-  if (jumpM / dtSec > maxTrackSpeedMps) {
-    gpsTracks.set(key, resetGpsSmoothState(fix));
-    return true;
+  const prevFix = {
+    t: prev.t,
+    lat: prev.lat,
+    lon: prev.lon,
+    acc: null,
+  };
+  if (isGpsFixOutlier(prevFix, fix, { maxMps: maxTrackSpeedMps })) {
+    metrics.gpsOutliersRejected++;
+    return false;
   }
+
+  const jumpM = distanceMeters(fix.lat, fix.lon, prev.lat, prev.lon);
 
   const speedMps = jumpM / dtSec;
   let courseDeg = bearingDeg(prev.lat, prev.lon, fix.lat, fix.lon);
@@ -840,11 +870,14 @@ async function loadPathPaceFixesByDevice(orgId, windowMs, telemetryByDevice) {
           const latest = fixes[fixes.length - 1];
           const lagSec = (Date.now() - latest.t) / 1000;
           if (lagSec > 20) {
-            fixesByDevice.set(deviceId, rebaseFixTimestamps(fixes, Date.now()));
+            fixesByDevice.set(
+              deviceId,
+              filterOutlierGpsFixes(rebaseFixTimestamps(fixes, Date.now())),
+            );
             continue;
           }
         }
-        fixesByDevice.set(deviceId, fixes);
+        fixesByDevice.set(deviceId, filterOutlierGpsFixes(fixes));
       }
     } catch (err) {
       console.error('[ingest-store] loadPathPaceFixesByDevice DB failed:', err);
@@ -863,7 +896,7 @@ async function loadPathPaceFixesByDevice(orgId, windowMs, telemetryByDevice) {
           (a, b) => a.t - b.t,
         ),
       );
-      fixesByDevice.set(deviceId, merged);
+      fixesByDevice.set(deviceId, filterOutlierGpsFixes(merged));
     }
   }
   return fixesByDevice;
@@ -1308,8 +1341,22 @@ function sanitizeAndTrackSamples(deviceId, samples) {
         }
         next = rest;
       } else {
-        const trackFix = gpsFromSample(sample, { forTrack: true });
-        if (trackFix) updateGpsTrack(deviceId, trackFix);
+        const prev = lastAcceptedGpsFixFor(deviceId);
+        if (prev && isGpsFixOutlier(prev, fix)) {
+          metrics.gpsOutliersRejected++;
+          const { gps, ...rest } = sample;
+          const hasPayload =
+            rest.motion != null || rest.hr != null || rest.derived != null;
+          if (!hasPayload) {
+            dropped++;
+            continue;
+          }
+          next = rest;
+        } else {
+          rememberAcceptedGpsFix(deviceId, fix);
+          const trackFix = gpsFromSample(sample, { forTrack: true });
+          if (trackFix) updateGpsTrack(deviceId, trackFix);
+        }
       }
     }
     out.push(next);
@@ -2529,6 +2576,32 @@ function samplesByDeviceForWindow(orgId, windowMs) {
   return byDevice;
 }
 
+/** Replace raw map coords when the latest fix teleports vs the warmed track. */
+function rejectOutlierMapPositions(positions, orgId) {
+  if (!Array.isArray(positions) || orgId == null) return positions;
+  return positions.map((p) => {
+    if (p.latitude == null || p.longitude == null) return p;
+    const trackKey = orgDeviceKey(orgId, p.deviceId);
+    const track = gpsTracks.get(trackKey);
+    if (!track) return p;
+    const prev = { t: track.t, lat: track.lat, lon: track.lon, acc: null };
+    const fix = {
+      t: Number(p.fixMs) || Date.now(),
+      lat: p.latitude,
+      lon: p.longitude,
+      acc: p.accuracy ?? null,
+    };
+    if (!isGpsFixOutlier(prev, fix)) return p;
+    metrics.gpsOutliersRejected++;
+    return {
+      ...p,
+      latitude: track.lat,
+      longitude: track.lon,
+      gpsOutlierRejected: true,
+    };
+  });
+}
+
 async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   metrics.mapPolls++;
   const predictMode = parsePredictMode(opts.predictMode);
@@ -2559,7 +2632,8 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       );
       await warmGpsTracksFromRecentDbFixes(orgId, telemetryWindowMs, trackOpts);
       warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
-      const positions = attachSmoothMapCoords(rawMerged, predictMode, orgId);
+      const filtered = rejectOutlierMapPositions(rawMerged, orgId);
+      const positions = attachSmoothMapCoords(filtered, predictMode, orgId);
 
       attachRowingToMapPositions(positions, rowingByDevice);
       for (const p of positions) {
@@ -2591,7 +2665,8 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   ]);
   await warmGpsTracksFromRecentDbFixes(orgId, telemetryWindowMs, trackOpts);
   warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
-  const mapped = attachSmoothMapCoords(rawMerged, predictMode, orgId).map((p) => {
+  const filtered = rejectOutlierMapPositions(rawMerged, orgId);
+  const mapped = attachSmoothMapCoords(filtered, predictMode, orgId).map((p) => {
     const rowing = rowingByDevice.get(p.deviceId) || {};
     return {
       ...p,
@@ -2625,6 +2700,7 @@ function getMetrics() {
     lastPersistError: metrics.lastPersistError,
     lastPersistAt: metrics.lastPersistAt,
     mapPolls: metrics.mapPolls,
+    gpsOutliersRejected: metrics.gpsOutliersRejected,
     requestRateHz: Math.round((metrics.requests / uptimeSec) * 100) / 100,
   };
 }
