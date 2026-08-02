@@ -11,6 +11,8 @@
   const ROLLING_START_DIST_M = 200;
   const ROLLING_PROGNOSTIC_PCT = 50;
   const MAX_SAVED_RACES = 30;
+  const CHART_SMOOTH = { tauDistM: 40, maxAccelMps2: 1.5, glitchHoldAboveMps: 1.5 };
+  const CHART_DENSIFY_STEP_M = 3;
   const DEVICE_COLORS = [
     '#00e5ff',
     '#4ade80',
@@ -908,6 +910,91 @@
     }
   }
 
+  function smoothSpeedAlongDistance(points, opts = {}) {
+    if (points.length <= 1) return points.map((p) => ({ ...p }));
+
+    const tauDistM = opts.tauDistM ?? 40;
+    const maxAccel = opts.maxAccelMps2 ?? 1.5;
+    const glitchHold = opts.glitchHoldAboveMps ?? 1.5;
+    const out = [{ distM: points[0].distM, speedMps: points[0].speedMps }];
+
+    for (let i = 1; i < points.length; i++) {
+      const prev = out[out.length - 1];
+      const sample = points[i];
+      const distDelta = Math.max(0.5, sample.distM - prev.distM);
+      const avgSpd = Math.max(0.5, (prev.speedMps + sample.speedMps) / 2);
+      const dtSec = distDelta / avgSpd;
+
+      let target = sample.speedMps;
+      if (target < 0.3 && prev.speedMps >= glitchHold) {
+        target = prev.speedMps * Math.exp(-dtSec / 18);
+      }
+
+      const maxDelta = maxAccel * dtSec;
+      const clamped = Math.max(
+        prev.speedMps - maxDelta,
+        Math.min(prev.speedMps + maxDelta, target),
+      );
+      const alpha = 1 - Math.exp(-distDelta / tauDistM);
+      const speedMps = prev.speedMps + alpha * (clamped - prev.speedMps);
+      out.push({ distM: sample.distM, speedMps: Math.max(0, speedMps) });
+    }
+
+    return out;
+  }
+
+  function densifyDistanceSeries(points, stepM = CHART_DENSIFY_STEP_M) {
+    if (points.length <= 1) return points.map((p) => ({ ...p }));
+
+    const step = Math.max(1, stepM);
+    const out = [{ ...points[0] }];
+
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const span = b.distM - a.distM;
+      if (span <= 0) continue;
+
+      for (let distM = a.distM + step; distM < b.distM; distM += step) {
+        const f = (distM - a.distM) / span;
+        out.push({ distM, speedMps: a.speedMps + f * (b.speedMps - a.speedMps) });
+      }
+      out.push({ ...b });
+    }
+
+    return out;
+  }
+
+  function prepareTraceForChart(trace, maxDist) {
+    const inRange = trace
+      .filter(
+        (pt) =>
+          pt.distM >= 0 &&
+          pt.distM <= maxDist &&
+          Number.isFinite(pt.speedMps) &&
+          pt.speedMps > 0,
+      )
+      .sort((a, b) => a.distM - b.distM);
+    if (inRange.length < 2) return inRange;
+
+    const deduped = [{ ...inRange[0] }];
+    for (let i = 1; i < inRange.length; i++) {
+      const prev = deduped[deduped.length - 1];
+      const pt = inRange[i];
+      if (pt.distM - prev.distM < 0.5) {
+        prev.speedMps = pt.speedMps;
+        prev.distM = pt.distM;
+      } else {
+        deduped.push({ distM: pt.distM, speedMps: pt.speedMps });
+      }
+    }
+
+    return densifyDistanceSeries(
+      smoothSpeedAlongDistance(deduped, CHART_SMOOTH),
+      CHART_DENSIFY_STEP_M,
+    );
+  }
+
   function drawChart(course) {
     const canvas = $('#courseViewChart');
     if (!canvas || !course) return;
@@ -1006,23 +1093,20 @@
 
     for (const [deviceId, trace] of tracesByDevice) {
       if (isDeviceHidden(deviceId)) continue;
-      if (trace.length < 2) continue;
+      const plotTrace = prepareTraceForChart(trace, maxDist);
+      if (plotTrace.length < 2) continue;
       ctx.strokeStyle = colorForDevice(deviceId);
       ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      let started = false;
-      for (const pt of trace) {
-        if (pt.distM < 0 || pt.distM > maxDist) continue;
+      plotTrace.forEach((pt, i) => {
         const x = xAt(pt.distM);
         const y = yAt(Math.min(pt.speedMps, maxSpeed));
-        if (!started) {
-          ctx.moveTo(x, y);
-          started = true;
-        } else {
-          ctx.lineTo(x, y);
-        }
-      }
-      if (started) ctx.stroke();
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
     }
 
     ctx.font = '11px Segoe UI, system-ui, sans-serif';
