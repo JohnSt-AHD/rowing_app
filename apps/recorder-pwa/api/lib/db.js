@@ -1543,6 +1543,32 @@ async function getRecentGpsFixesByDevice(orgId, windowMs = 120000, limitPerDevic
 }
 
 /**
+ * Latest session row per device (for map hide-after boat-park auto-stop).
+ * @returns {Promise<Map<string, { startedAtMs: number, endedAtMs: number|null }>>}
+ */
+async function getLatestSessionStateByDevice(orgId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const rows = await sql`
+    SELECT DISTINCT ON (unique_id)
+      unique_id,
+      started_at,
+      ended_at
+    FROM rnz_sessions
+    WHERE org_id = ${orgId}
+    ORDER BY unique_id, started_at DESC
+  `;
+  const byDevice = new Map();
+  for (const row of rows.rows) {
+    byDevice.set(String(row.unique_id), {
+      startedAtMs: new Date(row.started_at).getTime(),
+      endedAtMs: row.ended_at ? new Date(row.ended_at).getTime() : null,
+    });
+  }
+  return byDevice;
+}
+
+/**
  * Server ingest times per device (telemetry + last GPS batch).
  * @returns {Promise<Map<string, { lastSeenMs: number, lastGpsIngestMs: number|null }>>}
  */
@@ -3005,6 +3031,7 @@ module.exports = {
   getRecentGpsFixesByDevice,
   getDeviceIngestTimes,
   getDeviceRegistryTimes,
+  getLatestSessionStateByDevice,
   getMapPositions,
   getRegistryMapPositions,
   getRegistryGpsByDevice,

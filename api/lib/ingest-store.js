@@ -2576,6 +2576,56 @@ function samplesByDeviceForWindow(orgId, windowMs) {
   return byDevice;
 }
 
+/** @returns {Map<string, { startedAtMs: number, endedAtMs: number|null }>} */
+function latestSessionStateByDeviceFromMemory(orgId) {
+  /** @type {Map<string, { startedAtMs: number, endedAtMs: number|null }>} */
+  const byDevice = new Map();
+  for (const row of sessions.values()) {
+    if (row.orgId !== orgId || !row.deviceId) continue;
+    const startedAtMs = row.firstSeenAt ?? row.updatedAt ?? 0;
+    const prev = byDevice.get(row.deviceId);
+    if (!prev || startedAtMs > prev.startedAtMs) {
+      byDevice.set(String(row.deviceId), {
+        startedAtMs,
+        endedAtMs: row.endedAt ?? null,
+      });
+    }
+  }
+  return byDevice;
+}
+
+/**
+ * Drop map markers after boat-park auto-stop once uploads pause (onlineSec grace).
+ * @param {object[]} positions
+ * @param {{
+ *   sessionByDevice: Map<string, { endedAtMs?: number|null }>,
+ *   registryTimes?: Map<string, { lastSeenMs: number }>|null,
+ *   capsizeAlerts?: Map<string, unknown>,
+ *   now: number,
+ *   onlineMs: number,
+ * }} opts
+ */
+function filterMapPositionsAfterSessionEnd(positions, opts) {
+  const { sessionByDevice, registryTimes, capsizeAlerts, now, onlineMs } = opts;
+  if (!Array.isArray(positions) || !sessionByDevice?.size) return positions;
+  const graceMs = Math.max(30_000, Number(onlineMs) || 120_000);
+  return positions.filter((p) => {
+    if (p.capsize) return true;
+    const deviceId = String(p.deviceId);
+    if (capsizeAlerts?.has(deviceId)) return true;
+    const sess = sessionByDevice.get(deviceId);
+    if (!sess?.endedAtMs) return true;
+    const times = registryTimes?.get(deviceId);
+    const lastSeenMs =
+      times?.lastSeenMs ??
+      (p.lastSeenAgoSec != null && Number.isFinite(p.lastSeenAgoSec)
+        ? now - p.lastSeenAgoSec * 1000
+        : null);
+    if (lastSeenMs == null) return true;
+    return now - lastSeenMs <= graceMs;
+  });
+}
+
 /** Replace raw map coords when the latest fix teleports vs the warmed track. */
 function rejectOutlierMapPositions(positions, orgId) {
   if (!Array.isArray(positions) || orgId == null) return positions;
@@ -2616,11 +2666,13 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
 
   if (db.hasDb()) {
     try {
-      const [registryTimes, registryPositions, rowingTel, dbCapsizeAlerts] = await Promise.all([
+      const [registryTimes, registryPositions, rowingTel, dbCapsizeAlerts, sessionByDevice] =
+        await Promise.all([
         db.getDeviceRegistryTimes(orgId),
         db.getRegistryMapPositions(orgId, onlineMs, staleMs),
         db.getLatestRowingTelemetry(orgId, Math.min(staleMs, 120000)),
         loadDbCapsizeAlerts(orgId),
+        db.getLatestSessionStateByDevice(orgId),
       ]);
 
       const rawMerged = mergeMapPositionsPreferRegistry(
@@ -2654,7 +2706,16 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       ]);
       attachPathPaceToMapPositions(positions, pathFixesByDevice, orgId);
       attachStrokeMedianToMapPositions(positions, strokeReadingsByDevice);
-      return enrichMapPositionsDisplayAge(positions, now, registryTimes);
+      return filterMapPositionsAfterSessionEnd(
+        enrichMapPositionsDisplayAge(positions, now, registryTimes),
+        {
+          sessionByDevice,
+          registryTimes,
+          capsizeAlerts: getStickyCapsizeAlerts(orgId),
+          now,
+          onlineMs,
+        },
+      );
     } catch (err) {
       console.error('[ingest-store] getMapPositions DB failed:', err);
     }
@@ -2684,7 +2745,16 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   ]);
   attachPathPaceToMapPositions(mapped, pathFixesByDevice, orgId);
   attachStrokeMedianToMapPositions(mapped, strokeReadingsByDevice);
-  return enrichMapPositionsDisplayAge(mapped, now, null);
+  return filterMapPositionsAfterSessionEnd(
+    enrichMapPositionsDisplayAge(mapped, now, null),
+    {
+      sessionByDevice: latestSessionStateByDeviceFromMemory(orgId),
+      registryTimes: null,
+      capsizeAlerts: getStickyCapsizeAlerts(orgId),
+      now,
+      onlineMs,
+    },
+  );
 }
 
 function getMetrics() {
@@ -2882,7 +2952,43 @@ async function getTraccarSnapshot(orgId, onlineMs = 120000) {
   }
   snapshot = await enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs);
   snapshot = await enrichTraccarSnapshotRowing(orgId, snapshot, onlineMs);
-  return enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs);
+  snapshot = await enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs);
+  if (db.hasDb() && snapshot?.positions?.length) {
+    try {
+      const [sessionByDevice, registryTimes] = await Promise.all([
+        db.getLatestSessionStateByDevice(orgId),
+        db.getDeviceRegistryTimes(orgId),
+      ]);
+      const now = Date.now();
+      const capsizeAlerts = getStickyCapsizeAlerts(orgId);
+      const deviceNameById = new Map();
+      for (const d of snapshot.devices || []) {
+        if (d?.id != null) {
+          deviceNameById.set(
+            d.id,
+            String(d.uniqueId || d.name || ''),
+          );
+        }
+      }
+      snapshot.positions = snapshot.positions.filter((pos) => {
+        const uid = deviceNameById.get(pos.deviceId) || pos.deviceName || '';
+        if (!uid) return true;
+        return filterMapPositionsAfterSessionEnd(
+          [
+            {
+              deviceId: uid,
+              capsize: Boolean(pos.attributes?.capsize),
+              lastSeenAgoSec: pos.attributes?.lastSeenAgoSec,
+            },
+          ],
+          { sessionByDevice, registryTimes, capsizeAlerts, now, onlineMs },
+        ).length > 0;
+      });
+    } catch (err) {
+      console.error('[ingest-store] traccar parked filter failed:', err);
+    }
+  }
+  return snapshot;
 }
 
 async function getRouteHistory(orgId, deviceIdParam, uniqueIdParam, fromIso, toIso) {
