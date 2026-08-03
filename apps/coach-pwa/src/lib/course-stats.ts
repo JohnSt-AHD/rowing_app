@@ -47,6 +47,9 @@ export function courseSegments(
   });
 }
 
+/** Ignore GPS-jump spikes when averaging segment pace / prognostic. */
+const MAX_SEGMENT_SPEED_MPS = 7.5;
+
 export function avgSpeedInSegment(
   trace: TracePoint[],
   distFrom: number,
@@ -58,6 +61,7 @@ export function avgSpeedInSegment(
   const samples = trace.filter(
     (p) =>
       p.speedMps > 0 &&
+      p.speedMps <= MAX_SEGMENT_SPEED_MPS &&
       Number.isFinite(p.distM) &&
       p.distM >= lo - 0.5 &&
       p.distM <= hi + 0.5,
@@ -77,6 +81,8 @@ export function avgStrokeInSegment(
   const samples = trace.filter(
     (p) =>
       (p.strokeRate ?? 0) > 0 &&
+      p.speedMps > 0 &&
+      p.speedMps <= MAX_SEGMENT_SPEED_MPS &&
       Number.isFinite(p.distM) &&
       p.distM >= lo - 0.5 &&
       p.distM <= hi + 0.5,

@@ -67,6 +67,7 @@ export type PollPosition = {
   speed?: number | null;
   strokeRate?: number | null;
   strokeRateValid?: boolean;
+  displayStrokeRate?: number | null;
   athleteId?: string | null;
   lastSeenAgoSec?: number | null;
   telemetryStale?: boolean;

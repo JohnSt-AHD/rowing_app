@@ -25,6 +25,20 @@ const REST_SPEED_MPS = 0.5;
 const ROLLING_START_DIST_M = 200;
 const ROLLING_PROGNOSTIC_PCT = 50;
 const TELEMETRY_STALE_SEC = 30;
+/** Cap implausible speeds (bad GPS jumps inflate prognostic). */
+const MAX_ROW_SPEED_MPS = 7.5;
+const MAX_JUMP_SPEED_MPS = 12;
+const GPS_JUMP_DROPOUT_M = 60;
+const FROZEN_POLLS_DROPOUT = 3;
+
+type PathTrackState = {
+  pathDistM: number;
+  chartDistM: number;
+  baselinePathM: number;
+  baselineCourseM: number;
+  dropoutActive: boolean;
+  frozenPolls: number;
+};
 
 export const DEVICE_COLORS = [
   '#00e5ff',
@@ -50,14 +64,30 @@ function posFromRecord(p: PollPosition) {
   return { lat: p.latitude, lon: p.longitude };
 }
 
-function speedFromPosition(p: PollPosition, prev: PosSample | undefined, dtSec: number) {
-  const spd = p.speed;
-  if (spd != null && Number.isFinite(spd) && spd > 0) return spd;
-  if (!prev || dtSec <= 0) return null;
-  const cur = posFromRecord(p);
-  if (!cur) return null;
-  const d = haversineM(prev.lat, prev.lon, cur.lat, cur.lon);
-  return d / dtSec;
+function rowingSpeedMps(
+  p: PollPosition,
+  prev: PosSample | undefined,
+  dtSec: number,
+): number | null {
+  const phone = p.speed;
+  let computed: number | null = null;
+  if (prev && dtSec > 0) {
+    const cur = posFromRecord(p);
+    if (cur) {
+      const d = haversineM(prev.lat, prev.lon, cur.lat, cur.lon);
+      if (d >= 0.5) computed = d / dtSec;
+    }
+  }
+  if (phone != null && Number.isFinite(phone) && phone > 0 && phone <= MAX_ROW_SPEED_MPS) {
+    return phone;
+  }
+  if (computed != null && computed <= MAX_JUMP_SPEED_MPS) {
+    return Math.min(computed, MAX_ROW_SPEED_MPS);
+  }
+  if (phone != null && Number.isFinite(phone) && phone > 0) {
+    return Math.min(phone, MAX_ROW_SPEED_MPS);
+  }
+  return null;
 }
 
 function prognosticThresholdMps(deviceId: string, athleteId?: string | null) {
@@ -79,6 +109,7 @@ export class CourseRaceEngine {
   private tracesByDevice = new Map<string, TracePoint[]>();
   private liveByDevice = new Map<string, LiveDeviceState>();
   private raceStartByDevice = new Map<string, RollingStartState>();
+  private pathByDevice = new Map<string, PathTrackState>();
 
   setLines(lines: TimingLine[]) {
     this.lines = lines.filter((l) => l.enabled !== false);
@@ -94,6 +125,7 @@ export class CourseRaceEngine {
     this.tracesByDevice.clear();
     this.liveByDevice.clear();
     this.raceStartByDevice.clear();
+    this.pathByDevice.clear();
     this.hiddenDevices.clear();
   }
 
@@ -184,11 +216,30 @@ export class CourseRaceEngine {
       const dtSec = prev ? Math.max(0.05, (nowMs - prev.t) / 1000) : 0;
       this.lastPosByDevice.set(deviceId, { ...cur, t: nowMs });
 
-      const spd = speedFromPosition(p, prev, dtSec);
+      const spd = rowingSpeedMps(p, prev, dtSec);
       const receiveAgo = p.lastSeenAgoSec ?? null;
       const stale =
         p.telemetryStale === true ||
         (receiveAgo != null && receiveAgo > TELEMETRY_STALE_SEC);
+
+      let pathStepM = 0;
+      if (prev) {
+        pathStepM = haversineM(prev.lat, prev.lon, cur.lat, cur.lon);
+      }
+      const pathState = this.pathByDevice.get(deviceId) ?? {
+        pathDistM: 0,
+        chartDistM: 0,
+        baselinePathM: 0,
+        baselineCourseM: 0,
+        dropoutActive: false,
+        frozenPolls: 0,
+      };
+      if (pathStepM >= 0.5) {
+        pathState.pathDistM += pathStepM;
+      }
+      pathState.frozenPolls =
+        pathStepM < 0.5 ? pathState.frozenPolls + 1 : 0;
+      this.pathByDevice.set(deviceId, pathState);
       const strokeRate =
         !stale
           ? (p.displayStrokeRate ?? (p.strokeRateValid && p.strokeRate != null ? p.strokeRate : null))
@@ -227,7 +278,19 @@ export class CourseRaceEngine {
       if (!onCourse) continue;
       if (spd == null || !Number.isFinite(spd) || spd <= 0) continue;
 
-      const distM = Math.max(0, Math.min(course.totalDist, effAlong));
+      const courseDist = Math.max(0, Math.min(course.totalDist, effAlong));
+      const dropout =
+        stale ||
+        pathState.frozenPolls >= FROZEN_POLLS_DROPOUT ||
+        pathStepM >= GPS_JUMP_DROPOUT_M;
+      const distM = this.resolveChartDist(
+        pathState,
+        course,
+        courseDist,
+        dropout,
+      );
+      this.pathByDevice.set(deviceId, pathState);
+
       if (!this.tracesByDevice.has(deviceId)) this.tracesByDevice.set(deviceId, []);
       const trace = this.tracesByDevice.get(deviceId)!;
       const last = trace[trace.length - 1];
@@ -247,6 +310,30 @@ export class CourseRaceEngine {
         if (trace.length > 800) trace.shift();
       }
     }
+  }
+
+  /** Course projection normally; monotonic GPS path distance while dropout active. */
+  private resolveChartDist(
+    state: PathTrackState,
+    course: ParsedCourse,
+    courseDist: number,
+    dropout: boolean,
+  ): number {
+    let distM: number;
+    if (!dropout) {
+      state.baselinePathM = state.pathDistM;
+      state.baselineCourseM = courseDist;
+      state.dropoutActive = false;
+      distM = courseDist;
+    } else {
+      if (!state.dropoutActive) state.dropoutActive = true;
+      distM =
+        state.baselineCourseM +
+        Math.max(0, state.pathDistM - state.baselinePathM);
+    }
+    distM = Math.max(0, Math.min(course.totalDist, distM));
+    state.chartDistM = Math.max(state.chartDistM, distM);
+    return state.chartDistM;
   }
 
   private updateRollingStart(

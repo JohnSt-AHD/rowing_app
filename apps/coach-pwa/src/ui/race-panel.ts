@@ -128,6 +128,7 @@ export class RacePanel {
         speed: p.speed,
         strokeRate: p.strokeRate,
         strokeRateValid: p.strokeRateValid,
+        displayStrokeRate: p.displayStrokeRate,
         athleteId: p.athleteId,
         lastSeenAgoSec: p.lastSeenAgoSec,
         telemetryStale: p.telemetryStale,
