@@ -712,12 +712,17 @@ function derivedGpsSpeedMps(prev, next) {
  * @param {Array<{ t: number, gps?: object }>} samples
  */
 async function updateDeviceLatestGps(orgId, uniqueId, samples) {
-  const { isGpsFixOutlier } = require('./gps-outlier');
+  const { isGpsFixOutlier, isGpsFixForMapPosition } = require('./gps-outlier');
   let best = null;
   for (const s of samples) {
     const lat = s.gps?.lat;
     const lon = s.gps?.lon;
     if (lat == null || lon == null) continue;
+    const sampleSource =
+      typeof s.gps?.sampleSource === 'string' && s.gps.sampleSource.trim()
+        ? s.gps.sampleSource.trim().slice(0, 32)
+        : null;
+    if (!isGpsFixForMapPosition(sampleSource)) continue;
     const t = Number(s.t);
     if (!Number.isFinite(t)) continue;
     if (!best || t >= best.t) {

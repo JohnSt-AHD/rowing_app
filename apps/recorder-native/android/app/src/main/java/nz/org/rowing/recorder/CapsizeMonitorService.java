@@ -701,7 +701,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             uploadLoc = latestGpsLocation;
         }
         if (uploadLoc == null || !canUploadGpsFix(uploadLoc, scheduledTick)) return;
-        if (ingestT - lastUploadedFixTimeMs < GPS_COORD_DEDUPE_MS
+        long coordDedupeMs = Math.max(GPS_COORD_DEDUPE_MS, effectiveGpsIntervalMs());
+        if (ingestT - lastUploadedFixTimeMs < coordDedupeMs
                 && sameCoords(uploadLoc, lastUploadedLat, lastUploadedLon)) {
             gpsWindowBuffer.clear();
             return;

@@ -11,6 +11,19 @@ const GPS_OUTLIER_MAX_DT_SEC = 8;
 /** Accuracy above this (m) makes moderate jumps easier to reject. */
 const GPS_OUTLIER_BAD_ACC_M = 30;
 
+/** Native re-upload paths — keep device online but do not move live map position. */
+const GPS_CACHE_SAMPLE_SOURCES = new Set([
+  'scheduled_cache',
+  'heartbeat_cache',
+  'stale_piggyback',
+]);
+
+/** @param {string|null|undefined} sampleSource */
+function isGpsFixForMapPosition(sampleSource) {
+  if (sampleSource == null || sampleSource === '') return true;
+  return !GPS_CACHE_SAMPLE_SOURCES.has(String(sampleSource).trim());
+}
+
 function metersPerDegLat() {
   return 111320;
 }
@@ -93,7 +106,9 @@ module.exports = {
   GPS_OUTLIER_MAX_JUMP_M,
   GPS_OUTLIER_MAX_DT_SEC,
   GPS_OUTLIER_BAD_ACC_M,
+  GPS_CACHE_SAMPLE_SOURCES,
   distanceMeters,
   isGpsFixOutlier,
+  isGpsFixForMapPosition,
   filterOutlierGpsFixes,
 };

@@ -2,6 +2,7 @@ const db = require('./db');
 const {
   GPS_OUTLIER_MAX_ROWING_MPS,
   isGpsFixOutlier,
+  isGpsFixForMapPosition,
   filterOutlierGpsFixes,
 } = require('./gps-outlier');
 
@@ -153,6 +154,7 @@ const metrics = globalThis.__rnzIngestMetrics ?? {
   lastPersistAt: null,
   mapPolls: 0,
   gpsOutliersRejected: 0,
+  gpsCachePositionSkipped: 0,
 };
 globalThis.__rnzIngestMetrics = metrics;
 
@@ -342,8 +344,10 @@ function isValidGpsCoords(lat, lon) {
   return true;
 }
 
-function gpsFromSample(sample, { forTrack = false } = {}) {
+function gpsFromSample(sample, { forTrack = false, forMapPosition = false } = {}) {
   if (!sample || typeof sample !== 'object' || !sample.gps) return null;
+  const sampleSource = sanitizeGpsSampleSource(sample.gps.sampleSource);
+  if (forMapPosition && !isGpsFixForMapPosition(sampleSource)) return null;
   const lat = Number(sample.gps.lat);
   const lon = Number(sample.gps.lon);
   if (!isValidGpsCoords(lat, lon)) return null;
@@ -368,7 +372,6 @@ function gpsFromSample(sample, { forTrack = false } = {}) {
       : null;
   const fixMs = gpsFixMsFromSample(sample);
   const provider = sanitizeGpsProvider(sample.gps.provider);
-  const sampleSource = sanitizeGpsSampleSource(sample.gps.sampleSource);
   return {
     t,
     lat,
@@ -1165,7 +1168,7 @@ function warmGpsTracksFromSamplesByDevice(orgId, byDevice, opts = {}) {
     const trackKey = orgDeviceKey(orgId, deviceId);
     for (const s of entry.samples || []) {
       if (!s?.gps) continue;
-      const fix = gpsFromSample(s, { forTrack: true });
+      const fix = gpsFromSample(s, { forTrack: true, forMapPosition: true });
       if (fix) updateGpsTrack(trackKey, fix, trackOpts);
     }
   }
@@ -1353,9 +1356,13 @@ function sanitizeAndTrackSamples(deviceId, samples) {
           }
           next = rest;
         } else {
-          rememberAcceptedGpsFix(deviceId, fix);
-          const trackFix = gpsFromSample(sample, { forTrack: true });
-          if (trackFix) updateGpsTrack(deviceId, trackFix);
+          if (isGpsFixForMapPosition(fix.sampleSource)) {
+            rememberAcceptedGpsFix(deviceId, fix);
+            const trackFix = gpsFromSample(sample, { forTrack: true, forMapPosition: true });
+            if (trackFix) updateGpsTrack(deviceId, trackFix);
+          } else {
+            metrics.gpsCachePositionSkipped++;
+          }
         }
       }
     }
@@ -2226,10 +2233,10 @@ function getPositionsSnapshot(orgId, onlineMs = 30000) {
  * Latest GPS fix from a sample list (same scan as sensorStats).
  * @param {Sample[]} samples
  */
-function latestGpsFromSamples(samples) {
+function latestGpsFromSamples(samples, { forMapPosition = false } = {}) {
   let lastGps = null;
   for (const s of samples) {
-    const fix = gpsFromSample(s);
+    const fix = gpsFromSample(s, forMapPosition ? { forMapPosition: true } : {});
     if (!fix) continue;
     if (!lastGps || fix.t >= lastGps.t) {
       lastGps = fix;
@@ -2291,16 +2298,11 @@ function getRawMemoryMapPositions(orgId, onlineMs, now) {
   const out = [];
   for (const row of sessions.values()) {
     if (row.orgId !== orgId) continue;
-    let lastGps = null;
+    let fix = null;
     for (let i = row.samples.length - 1; i >= 0; i--) {
-      const s = row.samples[i];
-      if (s.gps?.lat != null && s.gps?.lon != null) {
-        lastGps = s;
-        break;
-      }
+      fix = gpsFromSample(row.samples[i], { forMapPosition: true });
+      if (fix) break;
     }
-    if (!lastGps) continue;
-    const fix = gpsFromSample(lastGps);
     if (!fix) continue;
     out.push(
       buildRawMapPositionFromFix({
@@ -2771,6 +2773,7 @@ function getMetrics() {
     lastPersistAt: metrics.lastPersistAt,
     mapPolls: metrics.mapPolls,
     gpsOutliersRejected: metrics.gpsOutliersRejected,
+    gpsCachePositionSkipped: metrics.gpsCachePositionSkipped,
     requestRateHz: Math.round((metrics.requests / uptimeSec) * 100) / 100,
   };
 }
