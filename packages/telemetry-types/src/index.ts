@@ -76,8 +76,6 @@ export type RecorderSettings = {
   enableBackgroundRecording: boolean;
   /** Keep screen awake while recording (Screen Wake Lock API). */
   keepScreenOn: boolean;
-  /** Faster GPS uploads (~2.5 s) for live fleet map; uses more battery/cellular. */
-  liveMapMode: boolean;
   /**
    * Arm geofence standby: auto-start when leaving boat park, auto-stop when entering.
    * Best on native app with Always location.
@@ -103,7 +101,6 @@ export const DEFAULT_SETTINGS: RecorderSettings = {
   enableHr: true,
   enableBackgroundRecording: true,
   keepScreenOn: true,
-  liveMapMode: false,
   geofenceSessionControl: true,
 };
 

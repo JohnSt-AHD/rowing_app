@@ -85,8 +85,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long CAPSIZE_UPLOAD_MIN_INTERVAL_MS = 4000L;
     /** Batched ingest — fewer HTTP posts while GPS still samples at gpsIntervalMs. */
     private static final long UPLOAD_FLUSH_INTERVAL_MS = 3_000L;
-    /** Live map mode — faster GPS on dashboard (~2 s flush). */
-    private static final long LIVE_MAP_FLUSH_INTERVAL_MS = 2_000L;
     private static final int UPLOAD_FLUSH_MAX_SAMPLES = 12;
     /** Keeps dashboard "online" when GPS fixes pause (independent of gpsIntervalMs). */
     private static final long HEARTBEAT_INTERVAL_MS = 10_000L;
@@ -163,7 +161,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private boolean suppressRecordingActive = false;
     private long economyGpsIntervalMs = 30_000L;
     private long economyUploadIntervalMs = 30_000L;
-    private boolean liveMapActive = false;
     private boolean enableCapsizeDetection = true;
 
     private float gx;
@@ -1512,7 +1509,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         economyGpsIntervalMs = Math.max(1000L, p.getLong("economyGpsIntervalMs", 30_000L));
         economyUploadIntervalMs = Math.max(1000L, p.getLong("economyUploadIntervalMs", 30_000L));
         enableCapsizeDetection = p.getBoolean("enableCapsizeDetection", true);
-        liveMapActive = p.getBoolean("liveMapActive", false);
     }
 
     /** GPS upload interval — geofence economy overrides user setting when active. */
@@ -1531,7 +1527,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private long effectiveUploadFlushMs() {
         loadEconomyFromPrefs();
         if (economyActive) return economyUploadIntervalMs;
-        if (liveMapActive) return LIVE_MAP_FLUSH_INTERVAL_MS;
         return UPLOAD_FLUSH_INTERVAL_MS;
     }
 
@@ -1695,7 +1690,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .putLong("economyGpsIntervalMs", src.getLong("economyGpsIntervalMs", 3000L))
                 .putLong("economyUploadIntervalMs", src.getLong("economyUploadIntervalMs", 6000L))
                 .putBoolean("enableCapsizeDetection", src.getBoolean("enableCapsizeDetection", true))
-                .putBoolean("liveMapActive", src.getBoolean("liveMapActive", false))
                 .putBoolean("hasUpright", src.getBoolean("hasUpright", false))
                 .putFloat("uprightX", src.getFloat("uprightX", 0f))
                 .putFloat("uprightY", src.getFloat("uprightY", 0f))
@@ -1940,14 +1934,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             stopSelf();
             return false;
         }
-    }
-
-    public static void setLiveMapMode(Context ctx, boolean active) {
-        ctx.getSharedPreferences(PREFS, MODE_PRIVATE)
-            .edit()
-            .putBoolean("liveMapActive", active)
-            .apply();
-        mirrorRecordingPrefsToDeviceProtected(ctx);
     }
 
     /** Apply GPS upload interval from WebView settings (survives skipNativeStart reconnect). */
@@ -2562,7 +2548,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .putLong("gpsIntervalMs", restoreGpsInterval)
                 .putBoolean("economyActive", false)
                 .putBoolean("suppressRecordingActive", false)
-                .putBoolean("liveMapActive", false)
                 .putInt("uploadSeq", 0)
                 .putInt("uploadOkCount", 0)
                 .putInt("uploadFailCount", 0)

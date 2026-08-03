@@ -22,7 +22,6 @@ import {
   getNativeStandbyStatus,
   prepareNativeRecordingSetup,
   recordingSetupLogLines,
-  setNativeLiveMapMode,
   setNativeGeofences,
   stopNativeCapsizeMonitor,
   transitionToNativeGeofenceStandby,
@@ -597,10 +596,6 @@ export function mountApp(root: HTMLElement): void {
               <label class="check"><input type="checkbox" name="enableHr" ${s.enableHr ? 'checked' : ''} /> Heart rate (BLE)</label>
             </fieldset>
             <fieldset class="fieldset checks">
-              <legend>Fleet map</legend>
-              <label class="check"><input type="checkbox" name="liveMapMode" ${s.liveMapMode ? 'checked' : ''} /> Faster phone uploads <span class="form-hint">(optional ~2.5 s GPS upload — uses more battery; dashboard smooth map does not need this)</span></label>
-            </fieldset>
-            <fieldset class="fieldset checks">
               <legend>Background recording</legend>
               <label class="check"><input type="checkbox" name="enableBackgroundRecording" ${s.enableBackgroundRecording !== false ? 'checked' : ''} ${IS_NATIVE ? 'disabled' : ''} /> ${IS_NATIVE ? 'Always on in native app' : 'Allow background (best effort)'}</label>
               <label class="check"><input type="checkbox" name="keepScreenOn" ${s.keepScreenOn !== false ? 'checked' : ''} /> Keep screen on while recording</label>
@@ -949,14 +944,8 @@ export function mountApp(root: HTMLElement): void {
     });
 
     if (s.enableHr) pushLog('Use Connect HR strap when ready.');
-    if (s.liveMapMode) {
-      pushLog('Faster phone uploads on — GPS ~every 2.5 s (optional; uses more battery).');
-      if (IS_NATIVE) void setNativeLiveMapMode(true);
-    }
     const batchMs = s.enableMotion ? Math.max(s.uploadBatchMs, 8000) : s.uploadBatchMs;
-    const syncInterval = s.liveMapMode
-      ? 2000
-      : Math.max(4000, Math.min(batchMs, 12000));
+    const syncInterval = Math.max(4000, Math.min(batchMs, 12000));
     syncTimer = setInterval(() => void runSync(false), syncInterval);
     void runSync(false);
     render();

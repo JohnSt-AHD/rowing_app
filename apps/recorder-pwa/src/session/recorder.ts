@@ -23,7 +23,6 @@ import {
   setNativeEconomyMode,
   setNativeGeofences,
   setNativeGpsIntervalMs,
-  setNativeLiveMapMode,
   startNativeCapsizeMonitor,
   stopNativeCapsizeMonitor,
   syncNativeCapsizeUpright,
@@ -97,8 +96,6 @@ export type StartRecorderOptions = {
 
 const IS_NATIVE = import.meta.env.VITE_PLATFORM === 'native';
 const BG_UPLOAD_PULSE_MS = 12_000;
-/** Live map mode: push WebView outbox frequently (native APK uses its own flush). */
-const LIVE_MAP_PUSH_MS = 2_500;
 const MOTION_BATCH_MIN_MS = 8_000;
 
 /** Cap in-memory batch before enqueue (avoids huge JSON + IDB stalls). */
@@ -187,25 +184,14 @@ export async function startRecorder(
         ? Math.min(
             MAX_BATCH_SAMPLES,
             Math.ceil(
-              Math.max(
-                settings.uploadBatchMs,
-                settings.liveMapMode && settings.enableGps
-                  ? LIVE_MAP_PUSH_MS
-                  : MOTION_BATCH_MIN_MS,
-              ) / motionUploadMs,
+              Math.max(settings.uploadBatchMs, MOTION_BATCH_MIN_MS) / motionUploadMs,
             ) + 4,
           )
         : MAX_BATCH_SAMPLES;
-  const motionBatchMinMs =
-    settings.liveMapMode && settings.enableGps
-      ? LIVE_MAP_PUSH_MS
-      : MOTION_BATCH_MIN_MS;
+  const motionBatchMinMs = MOTION_BATCH_MIN_MS;
   const batchIntervalMs = settings.enableMotion
     ? Math.max(settings.uploadBatchMs, motionBatchMinMs)
     : settings.uploadBatchMs;
-
-  const liveMapPushEnabled = () =>
-    Boolean(settings.liveMapMode && settings.enableGps && !inBoatPark);
 
   let geofences: GeofenceConfig[] = [];
   let inBoatPark = false;
@@ -220,8 +206,6 @@ export async function startRecorder(
   let geofenceRefreshTimer: ReturnType<typeof setInterval> | null = null;
   let regattaMessage: { id: number; text: string } | null = null;
   let regattaPollTimer: ReturnType<typeof setInterval> | null = null;
-  let liveMapPushTimer: ReturnType<typeof setInterval> | null = null;
-  let lastLiveMapPushAt = 0;
   let lastEconomySignature = '';
   let lastNotifyZoneKey = '';
   let lastNativeEconomySignature = '';
@@ -247,7 +231,6 @@ export async function startRecorder(
       enableCapsize: capsizeAllowed,
       suppressRecording: recordingSuppressed,
     });
-    void setNativeLiveMapMode(!inBoatPark && Boolean(settings.liveMapMode));
   };
 
   const pushNativeGeofences = (list: GeofenceConfig[]) => {
@@ -483,33 +466,15 @@ export async function startRecorder(
       sample.derived = { ...sample.derived, inBoatPark: true };
     }
     queueSample(sample);
-    if (liveMapPushEnabled() && now - lastLiveMapPushAt >= LIVE_MAP_PUSH_MS) {
-      lastLiveMapPushAt = now;
-      void pushBatch();
-    }
   };
 
   batchTimer = setInterval(() => void pushBatch(), batchIntervalMs);
-
-  if (settings.liveMapMode && settings.enableGps) {
-    liveMapPushTimer = setInterval(() => {
-      if (stopped || !liveMapPushEnabled() || batch.length === 0) return;
-      lastLiveMapPushAt = Date.now();
-      void pushBatch();
-    }, LIVE_MAP_PUSH_MS);
-    stoppers.push(() => {
-      if (liveMapPushTimer) clearInterval(liveMapPushTimer);
-    });
-  }
 
   if (IS_NATIVE && (settings.enableGps || settings.enableMotion)) {
     if (options?.skipNativeStart) {
       nativeCapsizeMonitorOn = true;
       onLog('Reconnecting to background recording service…', false);
       if (geofences.length) recheckGeofenceFromLastPosition();
-      if (settings.liveMapMode && settings.enableGps) {
-        void setNativeLiveMapMode(true);
-      }
     } else {
     const started = await startNativeCapsizeMonitor({
       sessionId,
@@ -525,9 +490,6 @@ export async function startRecorder(
     nativeCapsizeMonitorOn = started;
     if (started) {
       if (geofences.length) recheckGeofenceFromLastPosition();
-      if (settings.liveMapMode && settings.enableGps) {
-        void setNativeLiveMapMode(true);
-      }
       if (settings.enableGps) {
         onLog(
           'Native GPS on — posts to dashboard with screen off (Android foreground service).',
@@ -853,9 +815,6 @@ export async function startRecorder(
     },
     async stopForGeofenceStandby() {
       stopped = true;
-      if (nativeCapsizeMonitorOn) {
-        await setNativeLiveMapMode(false);
-      }
       if (batchTimer) clearInterval(batchTimer);
       await pushBatch();
       for (const s of stoppers) await s();
@@ -877,7 +836,6 @@ export async function startRecorder(
     async stop() {
       stopped = true;
       if (nativeCapsizeMonitorOn) {
-        await setNativeLiveMapMode(false);
         await stopNativeCapsizeMonitor();
         nativeCapsizeMonitorOn = false;
       }

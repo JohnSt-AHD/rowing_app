@@ -114,7 +114,6 @@ export interface NativeCapsizeMonitorPlugin {
   getActiveSession(): Promise<NativeActiveSession>;
   setUpright(options: { x: number; y: number; z: number }): Promise<void>;
   setStrokeRate(options: { spm: number }): Promise<void>;
-  setLiveMapMode(options: { active: boolean }): Promise<void>;
   setGpsIntervalMs(options: { gpsIntervalMs: number }): Promise<void>;
   setEconomyMode(mode: NativeEconomyMode): Promise<void>;
   setGeofences(options: { geofences: NativeGeofenceZone[] }): Promise<void>;
@@ -195,15 +194,6 @@ export async function syncNativeStrokeRate(spm: number): Promise<void> {
   if (!IS_NATIVE) return;
   try {
     await CapsizeMonitor.setStrokeRate({ spm });
-  } catch {
-    /* optional */
-  }
-}
-
-export async function setNativeLiveMapMode(active: boolean): Promise<void> {
-  if (!IS_NATIVE) return;
-  try {
-    await CapsizeMonitor.setLiveMapMode({ active });
   } catch {
     /* optional */
   }

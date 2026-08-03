@@ -149,13 +149,6 @@ public class CapsizeMonitorPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void setLiveMapMode(PluginCall call) {
-        Boolean active = call.getBoolean("active", false);
-        CapsizeMonitorService.setLiveMapMode(getContext(), active != null && active);
-        call.resolve();
-    }
-
-    @PluginMethod
     public void setGpsIntervalMs(PluginCall call) {
         Integer gpsIntervalMs = call.getInt("gpsIntervalMs", 1000);
         CapsizeMonitorService.setGpsIntervalMs(
