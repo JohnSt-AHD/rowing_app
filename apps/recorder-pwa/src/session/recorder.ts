@@ -219,10 +219,10 @@ export async function startRecorder(
       recordingSuppressed ? '1' : '0',
     ].join('|');
 
-  const syncNativeEconomyMode = () => {
+  const syncNativeEconomyMode = (force = false) => {
     if (!nativeCapsizeMonitorOn) return;
     const sig = nativeEconomySignature();
-    if (sig === lastNativeEconomySignature) return;
+    if (!force && sig === lastNativeEconomySignature) return;
     lastNativeEconomySignature = sig;
     void setNativeEconomyMode({
       active: inBoatPark,
@@ -506,7 +506,7 @@ export async function startRecorder(
     }
     if (nativeCapsizeMonitorOn && settings.enableGps) {
       await setNativeGpsIntervalMs(settings.gpsIntervalMs);
-      syncNativeEconomyMode();
+      syncNativeEconomyMode(true);
       pushNativeGeofences(geofences);
       const sec =
         Math.round((Math.max(500, settings.gpsIntervalMs) / 1000) * 10) / 10;

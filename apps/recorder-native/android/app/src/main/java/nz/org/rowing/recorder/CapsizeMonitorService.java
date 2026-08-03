@@ -295,6 +295,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 intent != null && intent.getBooleanExtra("standbyResume", false);
         if (intent != null && !bootResume && !standbyResume) {
             saveConfigFromIntent(intent);
+            lastNativeGeofenceSignature = "";
         }
         loadSessionFlagsFromPrefs();
         loadStandbyFlagsFromPrefs();
@@ -341,6 +342,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             registerLocation();
             scheduleGpsFlush();
             tickScheduledGpsUpload();
+            Location geofenceLoc = latestGpsLocation;
+            if (geofenceLoc != null) {
+                maybeApplyGeofenceEconomy(
+                        geofenceLoc.getLatitude(), geofenceLoc.getLongitude());
+            }
         }
         schedulePendingFlush();
         scheduleIngestFlush();
@@ -553,7 +559,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         } else {
             signature = "";
         }
-        if (signature.equals(lastNativeGeofenceSignature)) return;
+        loadEconomyFromPrefs();
+        // Signature unchanged but economy can stay stuck (e.g. outside zone with economyActive true).
+        if (signature.equals(lastNativeGeofenceSignature)) {
+            if ((match != null) == economyActive) return;
+        }
         lastNativeGeofenceSignature = signature;
         if (match != null) {
             long intervalMs =
@@ -1474,6 +1484,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .putBoolean("enableGps", intent.getBooleanExtra("enableGps", false))
                 .putBoolean("enableMotion", intent.getBooleanExtra("enableMotion", true))
                 .putLong("gpsIntervalMs", intent.getLongExtra("gpsIntervalMs", 1000L))
+                .putBoolean("economyActive", false)
+                .putBoolean("suppressRecordingActive", false)
                 .putBoolean("recordingActive", true)
                 .putBoolean("standbyArmed", false)
                 .putBoolean("standbyAutoStartTriggered", false)
