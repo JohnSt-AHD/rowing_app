@@ -463,7 +463,66 @@ async function ensureOrgsBootstrapped() {
     `;
   }
 
+  await ensureCapsizeNotifyEmailsTable();
+
   orgBootstrapDone = true;
+}
+
+async function ensureCapsizeNotifyEmailsTable() {
+  if (!hasDb()) return;
+  const sql = await getSql();
+  if (!sql) return;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_capsize_notify_emails (
+      org_id INTEGER NOT NULL REFERENCES rnz_orgs(id) ON DELETE CASCADE,
+      email TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (org_id, email)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_capsize_notify_emails_org
+      ON rnz_capsize_notify_emails (org_id)
+  `;
+}
+
+async function listCapsizeNotifyEmails(orgId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const rows = await sql`
+    SELECT email
+    FROM rnz_capsize_notify_emails
+    WHERE org_id = ${orgId}
+    ORDER BY email ASC
+  `;
+  return rows.rows.map((r) => String(r.email));
+}
+
+async function addCapsizeNotifyEmail(orgId, email) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const e = String(email || '')
+    .trim()
+    .toLowerCase();
+  await sql`
+    INSERT INTO rnz_capsize_notify_emails (org_id, email)
+    VALUES (${orgId}, ${e})
+    ON CONFLICT (org_id, email) DO NOTHING
+  `;
+  return listCapsizeNotifyEmails(orgId);
+}
+
+async function removeCapsizeNotifyEmail(orgId, email) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const e = String(email || '')
+    .trim()
+    .toLowerCase();
+  await sql`
+    DELETE FROM rnz_capsize_notify_emails
+    WHERE org_id = ${orgId} AND email = ${e}
+  `;
+  return listCapsizeNotifyEmails(orgId);
 }
 
 async function findOrgByTokenHash(tokenHash) {
@@ -3072,4 +3131,8 @@ module.exports = {
   setRegattaMessage,
   broadcastRegattaMessage,
   clearRegattaMessage,
+  ensureCapsizeNotifyEmailsTable,
+  listCapsizeNotifyEmails,
+  addCapsizeNotifyEmail,
+  removeCapsizeNotifyEmail,
 };

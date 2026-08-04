@@ -45,6 +45,7 @@
     <nav class="dashboard-quick-nav" aria-label="Dashboard sections">
       <button type="button" class="dashboard-quick-nav__btn dashboard-quick-nav__btn--active" data-section-jump="map">Fleet map</button>
       <button type="button" class="dashboard-quick-nav__btn" data-section-jump="devices">Devices</button>
+      <button type="button" class="dashboard-quick-nav__btn" data-section-jump="capsize-emails">Capsize emails</button>
       <button type="button" class="dashboard-quick-nav__btn" data-section-jump="history">History</button>
       <button type="button" class="dashboard-quick-nav__btn" data-section-jump="geofences">Geofences</button>
       <button type="button" class="dashboard-quick-nav__btn" data-section-jump="settings">Settings</button>
@@ -128,6 +129,47 @@
         </div>
       </section>
       </div>
+
+      <section class="hub-panel dashboard-section" data-section-id="capsize-emails" data-default-open="false" id="capsizeEmailPanel">
+        <div class="dashboard-section__head">
+          <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-capsize-emails">
+            <span class="dashboard-section__chevron" aria-hidden="true"></span>
+            <h2 class="hub-section-title">Capsize email alerts</h2>
+          </button>
+        </div>
+        <div class="dashboard-section__body" id="section-body-capsize-emails" hidden>
+          <p class="capsize-email-intro">
+            When a device reports a <strong>capsize</strong>, CrewSight emails these addresses with the
+            <strong>boat name</strong>, <strong>NZ time</strong>, and <strong>location</strong> (when GPS is available).
+            Uses the same ingest token as the rest of this page. Requires <code>RESEND_API_KEY</code> and
+            <code>CAPSIZE_NOTIFY_FROM</code> on Vercel.
+          </p>
+          <p class="poll-line" id="capsizeEmailMeta">Loading…</p>
+          <p class="poll-line" id="capsizeEmailStorageNote"></p>
+          <ul class="capsize-email-list" id="capsizeEmailList" aria-live="polite"></ul>
+          <p class="poll-line" id="capsizeEmailListEmpty" hidden>No recipients yet.</p>
+          <form id="capsizeEmailAddForm" class="capsize-email-form">
+            <div class="ahd-inline-fields">
+              <label class="ahd-field">
+                Email address
+                <input
+                  type="email"
+                  id="capsizeEmailNew"
+                  required
+                  placeholder="j.w.storey21@gmail.com"
+                  autocomplete="email"
+                />
+              </label>
+            </div>
+            <div class="capsize-email-form__actions">
+              <button type="submit" class="hub-btn hub-btn--primary" id="capsizeEmailAddBtn">Add email</button>
+              <button type="button" class="hub-btn hub-btn--ghost" id="capsizeEmailTestBtn">Send test email</button>
+              <button type="button" class="hub-btn hub-btn--ghost" id="capsizeEmailRefreshBtn">Refresh</button>
+            </div>
+          </form>
+          <p class="poll-line" id="capsizeEmailStatus" role="status"></p>
+        </div>
+      </section>
 
       <section class="hub-panel hub-panel--regatta dashboard-section" data-section-id="regatta" data-default-open="false" id="regattaPanel">
         <div class="dashboard-section__head">
@@ -794,6 +836,7 @@
     <script src="/dashboard-timing-lines.js"></script>
     <script src="/dashboard-course-view.js"></script>
     <script src="/dashboard-regatta.js"></script>
+    <script src="/dashboard-capsize-alerts.js"></script>
     <script src="/dashboard-sections.js"></script>
     <script src="/dashboard.js"></script>
   </body>

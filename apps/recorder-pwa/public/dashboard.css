@@ -509,6 +509,57 @@
   letter-spacing: 0.01em;
 }
 
+.capsize-email-intro {
+  margin: 0 0 0.75rem;
+  max-width: 52rem;
+  color: var(--ahd-muted, #94a3b8);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.capsize-email-list {
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-width: 36rem;
+}
+
+.capsize-email-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--ahd-border, rgba(148, 163, 184, 0.35));
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.capsize-email-address {
+  font-weight: 600;
+  color: var(--ahd-text, #e2e8f0);
+  word-break: break-all;
+}
+
+.capsize-email-form {
+  margin-top: 0.75rem;
+  max-width: 36rem;
+}
+
+.capsize-email-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+}
+
+#capsizeEmailStatus.is-error {
+  color: #fca5a5;
+}
+
 .capsize-alert-bar[hidden] {
   display: none !important;
 }

@@ -196,6 +196,7 @@ function setCapsizeClear(deviceId) {
 function raiseStickyCapsizeAlert(orgId, deviceId, eventMs) {
   const key = orgDeviceKey(orgId, deviceId);
   const prev = stickyCapsizeByDevice.get(key);
+  const wasActive = Boolean(prev?.active);
   const t = Number.isFinite(Number(eventMs)) ? Number(eventMs) : Date.now();
   const prevAt = prev?.active && Number.isFinite(prev.atMs) ? prev.atMs : null;
   // Bump atMs on each new capsize sample so RowSafe can re-alert after acknowledge.
@@ -203,6 +204,7 @@ function raiseStickyCapsizeAlert(orgId, deviceId, eventMs) {
     active: true,
     atMs: prevAt != null ? Math.max(prevAt, t) : t,
   });
+  return !wasActive;
 }
 
 function clearStickyCapsizeAlert(orgId, deviceId) {
@@ -1589,9 +1591,44 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
     if (latestClear && Number.isFinite(t) && t <= latestClear) continue;
     if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
   }
-  if (maxCapsizeT != null) raiseStickyCapsizeAlert(orgId, deviceId, maxCapsizeT);
-
   backfillCapsizeGpsInMemory(scopedDevice, clean.samples);
+
+  if (maxCapsizeT != null) {
+    const newlyRaised = raiseStickyCapsizeAlert(orgId, deviceId, maxCapsizeT);
+    if (newlyRaised) {
+      let lat = null;
+      let lon = null;
+      for (let i = clean.samples.length - 1; i >= 0; i--) {
+        const s = clean.samples[i];
+        if (!sampleHasCapsize(s)) continue;
+        const fix = gpsFromSample(s);
+        if (fix) {
+          lat = fix.lat;
+          lon = fix.lon;
+          break;
+        }
+      }
+      if (lat == null || lon == null) {
+        const cached = lastGpsByDevice.get(scopedDevice);
+        if (cached && cached.lat != null && cached.lon != null) {
+          lat = cached.lat;
+          lon = cached.lon;
+        }
+      }
+      try {
+        const { notifyCapsizeRaised } = require('./capsize-notify');
+        void notifyCapsizeRaised({
+          orgId,
+          deviceId: String(deviceId),
+          eventMs: maxCapsizeT,
+          lat,
+          lon,
+        });
+      } catch (err) {
+        console.error('[ingest-store] capsize email notify failed:', err);
+      }
+    }
+  }
 
   const key = orgSessionKey(orgId, sessionId);
   let row = sessions.get(key);
