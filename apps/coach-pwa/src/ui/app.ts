@@ -101,12 +101,16 @@ export function mountApp(root: HTMLElement): void {
   let mapTickUnsub: (() => void) | null = null;
   let historyPanel: HistoryPanel | null = null;
   let racePanel: RacePanel | null = null;
-  /** Capsize alarm: 3s beep, every 5s until cleared. */
-  const CAPSIZE_ALARM_BEEP_MS = 3000;
+  /** Capsize alarm: beep + voice + beep, every 5s until cleared. */
   const CAPSIZE_ALARM_EVERY_MS = 5000;
+  const CAPSIZE_ALARM_BEEP_MS = 400;
+  const CAPSIZE_ALARM_GAIN = 0.9;
+  const CAPSIZE_ALARM_PHRASE = 'Capsize alert';
   let capsizeAlarmTimer: ReturnType<typeof setInterval> | null = null;
   let capsizeAlarmCtx: AudioContext | null = null;
-  let capsizeAlarmOsc: OscillatorNode | null = null;
+  let capsizeAlarmOscillators: OscillatorNode[] = [];
+  let capsizeAlarmSeq = 0;
+  let capsizeAlarmTimeouts: ReturnType<typeof setTimeout>[] = [];
 
   function shouldPollLive(): boolean {
     if (isQuietHours()) return false;
@@ -135,16 +139,28 @@ export function mountApp(root: HTMLElement): void {
     }
   }
 
+  function clearCapsizeAlarmTimeouts() {
+    for (const id of capsizeAlarmTimeouts) clearTimeout(id);
+    capsizeAlarmTimeouts = [];
+  }
+
   function stopCapsizeAlarmSound() {
+    clearCapsizeAlarmTimeouts();
+    capsizeAlarmSeq += 1;
     try {
-      if (capsizeAlarmOsc) {
+      if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
+    } catch {
+      /* optional */
+    }
+    try {
+      for (const osc of capsizeAlarmOscillators) {
         try {
-          capsizeAlarmOsc.stop();
+          osc.stop();
         } catch {
           /* already stopped */
         }
-        capsizeAlarmOsc = null;
       }
+      capsizeAlarmOscillators = [];
       if (capsizeAlarmCtx) {
         void capsizeAlarmCtx.close();
         capsizeAlarmCtx = null;
@@ -154,8 +170,60 @@ export function mountApp(root: HTMLElement): void {
     }
   }
 
-  function playCapsizeAlarmBeep() {
+  function playCapsizeTone(ctx: AudioContext, seq: number) {
+    if (seq !== capsizeAlarmSeq) return;
+    try {
+      if (ctx.state === 'closed') return;
+      if (ctx.state === 'suspended') void ctx.resume();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = ctx.currentTime;
+      const durSec = CAPSIZE_ALARM_BEEP_MS / 1000;
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(880, start);
+      gain.gain.setValueAtTime(CAPSIZE_ALARM_GAIN, start);
+      gain.gain.setValueAtTime(CAPSIZE_ALARM_GAIN, start + durSec - 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + durSec);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + durSec);
+      capsizeAlarmOscillators.push(osc);
+      osc.onended = () => {
+        capsizeAlarmOscillators = capsizeAlarmOscillators.filter((o) => o !== osc);
+      };
+    } catch {
+      /* optional */
+    }
+  }
+
+  function speakCapsizeAlert(seq: number, onDone?: () => void) {
+    if (seq !== capsizeAlarmSeq) return;
+    if (typeof speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') {
+      onDone?.();
+      return;
+    }
+    try {
+      const u = new SpeechSynthesisUtterance(CAPSIZE_ALARM_PHRASE);
+      u.volume = 1;
+      u.rate = 1.05;
+      u.pitch = 1.05;
+      u.onend = () => {
+        if (seq === capsizeAlarmSeq) onDone?.();
+      };
+      u.onerror = () => {
+        if (seq === capsizeAlarmSeq) onDone?.();
+      };
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
+    } catch {
+      onDone?.();
+    }
+  }
+
+  function playCapsizeAlarmCycle() {
     stopCapsizeAlarmSound();
+    const seq = capsizeAlarmSeq;
     try {
       const AudioCtx =
         window.AudioContext ||
@@ -163,28 +231,16 @@ export function mountApp(root: HTMLElement): void {
       if (!AudioCtx) return;
       const audioCtx = new AudioCtx();
       if (audioCtx.state === 'suspended') void audioCtx.resume();
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      const start = audioCtx.currentTime;
-      const durSec = CAPSIZE_ALARM_BEEP_MS / 1000;
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(660, start);
-      gain.gain.setValueAtTime(0.6, start);
-      gain.gain.setValueAtTime(0.6, start + durSec - 0.05);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + durSec);
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.start(start);
-      osc.stop(start + durSec);
       capsizeAlarmCtx = audioCtx;
-      capsizeAlarmOsc = osc;
-      osc.onended = () => {
-        if (capsizeAlarmOsc === osc) capsizeAlarmOsc = null;
-        if (capsizeAlarmCtx === audioCtx) {
-          void audioCtx.close();
-          capsizeAlarmCtx = null;
-        }
-      };
+      playCapsizeTone(audioCtx, seq);
+      const afterBeep = setTimeout(() => {
+        if (seq !== capsizeAlarmSeq) return;
+        speakCapsizeAlert(seq, () => {
+          if (seq !== capsizeAlarmSeq) return;
+          playCapsizeTone(audioCtx, seq);
+        });
+      }, CAPSIZE_ALARM_BEEP_MS + 100);
+      capsizeAlarmTimeouts.push(afterBeep);
     } catch {
       /* Browsers may block audio until the user has interacted with the app. */
     }
@@ -192,8 +248,8 @@ export function mountApp(root: HTMLElement): void {
 
   function startCapsizeAlarmLoop() {
     if (capsizeAlarmTimer != null) return;
-    playCapsizeAlarmBeep();
-    capsizeAlarmTimer = setInterval(playCapsizeAlarmBeep, CAPSIZE_ALARM_EVERY_MS);
+    playCapsizeAlarmCycle();
+    capsizeAlarmTimer = setInterval(playCapsizeAlarmCycle, CAPSIZE_ALARM_EVERY_MS);
   }
 
   function stopCapsizeAlarmLoop() {

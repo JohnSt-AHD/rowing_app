@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Capsize alarm preview</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #0f1720;
+        --fg: #f4f7fb;
+        --accent: #e11d48;
+        --muted: #94a3b8;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        background:
+          radial-gradient(ellipse at 30% 20%, #1e293b 0%, transparent 50%),
+          radial-gradient(ellipse at 70% 80%, #3f1d2e 0%, transparent 45%),
+          var(--bg);
+        color: var(--fg);
+      }
+      main {
+        width: min(28rem, calc(100% - 2rem));
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.5rem;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+      p {
+        margin: 0 0 1.5rem;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 0.75rem;
+        padding: 0.9rem 1.4rem;
+        font: inherit;
+        font-weight: 650;
+        font-size: 1.05rem;
+        cursor: pointer;
+        color: white;
+        background: var(--accent);
+        box-shadow: 0 10px 30px rgba(225, 29, 72, 0.35);
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      button.secondary {
+        margin-left: 0.6rem;
+        background: #334155;
+        box-shadow: none;
+      }
+      #status {
+        margin-top: 1.25rem;
+        min-height: 1.4em;
+        color: #cbd5e1;
+        font-size: 0.95rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Capsize alarm preview</h1>
+      <p>Same pattern as Manager / Coach: beep → “Capsize alert” → beep. Unmute your speakers.</p>
+      <button type="button" id="play">Play alarm once</button>
+      <button type="button" id="loop" class="secondary">Loop every 5s</button>
+      <div id="status"></div>
+    </main>
+    <script>
+      const CAPSIZE_ALARM_EVERY_MS = 5000;
+      const CAPSIZE_ALARM_BEEP_MS = 400;
+      const CAPSIZE_ALARM_GAIN = 0.9;
+      const CAPSIZE_ALARM_PHRASE = 'Capsize alert';
+
+      let timer = null;
+      let ctx = null;
+      let oscillators = [];
+      let seq = 0;
+      let timeouts = [];
+      const statusEl = document.getElementById('status');
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function clearTimeouts() {
+        for (const id of timeouts) clearTimeout(id);
+        timeouts = [];
+      }
+
+      function stopSound() {
+        clearTimeouts();
+        seq += 1;
+        try {
+          speechSynthesis.cancel();
+        } catch {}
+        try {
+          for (const osc of oscillators) {
+            try {
+              osc.stop();
+            } catch {}
+          }
+          oscillators = [];
+          if (ctx) {
+            void ctx.close();
+            ctx = null;
+          }
+        } catch {}
+      }
+
+      function stopLoop() {
+        if (timer != null) {
+          clearInterval(timer);
+          timer = null;
+        }
+        stopSound();
+        setStatus('Stopped');
+      }
+
+      function playTone(audioCtx, run) {
+        if (run !== seq) return;
+        if (audioCtx.state === 'closed') return;
+        if (audioCtx.state === 'suspended') void audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        const start = audioCtx.currentTime;
+        const durSec = CAPSIZE_ALARM_BEEP_MS / 1000;
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(880, start);
+        gain.gain.setValueAtTime(CAPSIZE_ALARM_GAIN, start);
+        gain.gain.setValueAtTime(CAPSIZE_ALARM_GAIN, start + durSec - 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + durSec);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(start);
+        osc.stop(start + durSec);
+        oscillators.push(osc);
+        osc.onended = () => {
+          oscillators = oscillators.filter((o) => o !== osc);
+        };
+      }
+
+      function speak(run, onDone) {
+        if (run !== seq) return;
+        if (typeof speechSynthesis === 'undefined') {
+          onDone?.();
+          return;
+        }
+        const u = new SpeechSynthesisUtterance(CAPSIZE_ALARM_PHRASE);
+        u.volume = 1;
+        u.rate = 1.05;
+        u.pitch = 1.05;
+        u.onend = () => {
+          if (run === seq) onDone?.();
+        };
+        u.onerror = () => {
+          if (run === seq) onDone?.();
+        };
+        speechSynthesis.cancel();
+        speechSynthesis.speak(u);
+      }
+
+      function playCycle() {
+        stopSound();
+        const run = seq;
+        setStatus('Beep…');
+        const audioCtx = new AudioContext();
+        if (audioCtx.state === 'suspended') void audioCtx.resume();
+        ctx = audioCtx;
+        playTone(audioCtx, run);
+        const afterBeep = setTimeout(() => {
+          if (run !== seq) return;
+          setStatus('Voice: “Capsize alert”…');
+          speak(run, () => {
+            if (run !== seq) return;
+            setStatus('Beep…');
+            playTone(audioCtx, run);
+            setTimeout(() => {
+              if (run === seq) setStatus(timer ? 'Waiting for next cycle…' : 'Done');
+            }, CAPSIZE_ALARM_BEEP_MS + 50);
+          });
+        }, CAPSIZE_ALARM_BEEP_MS + 100);
+        timeouts.push(afterBeep);
+      }
+
+      document.getElementById('play').addEventListener('click', () => {
+        stopLoop();
+        playCycle();
+      });
+      document.getElementById('loop').addEventListener('click', () => {
+        if (timer != null) {
+          stopLoop();
+          return;
+        }
+        playCycle();
+        timer = setInterval(playCycle, CAPSIZE_ALARM_EVERY_MS);
+        document.getElementById('loop').textContent = 'Stop loop';
+        setStatus('Looping every 5s');
+      });
+    </script>
+  </body>
+</html>
