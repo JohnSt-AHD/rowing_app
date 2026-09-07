@@ -101,7 +101,12 @@ export function mountApp(root: HTMLElement): void {
   let mapTickUnsub: (() => void) | null = null;
   let historyPanel: HistoryPanel | null = null;
   let racePanel: RacePanel | null = null;
-  let lastAlarmAt = 0;
+  /** Capsize alarm: 3s beep, every 5s until cleared. */
+  const CAPSIZE_ALARM_BEEP_MS = 3000;
+  const CAPSIZE_ALARM_EVERY_MS = 5000;
+  let capsizeAlarmTimer: ReturnType<typeof setInterval> | null = null;
+  let capsizeAlarmCtx: AudioContext | null = null;
+  let capsizeAlarmOsc: OscillatorNode | null = null;
 
   function shouldPollLive(): boolean {
     if (isQuietHours()) return false;
@@ -130,11 +135,27 @@ export function mountApp(root: HTMLElement): void {
     }
   }
 
-  function playCapsizeAlarm() {
-    const now = Date.now();
-    if (now - lastAlarmAt < 8000) return;
-    lastAlarmAt = now;
+  function stopCapsizeAlarmSound() {
+    try {
+      if (capsizeAlarmOsc) {
+        try {
+          capsizeAlarmOsc.stop();
+        } catch {
+          /* already stopped */
+        }
+        capsizeAlarmOsc = null;
+      }
+      if (capsizeAlarmCtx) {
+        void capsizeAlarmCtx.close();
+        capsizeAlarmCtx = null;
+      }
+    } catch {
+      /* optional */
+    }
+  }
 
+  function playCapsizeAlarmBeep() {
+    stopCapsizeAlarmSound();
     try {
       const AudioCtx =
         window.AudioContext ||
@@ -145,18 +166,47 @@ export function mountApp(root: HTMLElement): void {
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       const start = audioCtx.currentTime;
+      const durSec = CAPSIZE_ALARM_BEEP_MS / 1000;
       osc.type = 'square';
       osc.frequency.setValueAtTime(660, start);
-      gain.gain.setValueAtTime(0.12, start);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.9);
+      gain.gain.setValueAtTime(0.6, start);
+      gain.gain.setValueAtTime(0.6, start + durSec - 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + durSec);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
       osc.start(start);
-      osc.stop(start + 0.9);
-      osc.onended = () => void audioCtx.close();
+      osc.stop(start + durSec);
+      capsizeAlarmCtx = audioCtx;
+      capsizeAlarmOsc = osc;
+      osc.onended = () => {
+        if (capsizeAlarmOsc === osc) capsizeAlarmOsc = null;
+        if (capsizeAlarmCtx === audioCtx) {
+          void audioCtx.close();
+          capsizeAlarmCtx = null;
+        }
+      };
     } catch {
       /* Browsers may block audio until the user has interacted with the app. */
     }
+  }
+
+  function startCapsizeAlarmLoop() {
+    if (capsizeAlarmTimer != null) return;
+    playCapsizeAlarmBeep();
+    capsizeAlarmTimer = setInterval(playCapsizeAlarmBeep, CAPSIZE_ALARM_EVERY_MS);
+  }
+
+  function stopCapsizeAlarmLoop() {
+    if (capsizeAlarmTimer != null) {
+      clearInterval(capsizeAlarmTimer);
+      capsizeAlarmTimer = null;
+    }
+    stopCapsizeAlarmSound();
+  }
+
+  function syncCapsizeAlarm() {
+    if (capsizeCount() > 0) startCapsizeAlarmLoop();
+    else stopCapsizeAlarmLoop();
   }
 
   async function refreshMonitoringStatus() {
@@ -209,6 +259,7 @@ export function mountApp(root: HTMLElement): void {
       positions = pos;
       syncMapTracks(pos);
       recordLiveSpeedSamples(pos);
+      syncCapsizeAlarm();
       updateLivePanel();
       updateMap();
       racePanel?.processPositions(pos);
@@ -579,7 +630,7 @@ export function mountApp(root: HTMLElement): void {
       const text = banner.querySelector('[data-capsize-text]');
       if (text) text.textContent = caps > 0 ? capsizeBannerText(caps) : '';
     }
-    if (caps > 0) playCapsizeAlarm();
+    syncCapsizeAlarm();
     const active = activeLiveDevices();
     const expanded = expandedDeviceIds();
     const list = root.querySelector('[data-device-list]');

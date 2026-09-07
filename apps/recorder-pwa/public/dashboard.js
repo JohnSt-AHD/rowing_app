@@ -627,27 +627,77 @@ function strokeDetail(d) {
   return 'Row at 15–50 spm to detect';
 }
 
-function playCapsizeAlarm() {
-  if (typeof window === 'undefined') return;
-  if (window.__rnzCapsizeAlarmAt && Date.now() - window.__rnzCapsizeAlarmAt < 8000) return;
-  window.__rnzCapsizeAlarmAt = Date.now();
+/** Capsize alarm: 3s beep, every 5s until cleared. */
+const CAPSIZE_ALARM_BEEP_MS = 3000;
+const CAPSIZE_ALARM_EVERY_MS = 5000;
+let capsizeAlarmTimer = null;
+let capsizeAlarmCtx = null;
+let capsizeAlarmOsc = null;
+
+function stopCapsizeAlarmSound() {
   try {
-    const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.value = 660;
-    gain.gain.value = 0.12;
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    setTimeout(() => {
-      osc.stop();
-      void ctx.close();
-    }, 900);
+    if (capsizeAlarmOsc) {
+      try {
+        capsizeAlarmOsc.stop();
+      } catch {
+        /* already stopped */
+      }
+      capsizeAlarmOsc = null;
+    }
+    if (capsizeAlarmCtx) {
+      void capsizeAlarmCtx.close();
+      capsizeAlarmCtx = null;
+    }
   } catch {
     /* optional */
   }
+}
+
+function playCapsizeAlarmBeep() {
+  if (typeof window === 'undefined') return;
+  stopCapsizeAlarmSound();
+  try {
+    const ctx = new AudioContext();
+    if (ctx.state === 'suspended') void ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const start = ctx.currentTime;
+    const durSec = CAPSIZE_ALARM_BEEP_MS / 1000;
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(660, start);
+    gain.gain.setValueAtTime(0.6, start);
+    gain.gain.setValueAtTime(0.6, start + durSec - 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + durSec);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start + durSec);
+    capsizeAlarmCtx = ctx;
+    capsizeAlarmOsc = osc;
+    osc.onended = () => {
+      if (capsizeAlarmOsc === osc) capsizeAlarmOsc = null;
+      if (capsizeAlarmCtx === ctx) {
+        void ctx.close();
+        capsizeAlarmCtx = null;
+      }
+    };
+  } catch {
+    /* optional */
+  }
+}
+
+function startCapsizeAlarmLoop() {
+  if (capsizeAlarmTimer != null) return;
+  playCapsizeAlarmBeep();
+  capsizeAlarmTimer = setInterval(playCapsizeAlarmBeep, CAPSIZE_ALARM_EVERY_MS);
+}
+
+function stopCapsizeAlarmLoop() {
+  if (capsizeAlarmTimer != null) {
+    clearInterval(capsizeAlarmTimer);
+    capsizeAlarmTimer = null;
+  }
+  stopCapsizeAlarmSound();
 }
 
 function updateCapsizeBanner(devices) {
@@ -659,6 +709,7 @@ function updateCapsizeBanner(devices) {
   const capsized = (devices || []).filter((d) => d.rowing?.capsize);
   lastCapsizedDeviceIds = capsized.map((d) => d.deviceId).filter(Boolean);
   if (!capsized.length) {
+    stopCapsizeAlarmLoop();
     bar.hidden = true;
     bar.setAttribute('aria-hidden', 'true');
     text.textContent = '';
@@ -676,7 +727,7 @@ function updateCapsizeBanner(devices) {
     .join(', ');
   if (clearBtn) clearBtn.disabled = false;
   if (helpBtn) helpBtn.disabled = false;
-  playCapsizeAlarm();
+  startCapsizeAlarmLoop();
 }
 
 async function sendHelpOnWay() {
