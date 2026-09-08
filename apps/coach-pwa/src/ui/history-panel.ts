@@ -50,7 +50,7 @@ const SETUP_HTML = `
 
 const TRACK_HTML = `
   <div class="history-main" data-history-main>
-    <p class="poll-line history-main__hint" data-track-hint>Use Settings to choose devices and load a session.</p>
+    <p class="poll-line history-main__hint" data-track-hint>Choose devices above, then load a session to review the trace.</p>
     <div class="history-loading" data-history-loading hidden aria-live="polite">
       <div class="history-loading__bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
         <div class="history-loading__fill"></div>
@@ -99,14 +99,12 @@ export class HistoryPanel {
   }
 
   /** Call before app re-render clears host elements. */
-  prepareForRender(nextTab: 'live' | 'history' | 'settings'): void {
+  prepareForRender(nextTab: string): void {
     if (nextTab !== 'history') {
       this.teardownMap();
       this.teardownChartObserver();
       this.timeline = null;
       this.trackHost = null;
-    }
-    if (nextTab !== 'settings') {
       this.setupHost = null;
     }
   }

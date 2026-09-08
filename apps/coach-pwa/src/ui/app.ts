@@ -126,8 +126,50 @@ export function mountApp(root: HTMLElement): void {
   const capsizeCount = () =>
     devices.filter((d) => d.rowing?.capsize || positions.some((p) => p.deviceId === d.deviceId && p.capsize)).length;
 
-  const capsizeBannerText = (count: number) =>
-    `${count} CAPSIZE — check crew now. Stays until acknowledged.`;
+  function capsizedDevices(): FleetDevice[] {
+    return devices.filter(
+      (d) => d.rowing?.capsize || positions.some((p) => p.deviceId === d.deviceId && p.capsize),
+    );
+  }
+
+  function capsizeBannerText(): string {
+    const caps = capsizedDevices();
+    const names = caps.map((d) => deviceDisplayName(d)).filter(Boolean);
+    const namePart = names.length ? `: ${names.join(', ')}` : '';
+    const n = caps.length || 1;
+    return `${n} CAPSIZE${namePart} — check crew now. Stays until acknowledged.`;
+  }
+
+  function updateCapsizeBanner(): void {
+    const caps = capsizedDevices();
+    const banner = root.querySelector('[data-capsize-banner]') as HTMLElement | null;
+    if (!banner) return;
+    banner.hidden = caps.length === 0;
+    const text = banner.querySelector('[data-capsize-text]');
+    if (text) text.textContent = caps.length > 0 ? capsizeBannerText() : '';
+  }
+
+  function monitorStatusHtml(): string {
+    if (quietHoursActive) return QUIET_HOURS_MESSAGE;
+    if (monitoring) {
+      return serviceRunning
+        ? '● Monitoring fleet (background active)'
+        : '● Monitoring (foreground poll only)';
+    }
+    return 'Monitoring off — no background alerts';
+  }
+
+  function monitorBarHtml(): string {
+    const on = monitoring && !quietHoursActive;
+    return (
+      `<div class="coach-monitor-bar ${on ? 'monitoring' : ''}" data-monitor-bar>` +
+      `<div class="status-line ${on ? 'on' : ''}">${monitorStatusHtml()}</div>` +
+      (monitoring
+        ? `<button type="button" class="coach-btn coach-btn--danger" data-stop-monitor>Stop monitoring</button>`
+        : `<button type="button" class="coach-btn coach-btn--primary" data-start-monitor>Start monitoring</button>`) +
+      `</div>`
+    );
+  }
 
   async function acknowledgeCapsizeAlerts() {
     try {
@@ -261,6 +303,7 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function syncCapsizeAlarm() {
+    updateCapsizeBanner();
     if (capsizeCount() > 0) startCapsizeAlarmLoop();
     else stopCapsizeAlarmLoop();
   }
@@ -679,13 +722,6 @@ export function mountApp(root: HTMLElement): void {
 
   function updateLivePanel() {
     if (tab !== 'live') return;
-    const caps = capsizeCount();
-    const banner = root.querySelector('[data-capsize-banner]') as HTMLElement | null;
-    if (banner) {
-      banner.hidden = caps === 0;
-      const text = banner.querySelector('[data-capsize-text]');
-      if (text) text.textContent = caps > 0 ? capsizeBannerText(caps) : '';
-    }
     syncCapsizeAlarm();
     const active = activeLiveDevices();
     const expanded = expandedDeviceIds();
@@ -830,33 +866,20 @@ export function mountApp(root: HTMLElement): void {
             </div>
           </div>
         </header>
-        <div
-          class="quiet-hours-banner"
-          data-quiet-hours-banner
-          role="status"
-          ${quietHoursActive ? '' : 'hidden'}
-          aria-hidden="${quietHoursActive ? 'false' : 'true'}"
-        >${QUIET_HOURS_MESSAGE}</div>
-        <div class="capsize-banner" data-capsize-banner role="alert" ${caps > 0 ? '' : 'hidden'}>
-          <span data-capsize-text>${caps > 0 ? capsizeBannerText(caps) : ''}</span>
-          <button type="button" class="capsize-banner__clear" data-capsize-clear>Acknowledge / clear</button>
-        </div>
-        ${tab === 'live'
-          ? `<div class="coach-monitor-bar ${monitoring && !quietHoursActive ? 'monitoring' : ''}">
-          <div class="status-line ${monitoring && !quietHoursActive ? 'on' : ''}">
-            ${quietHoursActive
-              ? QUIET_HOURS_MESSAGE
-              : monitoring
-                ? serviceRunning
-                  ? '● Monitoring fleet (background active)'
-                  : '● Monitoring (foreground poll only)'
-                : 'Monitoring off — no background alerts'}
+        <div class="coach-sticky-chrome">
+          <div
+            class="quiet-hours-banner"
+            data-quiet-hours-banner
+            role="status"
+            ${quietHoursActive ? '' : 'hidden'}
+            aria-hidden="${quietHoursActive ? 'false' : 'true'}"
+          >${QUIET_HOURS_MESSAGE}</div>
+          <div class="capsize-banner" data-capsize-banner role="alert" ${caps > 0 ? '' : 'hidden'}>
+            <span data-capsize-text>${caps > 0 ? capsizeBannerText() : ''}</span>
+            <button type="button" class="capsize-banner__clear" data-capsize-clear>Acknowledge / clear</button>
           </div>
-          ${monitoring
-            ? `<button type="button" class="coach-btn coach-btn--danger" data-stop-monitor>Stop monitoring</button>`
-            : `<button type="button" class="coach-btn coach-btn--primary" data-start-monitor>Start monitoring</button>`}
-        </div>`
-          : ''}
+          ${monitorBarHtml()}
+        </div>
         <nav class="coach-tabs coach-tabs--four">
           <button type="button" class="coach-tab ${tab === 'live' ? 'active' : ''}" data-tab="live">Live</button>
           <button type="button" class="coach-tab ${tab === 'race' ? 'active' : ''}" data-tab="race">Race</button>
@@ -880,6 +903,9 @@ export function mountApp(root: HTMLElement): void {
           <div class="race-panel-root" data-race-root></div>
         </section>
         <section class="coach-panel coach-panel--history" data-panel="history" ${tab === 'history' ? '' : 'hidden'}>
+          <h2 class="coach-section-title">Load session</h2>
+          <div class="history-setup" data-history-setup-root></div>
+          <h2 class="coach-section-title">Session review</h2>
           <div class="history-panel" data-history-track-root></div>
         </section>
         <section class="coach-panel" data-panel="settings" ${tab === 'settings' ? '' : 'hidden'}>
@@ -892,8 +918,6 @@ export function mountApp(root: HTMLElement): void {
           </label>
           <button type="button" class="coach-btn coach-btn--primary" data-save-settings>Save settings</button>
           <p class="poll-line">Same URL and token as the rower app / dashboard. Monitoring must be stopped to change URL safely.</p>
-          <h2 class="coach-section-title">History</h2>
-          <div class="history-setup" data-history-setup-root></div>
         </section>
       </div>`;
 
@@ -944,29 +968,28 @@ export function mountApp(root: HTMLElement): void {
     }
 
     if (tab === 'history') {
+      const setupRoot = root.querySelector('[data-history-setup-root]') as HTMLElement | null;
       const trackRoot = root.querySelector('[data-history-track-root]') as HTMLElement | null;
+      const panel = ensureHistoryPanel();
+      if (setupRoot) panel.mountSetup(setupRoot);
       if (trackRoot) {
-        const panel = ensureHistoryPanel();
         panel.mountTrack(trackRoot);
         panel.onHistoryTabShown();
       }
-    }
-
-    if (tab === 'settings') {
-      const setupRoot = root.querySelector('[data-history-setup-root]') as HTMLElement | null;
-      if (setupRoot) ensureHistoryPanel().mountSetup(setupRoot);
     }
 
     if (tab === 'live') {
       ensureMap();
       updateMap();
       updateLivePanel();
+    } else {
+      syncCapsizeAlarm();
     }
   }
 
   quietHoursUnsub = onQuietHoursChange((paused) => {
     void applyQuietHours(paused).then(() => {
-      if (tab === 'live') render();
+      render();
     });
   });
 

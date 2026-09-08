@@ -6,6 +6,8 @@
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .hub-crewsight-logo--manager {
@@ -23,15 +25,26 @@
   display: none;
 }
 
+.coach-sticky-chrome {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: #0a1628;
+  padding-bottom: 0.15rem;
+}
+
 .coach-monitor-bar {
-  margin: 0.75rem clamp(12px, 4vw, 20px) 0;
-  padding: 0.85rem 1rem;
+  margin: 0.5rem clamp(12px, 4vw, 20px) 0;
+  padding: 0.65rem 0.85rem;
   background: var(--ahd-bg-card);
   border: 1px solid var(--ahd-border);
   border-radius: 12px;
   display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
 }
 
 .coach-monitor-bar.monitoring {
@@ -39,12 +52,17 @@
 }
 
 .coach-monitor-bar .status-line {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   color: var(--ahd-muted);
+  flex: 1 1 12rem;
 }
 
 .coach-monitor-bar .status-line.on {
   color: #4ade80;
+}
+
+.coach-monitor-bar .coach-btn {
+  flex: 0 0 auto;
 }
 
 .coach-tabs {
@@ -322,10 +340,6 @@
   background: #1e293b;
 }
 
-.capsize-banner[hidden] {
-  display: none !important;
-}
-
 .device-list {
   list-style: none;
   margin: 0;
@@ -516,7 +530,14 @@
   font-weight: 700;
 }
 
+.capsize-banner[hidden] {
+  display: none !important;
+}
+
 .capsize-banner {
+  position: sticky;
+  top: 0;
+  z-index: 45;
   background: #ef4444;
   color: #fff;
   padding: 0.75rem 1rem;
@@ -527,6 +548,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  flex-wrap: wrap;
+  box-shadow: 0 8px 20px rgba(127, 29, 29, 0.35);
+}
+
+.capsize-banner [data-capsize-text] {
+  flex: 1 1 12rem;
+  line-height: 1.35;
 }
 
 .capsize-banner__clear {
@@ -538,8 +566,20 @@
   font: inherit;
   font-size: 0.82rem;
   font-weight: 700;
-  padding: 0.35rem 0.55rem;
+  padding: 0.45rem 0.65rem;
   white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .capsize-banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .capsize-banner__clear {
+    width: 100%;
+    white-space: normal;
+  }
 }
 
 .coach-field {
