@@ -676,8 +676,18 @@ export function mountApp(root: HTMLElement): void {
     const meta = monitoring
       ? `${d.online ? 'Online' : 'Offline'} · ${gpsLabel}${staleNote}`
       : `${d.online ? 'Online' : 'Offline'} · ${gpsLabel} · seen ${d.lastSeenAgoSec ?? '—'}s ago${staleNote}`;
-    const speedLabel = stale ? '—' : formatSpeedKmh(d.speedMps);
-    const spmLabel = stale ? '— spm' : formatSpm(d, d.mapPosition);
+    const speedValue =
+      stale || d.speedMps == null || !Number.isFinite(d.speedMps) || d.speedMps < 0
+        ? '—'
+        : (d.speedMps * 3.6).toFixed(1);
+    const spmRaw =
+      d.mapPosition != null
+        ? resolveStrokeRate(d.mapPosition)
+        : d.displayStrokeRate ?? d.rowing?.strokeRate ?? null;
+    const spmValue =
+      stale || spmRaw == null || !Number.isFinite(spmRaw) || spmRaw <= 0
+        ? '—'
+        : String(Math.round(spmRaw));
     return `<li>
       <details class="device-card ${cap ? 'capsize' : ''}${stale ? ' device-card--stale' : ''}" data-device-id="${esc(d.deviceId)}" ${expanded ? 'open' : ''}>
         <summary class="device-card__summary">
@@ -689,8 +699,14 @@ export function mountApp(root: HTMLElement): void {
             ${cap ? '<span class="device-card__alert">CAPSIZE</span>' : ''}
           </span>
           <span class="device-card__head-stats">
-            <span>${speedLabel}</span>
-            <span>${spmLabel}</span>
+            <span class="device-card__stat">
+              <span class="device-card__stat-value">${esc(speedValue)}</span>
+              <span class="device-card__stat-label">km/h</span>
+            </span>
+            <span class="device-card__stat">
+              <span class="device-card__stat-value">${esc(spmValue)}</span>
+              <span class="device-card__stat-label">spm</span>
+            </span>
           </span>
         </summary>
         <div class="device-card__body">
@@ -859,11 +875,17 @@ export function mountApp(root: HTMLElement): void {
     const caps = capsizeCount();
     root.innerHTML = `
       <div class="coach-app">
-        <header class="hub-topbar hub-topbar--manager">
-          <div class="hub-topbar-inner">
-            <div class="hub-topbar-brands">
-              <img src="${asset('assets/crewsight/crewsight-logo-full-manager-color.png')}" alt="CrewSight Manager" class="hub-crewsight-logo hub-crewsight-logo--manager" width="200" height="200" />
-            </div>
+        <header class="coach-topbar" aria-label="CrewSight Manager">
+          <img
+            src="${asset('assets/crewsight/crewsight-logo-icon-only-manager-color.png')}"
+            alt=""
+            class="coach-topbar__icon"
+            width="40"
+            height="40"
+          />
+          <div class="coach-topbar__text">
+            <span class="coach-topbar__brand">CrewSight</span>
+            <span class="coach-topbar__product">Manager</span>
           </div>
         </header>
         <div class="coach-sticky-chrome">
@@ -880,22 +902,16 @@ export function mountApp(root: HTMLElement): void {
           </div>
           ${monitorBarHtml()}
         </div>
-        <nav class="coach-tabs coach-tabs--four">
-          <button type="button" class="coach-tab ${tab === 'live' ? 'active' : ''}" data-tab="live">Live</button>
-          <button type="button" class="coach-tab ${tab === 'race' ? 'active' : ''}" data-tab="race">Race</button>
-          <button type="button" class="coach-tab ${tab === 'history' ? 'active' : ''}" data-tab="history">History</button>
-          <button type="button" class="coach-tab ${tab === 'settings' ? 'active' : ''}" data-tab="settings">Settings</button>
-        </nav>
         <section class="coach-panel" data-panel="live" ${tab === 'live' ? '' : 'hidden'}>
           <p class="poll-line" data-poll-status>—</p>
-          <div class="coach-map-bar">
-            <button type="button" class="coach-btn coach-btn--ghost ${mapFollowFleet ? 'coach-btn--active' : ''}" data-map-follow aria-pressed="${mapFollowFleet ? 'true' : 'false'}">Follow fleet</button>
-          </div>
-          <div id="coachMap" class="coach-map"></div>
           <div class="live-devices-section">
             <h2 class="live-devices__title">Active devices <span class="live-devices__count" data-active-count>0</span></h2>
             <ul class="device-list" data-device-list></ul>
           </div>
+          <div class="coach-map-bar">
+            <button type="button" class="coach-btn coach-btn--ghost ${mapFollowFleet ? 'coach-btn--active' : ''}" data-map-follow aria-pressed="${mapFollowFleet ? 'true' : 'false'}">Follow fleet</button>
+          </div>
+          <div id="coachMap" class="coach-map"></div>
           <canvas class="live-speed-chart history-chart" data-live-speed-chart height="200"></canvas>
         </section>
         <section class="coach-panel coach-panel--race" data-panel="race" ${tab === 'race' ? '' : 'hidden'}>
@@ -919,6 +935,12 @@ export function mountApp(root: HTMLElement): void {
           <button type="button" class="coach-btn coach-btn--primary" data-save-settings>Save settings</button>
           <p class="poll-line">Same URL and token as the rower app / dashboard. Monitoring must be stopped to change URL safely.</p>
         </section>
+        <nav class="coach-tabs coach-tabs--bottom" aria-label="Manager sections">
+          <button type="button" class="coach-tab coach-tab--live ${tab === 'live' ? 'active' : ''}" data-tab="live">Live</button>
+          <button type="button" class="coach-tab ${tab === 'race' ? 'active' : ''}" data-tab="race">Race</button>
+          <button type="button" class="coach-tab ${tab === 'history' ? 'active' : ''}" data-tab="history">History</button>
+          <button type="button" class="coach-tab ${tab === 'settings' ? 'active' : ''}" data-tab="settings">Settings</button>
+        </nav>
       </div>`;
 
     root.querySelector('[data-map-follow]')?.addEventListener('click', () => {
