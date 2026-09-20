@@ -1909,6 +1909,7 @@ async function getLogbook(orgId, opts = {}) {
   const days = Math.min(Math.max(Number(opts.days) || 45, 1), 120);
   const timeZone = String(opts.timeZone || 'Pacific/Auckland');
   const cutoff = new Date(Date.now() - days * 86400000);
+  const cutoffMs = cutoff.getTime();
 
   const rows = await sql`
     WITH recent_sessions AS (
@@ -1924,8 +1925,11 @@ async function getLogbook(orgId, opts = {}) {
       LEFT JOIN rnz_devices d
         ON d.org_id = s.org_id AND d.unique_id = s.unique_id
       WHERE s.org_id = ${orgId}
-        AND s.started_at >= ${cutoff}
-      ORDER BY s.started_at DESC
+        AND (
+          s.started_at >= ${cutoff}
+          OR s.updated_at >= ${cutoff}
+        )
+      ORDER BY COALESCE(s.updated_at, s.started_at) DESC
       LIMIT 400
     ),
     gps_tagged AS (
@@ -1943,6 +1947,7 @@ async function getLogbook(orgId, opts = {}) {
       WHERE sm.org_id = ${orgId}
         AND sm.latitude IS NOT NULL
         AND sm.longitude IS NOT NULL
+        AND sm.t_ms >= ${cutoffMs}
     ),
     gps AS (
       SELECT
@@ -1996,6 +2001,7 @@ async function getLogbook(orgId, opts = {}) {
       FROM rnz_samples sm
       INNER JOIN recent_sessions rs ON rs.session_id = sm.session_id
       WHERE sm.org_id = ${orgId}
+        AND sm.t_ms >= ${cutoffMs}
       GROUP BY sm.session_id, day_key
     )
     SELECT
