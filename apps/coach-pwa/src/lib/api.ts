@@ -217,3 +217,53 @@ export async function loadSessionDashboard(
   if (!res.ok) throw new Error(`History ${res.status}`);
   return (await res.json()) as DashboardHistoryPayload;
 }
+
+export type LogbookSession = {
+  sessionId: string;
+  uniqueId: string;
+  crew: string;
+  athleteId?: string | null;
+  startedAt: string;
+  endedAt: string;
+  capsize: boolean;
+  distanceM: number;
+  onWaterMs: number;
+};
+
+export type LogbookDay = {
+  date: string;
+  sessionCount: number;
+  capsizeCount: number;
+  distanceM: number;
+  onWaterMs: number;
+  sessions: LogbookSession[];
+};
+
+export type LogbookPayload = {
+  ok?: boolean;
+  timeZone?: string;
+  days?: LogbookDay[];
+  error?: string;
+};
+
+export async function fetchLogbook(
+  settings: CoachSettings,
+  days = 45,
+  timeZone = 'Pacific/Auckland',
+): Promise<LogbookPayload> {
+  const q = new URLSearchParams({
+    list: 'logbook',
+    days: String(days),
+    tz: timeZone,
+  });
+  const url = `${apiBase(settings)}/api/history?${q.toString()}`;
+  const res = await fetch(url, { headers: authHeaders(settings) });
+  const data = (await res.json().catch(() => ({}))) as LogbookPayload;
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Logbook 401 — set ingest token in Settings');
+    }
+    throw new Error(data.error || `Logbook ${res.status}`);
+  }
+  return data;
+}

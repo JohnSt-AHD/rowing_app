@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { HistoryPanel } from './history-panel';
 import { RacePanel } from './race-panel';
+import { LogbookPanel } from './logbook-panel';
 import { drawMultiSeriesChart } from '../lib/history-charts';
 import {
   clearLiveSpeedBuffers,
@@ -46,9 +47,10 @@ import {
   onQuietHoursChange,
 } from '../lib/quiet-hours';
 
-type Tab = 'live' | 'history' | 'race' | 'settings';
+type Tab = 'dashboard' | 'map' | 'logbook' | 'race' | 'history' | 'settings';
 
-type LiveDeviceRow = FleetDevice & {
+type CrewTicketRow = FleetDevice & {
+  onWater: boolean;
   speedMps: number | null;
   displayName: string;
   colorIndex: number;
@@ -83,7 +85,7 @@ function asset(path: string): string {
 
 export function mountApp(root: HTMLElement): void {
   let settings = loadSettings();
-  let tab: Tab = 'live';
+  let tab: Tab = 'dashboard';
   let monitoring = false;
   let serviceRunning = false;
   let devices: FleetDevice[] = [];
@@ -101,6 +103,7 @@ export function mountApp(root: HTMLElement): void {
   let mapTickUnsub: (() => void) | null = null;
   let historyPanel: HistoryPanel | null = null;
   let racePanel: RacePanel | null = null;
+  let logbookPanel: LogbookPanel | null = null;
   /** Capsize alarm: beep + voice + beep, every 5s until cleared. */
   const CAPSIZE_ALARM_EVERY_MS = 5000;
   const CAPSIZE_ALARM_BEEP_MS = 400;
@@ -115,7 +118,7 @@ export function mountApp(root: HTMLElement): void {
   function shouldPollLive(): boolean {
     if (isQuietHours()) return false;
     if (!settings.apiBaseUrl) return false;
-    return monitoring || tab === 'race';
+    return monitoring || tab === 'race' || tab === 'dashboard' || tab === 'map';
   }
 
   function syncPollTimer() {
@@ -359,7 +362,8 @@ export function mountApp(root: HTMLElement): void {
       syncMapTracks(pos);
       recordLiveSpeedSamples(pos);
       syncCapsizeAlarm();
-      updateLivePanel();
+      updateDashboardPanel();
+      updateMapPanelExtras();
       updateMap();
       racePanel?.processPositions(pos);
 
@@ -640,87 +644,94 @@ export function mountApp(root: HTMLElement): void {
     return '— spm';
   }
 
-  function activeLiveDevices(): LiveDeviceRow[] {
+  function isDeviceOnWater(d: FleetDevice, p?: MapPosition): boolean {
+    if (!d.online || !p) return false;
+    if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) return false;
+    const ago = d.lastSeenAgoSec ?? p.lastSeenAgoSec ?? p.fixAgeSec ?? 999;
+    return ago <= ONLINE_SEC;
+  }
+
+  function crewTicketRows(): CrewTicketRow[] {
     const posById = new Map(positions.map((p) => [p.deviceId, p]));
-    const rows: LiveDeviceRow[] = [];
+    const rows: CrewTicketRow[] = [];
     for (const d of devices) {
-      if (!d.online) continue;
       const p = posById.get(d.deviceId);
-      if (!p) continue;
-      const ago = d.lastSeenAgoSec ?? p.lastSeenAgoSec ?? p.fixAgeSec ?? 999;
-      if (ago > ONLINE_SEC) continue;
-      const stale = p.telemetryStale === true || isTelemetryStale(ago);
+      const onWater = isDeviceOnWater(d, p);
+      const ago = d.lastSeenAgoSec ?? p?.lastSeenAgoSec ?? p?.fixAgeSec ?? null;
+      const stale =
+        p != null && (p.telemetryStale === true || isTelemetryStale(ago));
       rows.push({
         ...d,
-        speedMps: stale ? null : resolveSpeedMps(p),
+        onWater,
+        speedMps: onWater && p && !stale ? resolveSpeedMps(p) : null,
         displayName: deviceDisplayName(d),
         colorIndex: registerLiveDevice(d.deviceId),
         telemetryStale: stale,
-        lastSeenAgoSec: ago,
+        lastSeenAgoSec: ago ?? undefined,
         mapPosition: p,
       });
     }
-    rows.sort((a, b) => (b.speedMps ?? -1) - (a.speedMps ?? -1));
+    rows.sort((a, b) => {
+      if (a.onWater !== b.onWater) return a.onWater ? -1 : 1;
+      const capA = Boolean(a.rowing?.capsize);
+      const capB = Boolean(b.rowing?.capsize);
+      if (capA !== capB) return capA ? -1 : 1;
+      return (b.speedMps ?? -1) - (a.speedMps ?? -1) || a.displayName.localeCompare(b.displayName);
+    });
     return rows;
   }
 
-  function deviceCardHtml(d: LiveDeviceRow, expanded: boolean): string {
+  function crewTicketHtml(d: CrewTicketRow): string {
     const cap = Boolean(d.rowing?.capsize);
-    const gpsAge = d.gpsAgeSec ?? resolveGpsDisplayAge(d);
-    const gpsLabel = gpsAge == null ? 'GPS —' : gpsStatusLabel(gpsAge);
-    const stale = Boolean(d.telemetryStale);
-    const staleNote = stale
-      ? ` · Stale — no data for ${d.lastSeenAgoSec ?? '?'}s`
-      : '';
     const accent = liveDeviceColor(d.deviceId);
-    const meta = monitoring
-      ? `${d.online ? 'Online' : 'Offline'} · ${gpsLabel}${staleNote}`
-      : `${d.online ? 'Online' : 'Offline'} · ${gpsLabel} · seen ${d.lastSeenAgoSec ?? '—'}s ago${staleNote}`;
-    const speedValue =
-      stale || d.speedMps == null || !Number.isFinite(d.speedMps) || d.speedMps < 0
-        ? '—'
-        : (d.speedMps * 3.6).toFixed(1);
-    const spmRaw =
-      d.mapPosition != null
-        ? resolveStrokeRate(d.mapPosition)
-        : d.displayStrokeRate ?? d.rowing?.strokeRate ?? null;
-    const spmValue =
-      stale || spmRaw == null || !Number.isFinite(spmRaw) || spmRaw <= 0
-        ? '—'
-        : String(Math.round(spmRaw));
-    return `<li>
-      <details class="device-card ${cap ? 'capsize' : ''}${stale ? ' device-card--stale' : ''}" data-device-id="${esc(d.deviceId)}" ${expanded ? 'open' : ''}>
-        <summary class="device-card__summary">
-          <span class="device-card__lead">
-            <span class="device-card__dot" style="background:${accent}"></span>
-            <span class="device-card__name">${esc(d.displayName)}</span>
-            ${d.displayName !== d.deviceId ? `<span class="device-card__id-tag">${esc(d.deviceId)}</span>` : ''}
-            ${stale ? '<span class="device-card__stale">Stale</span>' : ''}
-            ${cap ? '<span class="device-card__alert">CAPSIZE</span>' : ''}
-          </span>
-          <span class="device-card__head-stats">
-            <span class="device-card__stat">
-              <span class="device-card__stat-value">${esc(speedValue)}</span>
-              <span class="device-card__stat-label">km/h</span>
-            </span>
-            <span class="device-card__stat">
-              <span class="device-card__stat-value">${esc(spmValue)}</span>
-              <span class="device-card__stat-label">spm</span>
-            </span>
-          </span>
-        </summary>
-        <div class="device-card__body">
-          <div class="device-card__meta">${meta}</div>
-        </div>
-      </details>
-    </li>`;
-  }
-
-  function expandedDeviceIds(): Set<string> {
-    return new Set(
-      [...root.querySelectorAll<HTMLDetailsElement>('details.device-card[open]')].map(
-        (el) => el.dataset.deviceId ?? '',
-      ).filter(Boolean),
+    const speed =
+      d.onWater && d.speedMps != null && Number.isFinite(d.speedMps) && d.speedMps >= 0
+        ? `${(d.speedMps * 3.6).toFixed(1)} km/h`
+        : null;
+    const spm =
+      d.onWater && d.mapPosition
+        ? (() => {
+            const v = resolveStrokeRate(d.mapPosition!);
+            return v != null && v > 0 ? `${Math.round(v)} spm` : null;
+          })()
+        : null;
+    const statusClass = cap
+      ? 'crew-ticket__badge--capsize'
+      : d.onWater
+        ? 'crew-ticket__badge--water'
+        : 'crew-ticket__badge--ashore';
+    const statusLabel = cap ? 'Capsize' : d.onWater ? 'On water' : 'Ashore';
+    const ticketClass = [
+      'crew-ticket',
+      d.onWater ? 'crew-ticket--water' : 'crew-ticket--ashore',
+      cap ? 'crew-ticket--capsize' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const meta = d.onWater
+      ? d.telemetryStale
+        ? `Stale · seen ${d.lastSeenAgoSec ?? '?'}s ago`
+        : gpsStatusLabel(d.gpsAgeSec ?? resolveGpsDisplayAge(d, d.mapPosition))
+      : d.lastSeenAgoSec != null
+        ? `Last seen ${d.lastSeenAgoSec}s ago`
+        : 'Offline';
+    return (
+      `<li class="${ticketClass}" data-device-id="${esc(d.deviceId)}">` +
+      `<span class="crew-ticket__dot" style="background:${accent}" aria-hidden="true"></span>` +
+      `<div class="crew-ticket__body">` +
+      `<div class="crew-ticket__name">${esc(d.displayName)}</div>` +
+      (d.displayName !== d.deviceId
+        ? `<div class="crew-ticket__id">${esc(d.deviceId)}</div>`
+        : '') +
+      `<div class="crew-ticket__meta">${esc(meta)}</div>` +
+      `</div>` +
+      `<div class="crew-ticket__status">` +
+      `<span class="crew-ticket__badge ${statusClass}">${statusLabel}</span>` +
+      (d.onWater && (speed || spm)
+        ? `<div class="crew-ticket__stats">${[speed, spm].filter(Boolean).map((x) => esc(x!)).join(' · ')}</div>`
+        : '') +
+      `</div>` +
+      `</li>`
     );
   }
 
@@ -736,18 +747,41 @@ export function mountApp(root: HTMLElement): void {
     });
   }
 
-  function updateLivePanel() {
-    if (tab !== 'live') return;
+  function updateDashboardPanel() {
+    if (tab !== 'dashboard') return;
     syncCapsizeAlarm();
-    const active = activeLiveDevices();
-    const expanded = expandedDeviceIds();
-    const list = root.querySelector('[data-device-list]');
-    if (list) {
-      list.innerHTML = active.length
-        ? active.map((d) => deviceCardHtml(d, expanded.has(d.deviceId))).join('')
-        : '<li class="device-list__empty">No active devices on the water</li>';
+    const rows = crewTicketRows();
+    const onWater = rows.filter((r) => r.onWater);
+    const ashore = rows.filter((r) => !r.onWater);
+    const onEl = root.querySelector('[data-on-water-count]');
+    const totalEl = root.querySelector('[data-fleet-count]');
+    if (onEl) onEl.textContent = String(onWater.length);
+    if (totalEl) totalEl.textContent = String(rows.length);
+
+    const waterList = root.querySelector('[data-ticket-on-water]');
+    if (waterList) {
+      waterList.innerHTML = onWater.length
+        ? onWater.map((d) => crewTicketHtml(d)).join('')
+        : '<li class="crew-ticket__empty">No crews on the water</li>';
     }
-    const countEl = root.querySelector('[data-active-count]');
+    const ashoreList = root.querySelector('[data-ticket-ashore]');
+    if (ashoreList) {
+      ashoreList.innerHTML = ashore.length
+        ? ashore.map((d) => crewTicketHtml(d)).join('')
+        : rows.length
+          ? ''
+          : '<li class="crew-ticket__empty">No devices on the system</li>';
+    }
+    const ashoreSection = root.querySelector('[data-ashore-section]') as HTMLElement | null;
+    if (ashoreSection) ashoreSection.hidden = ashore.length === 0;
+
+    updateLiveChart(onWater.map((d) => d.deviceId));
+  }
+
+  function updateMapPanelExtras() {
+    if (tab !== 'map') return;
+    const active = crewTicketRows().filter((r) => r.onWater);
+    const countEl = root.querySelector('[data-map-active-count]');
     if (countEl) countEl.textContent = String(active.length);
     updateLiveChart(active.map((d) => d.deviceId));
   }
@@ -797,7 +831,7 @@ export function mountApp(root: HTMLElement): void {
       setStatus(QUIET_HOURS_MESSAGE);
       return;
     }
-    if (!monitoring && tab !== 'race') return;
+    if (!monitoring && tab !== 'race' && tab !== 'dashboard' && tab !== 'map') return;
     settings = loadSettings();
     if (IS_NATIVE && settings.apiBaseUrl && monitoring) {
       await startNativeMonitoring(settings.apiBaseUrl, settings.ingestToken);
@@ -855,6 +889,16 @@ export function mountApp(root: HTMLElement): void {
     return racePanel;
   }
 
+  function ensureLogbookPanel(): LogbookPanel {
+    if (!logbookPanel) {
+      logbookPanel = new LogbookPanel(
+        () => loadSettings(),
+        (msg, err) => setStatus(msg, err),
+      );
+    }
+    return logbookPanel;
+  }
+
   function ensureHistoryPanel(): HistoryPanel {
     if (!historyPanel) {
       historyPanel = new HistoryPanel(
@@ -902,17 +946,34 @@ export function mountApp(root: HTMLElement): void {
           </div>
           ${monitorBarHtml()}
         </div>
-        <section class="coach-panel" data-panel="live" ${tab === 'live' ? '' : 'hidden'}>
+        <section class="coach-panel coach-panel--dashboard" data-panel="dashboard" ${tab === 'dashboard' ? '' : 'hidden'}>
           <p class="poll-line" data-poll-status>—</p>
-          <div class="live-devices-section">
-            <h2 class="live-devices__title">Active devices <span class="live-devices__count" data-active-count>0</span></h2>
-            <ul class="device-list" data-device-list></ul>
+          <div class="coach-dashboard">
+            <div class="coach-dashboard__summary">
+              <span class="coach-dash-pill coach-dash-pill--water"><strong data-on-water-count>0</strong> on water</span>
+              <span class="coach-dash-pill"><strong data-fleet-count>0</strong> crews</span>
+            </div>
+            <div>
+              <h2 class="coach-ticket-section__title">On water</h2>
+              <ul class="crew-ticket-list" data-ticket-on-water></ul>
+            </div>
+            <div data-ashore-section>
+              <h2 class="coach-ticket-section__title">Ashore</h2>
+              <ul class="crew-ticket-list" data-ticket-ashore></ul>
+            </div>
           </div>
-          <div class="coach-map-bar">
+        </section>
+        <section class="coach-panel coach-panel--map" data-panel="map" ${tab === 'map' ? '' : 'hidden'}>
+          <p class="poll-line" data-poll-status>—</p>
+          <div class="coach-map-panel-tools">
             <button type="button" class="coach-btn coach-btn--ghost ${mapFollowFleet ? 'coach-btn--active' : ''}" data-map-follow aria-pressed="${mapFollowFleet ? 'true' : 'false'}">Follow fleet</button>
+            <span class="coach-dash-pill"><strong data-map-active-count>0</strong> on water</span>
           </div>
           <div id="coachMap" class="coach-map"></div>
           <canvas class="live-speed-chart history-chart" data-live-speed-chart height="200"></canvas>
+        </section>
+        <section class="coach-panel" data-panel="logbook" ${tab === 'logbook' ? '' : 'hidden'}>
+          <div data-logbook-root></div>
         </section>
         <section class="coach-panel coach-panel--race" data-panel="race" ${tab === 'race' ? '' : 'hidden'}>
           <p class="poll-line" data-poll-status>—</p>
@@ -934,12 +995,16 @@ export function mountApp(root: HTMLElement): void {
           </label>
           <button type="button" class="coach-btn coach-btn--primary" data-save-settings>Save settings</button>
           <p class="poll-line">Same URL and token as the rower app / dashboard. Monitoring must be stopped to change URL safely.</p>
+          <h2 class="coach-section-title">Session history</h2>
+          <p class="poll-line">GPS track review for a single outing (separate from the daily logbook).</p>
+          <button type="button" class="coach-btn coach-btn--ghost" data-open-history>Open session review</button>
         </section>
         <nav class="coach-tabs coach-tabs--bottom" aria-label="Manager sections">
-          <button type="button" class="coach-tab coach-tab--live ${tab === 'live' ? 'active' : ''}" data-tab="live">Live</button>
+          <button type="button" class="coach-tab coach-tab--home ${tab === 'dashboard' ? 'active' : ''}" data-tab="dashboard">Home</button>
+          <button type="button" class="coach-tab ${tab === 'map' ? 'active' : ''}" data-tab="map">Map</button>
+          <button type="button" class="coach-tab ${tab === 'logbook' ? 'active' : ''}" data-tab="logbook">Logbook</button>
           <button type="button" class="coach-tab ${tab === 'race' ? 'active' : ''}" data-tab="race">Race</button>
-          <button type="button" class="coach-tab ${tab === 'history' ? 'active' : ''}" data-tab="history">History</button>
-          <button type="button" class="coach-tab ${tab === 'settings' ? 'active' : ''}" data-tab="settings">Settings</button>
+          <button type="button" class="coach-tab ${tab === 'settings' || tab === 'history' ? 'active' : ''}" data-tab="settings">Settings</button>
         </nav>
       </div>`;
 
@@ -952,20 +1017,34 @@ export function mountApp(root: HTMLElement): void {
     root.querySelector('[data-start-monitor]')?.addEventListener('click', () => void onStartMonitoring());
     root.querySelector('[data-stop-monitor]')?.addEventListener('click', () => void onStopMonitoring());
     root.querySelector('[data-capsize-clear]')?.addEventListener('click', () => void acknowledgeCapsizeAlerts());
+    root.querySelector('[data-open-history]')?.addEventListener('click', () => {
+      historyPanel?.prepareForRender('history');
+      tab = 'history';
+      render();
+    });
     root.querySelectorAll('[data-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const next = (btn as HTMLElement).dataset.tab as Tab;
         historyPanel?.prepareForRender(next);
         racePanel?.prepareForRender(next);
+        logbookPanel?.prepareForRender(next);
         tab = next;
         render();
         syncPollTimer();
-        if (tab === 'live') {
+        if (tab === 'map') {
           ensureMap();
           updateMap();
+          updateMapPanelExtras();
         }
-        if (tab === 'race') {
+        if (tab === 'dashboard') {
+          updateDashboardPanel();
           void pollLive();
+        }
+        if (tab === 'race' || tab === 'map') {
+          void pollLive();
+        }
+        if (tab === 'logbook') {
+          void ensureLogbookPanel().onTabShown();
         }
       });
     });
@@ -977,6 +1056,8 @@ export function mountApp(root: HTMLElement): void {
       saveSettings(settings);
       setStatus('Settings saved');
       void ensureRacePanel().reloadLines();
+      syncPollTimer();
+      if (shouldPollLive()) void pollLive();
     });
 
     if (tab === 'race') {
@@ -1000,10 +1081,23 @@ export function mountApp(root: HTMLElement): void {
       }
     }
 
-    if (tab === 'live') {
+    if (tab === 'logbook') {
+      const logRoot = root.querySelector('[data-logbook-root]') as HTMLElement | null;
+      if (logRoot) {
+        const panel = ensureLogbookPanel();
+        panel.mount(logRoot);
+        void panel.onTabShown();
+      }
+    }
+
+    if (tab === 'map') {
       ensureMap();
       updateMap();
-      updateLivePanel();
+      updateMapPanelExtras();
+      syncCapsizeAlarm();
+    } else if (tab === 'dashboard') {
+      updateDashboardPanel();
+      syncCapsizeAlarm();
     } else {
       syncCapsizeAlarm();
     }
@@ -1018,16 +1112,19 @@ export function mountApp(root: HTMLElement): void {
   void (async () => {
     await refreshMonitoringStatus();
     quietHoursActive = isQuietHours();
-    if ((monitoring || tab === 'race') && !quietHoursActive) {
+    if (!quietHoursActive && settings.apiBaseUrl) {
       syncPollTimer();
       if (monitoring) startMapTick();
-      void pollLive();
+      if (shouldPollLive()) void pollLive();
     } else if (quietHoursActive) {
       stopPollTimer();
       stopMapTick();
       setStatus(QUIET_HOURS_MESSAGE);
     }
     render();
+    if (!quietHoursActive && settings.apiBaseUrl && shouldPollLive()) {
+      void pollLive();
+    }
   })();
 
   document.addEventListener('visibilitychange', () => {

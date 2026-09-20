@@ -50,8 +50,8 @@ export default defineConfig(({ mode }) => {
                 short_name: 'Manager',
                 description:
                   'Fleet map, session history, and capsize monitoring for coaches',
-                theme_color: '#0a1628',
-                background_color: '#0a1628',
+                theme_color: '#e6e7e8',
+                background_color: '#e6e7e8',
                 display: 'standalone',
                 orientation: 'any',
                 start_url: webBase,

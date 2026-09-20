@@ -1,10 +1,10 @@
 @import url('../public/ahd-hub-theme.css');
 
-/* CrewSight Manager — native coach app layout */
+/* CrewSight Manager — light layout (AHD hub white) */
 
 .coach-app {
-  --coach-border: rgba(148, 163, 184, 0.22);
-  --coach-border-strong: rgba(148, 163, 184, 0.38);
+  --coach-border: rgba(51, 49, 50, 0.12);
+  --coach-border-strong: rgba(51, 49, 50, 0.22);
   min-height: 100dvh;
   max-height: 100dvh;
   display: flex;
@@ -12,6 +12,8 @@
   overflow: hidden;
   padding-top: env(safe-area-inset-top, 0px);
   box-sizing: border-box;
+  background: var(--hub-canvas, #e6e7e8);
+  color: var(--ahd-text);
 }
 
 .coach-topbar {
@@ -19,8 +21,8 @@
   align-items: center;
   gap: 0.65rem;
   padding: 0.55rem clamp(12px, 4vw, 20px);
-  background: #0a1628;
-  border-bottom: 1px solid var(--coach-border);
+  background: #ffffff;
+  border-bottom: 1px solid rgba(17, 17, 17, 0.06);
   flex-shrink: 0;
 }
 
@@ -40,7 +42,7 @@
 
 .coach-topbar__brand {
   font-size: 0.72rem;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ahd-muted);
@@ -49,15 +51,16 @@
 
 .coach-topbar__product {
   font-size: 1.1rem;
-  font-weight: 750;
-  color: var(--ahd-text);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--hub-ink, #111);
   line-height: 1.15;
 }
 
 .coach-sticky-chrome {
   position: relative;
   z-index: 40;
-  background: #0a1628;
+  background: var(--hub-canvas, #e6e7e8);
   padding-bottom: 0.15rem;
   flex-shrink: 0;
 }
@@ -65,9 +68,9 @@
 .coach-monitor-bar {
   margin: 0.5rem clamp(12px, 4vw, 20px) 0;
   padding: 0.65rem 0.85rem;
-  background: var(--ahd-bg-card);
+  background: #ffffff;
   border: 1px solid var(--coach-border);
-  border-radius: 12px;
+  border-radius: 14px;
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
@@ -77,8 +80,8 @@
 }
 
 .coach-monitor-bar.monitoring {
-  border-color: rgba(13, 148, 136, 0.7);
-  background: rgba(13, 148, 136, 0.12);
+  border-color: rgba(31, 107, 74, 0.45);
+  background: rgba(31, 107, 74, 0.08);
 }
 
 .coach-monitor-bar .status-line {
@@ -88,7 +91,8 @@
 }
 
 .coach-monitor-bar .status-line.on {
-  color: #4ade80;
+  color: var(--ahd-safety);
+  font-weight: 600;
 }
 
 .coach-monitor-bar .coach-btn {
@@ -98,15 +102,15 @@
 
 .coach-tabs {
   display: flex;
-  gap: 0.35rem;
-  padding: 0.55rem clamp(12px, 4vw, 20px);
+  gap: 0.25rem;
+  padding: 0.45rem clamp(8px, 3vw, 16px);
   flex-shrink: 0;
 }
 
 .coach-tabs--bottom {
-  border-top: 1px solid var(--coach-border);
-  background: rgba(5, 13, 24, 0.96);
-  padding-bottom: calc(0.55rem + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid rgba(17, 17, 17, 0.08);
+  background: #ffffff;
+  padding-bottom: calc(0.45rem + env(safe-area-inset-bottom, 0px));
   z-index: 30;
 }
 
@@ -116,28 +120,31 @@
   color: var(--ahd-muted);
   border: 1px solid transparent;
   border-radius: 10px;
-  padding: 0.65rem 0.35rem;
-  font-weight: 650;
+  padding: 0.55rem 0.2rem;
+  font-weight: 600;
   font-family: inherit;
-  font-size: 0.88rem;
+  font-size: 0.72rem;
   cursor: pointer;
   min-height: 44px;
+  letter-spacing: -0.01em;
 }
 
-.coach-tab--live {
-  flex: 1.15;
-  font-size: 0.95rem;
+.coach-tab--home {
+  flex: 1.1;
+  font-size: 0.78rem;
 }
 
 .coach-tab.active {
-  background: rgba(0, 229, 255, 0.16);
-  border-color: rgba(0, 229, 255, 0.45);
-  color: var(--ahd-accent);
+  background: rgba(17, 17, 17, 0.06);
+  border-color: rgba(17, 17, 17, 0.12);
+  color: var(--hub-ink, #111);
+  font-weight: 700;
 }
 
-.coach-tab--live.active {
-  background: rgba(0, 229, 255, 0.22);
-  border-color: rgba(0, 229, 255, 0.55);
+.coach-tab--home.active {
+  background: #111;
+  border-color: #111;
+  color: #fff;
 }
 
 .coach-panel--race {
@@ -183,7 +190,7 @@
   padding: 0.55rem 0.65rem;
   border-radius: 8px;
   border: 1px solid var(--coach-border);
-  background: rgba(15, 23, 42, 0.85);
+  background: #ffffff;
   color: var(--ahd-text);
   font: inherit;
 }
@@ -324,7 +331,7 @@
 }
 
 .race-map.leaflet-container {
-  background: #1e293b;
+  background: #e8eaed;
   font-family: inherit;
 }
 
@@ -380,12 +387,12 @@
 }
 
 .coach-map.leaflet-container {
-  background: #1e293b;
+  background: #e8eaed;
   font-family: inherit;
 }
 
 .history-map.leaflet-container {
-  background: #1e293b;
+  background: #e8eaed;
 }
 
 .device-list {
@@ -503,7 +510,7 @@
   font-size: 0.65rem;
   font-weight: 800;
   color: #fde68a;
-  background: rgba(15, 23, 42, 0.88);
+  background: #ffffff;
   border: 1px solid rgba(251, 191, 36, 0.55);
   padding: 0.1rem 0.35rem;
   border-radius: 4px;
@@ -590,9 +597,9 @@
   margin: 0.5rem clamp(12px, 4vw, 20px) 0;
   padding: 0.75rem 1rem;
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.92);
-  color: #fde68a;
-  border: 1px solid rgba(251, 191, 36, 0.45);
+  background: #fff8e8;
+  color: #92400e;
+  border: 1px solid rgba(180, 83, 9, 0.35);
   text-align: center;
   font-weight: 700;
 }
@@ -664,7 +671,7 @@
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid var(--coach-border);
-  background: rgba(15, 23, 42, 0.8);
+  background: #f4f4f5;
   color: var(--ahd-text);
   font: inherit;
 }
@@ -819,7 +826,7 @@
   gap: 0.35rem;
   padding: 0.35rem 0.55rem;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.85);
+  background: #ffffff;
   border: 1px solid var(--coach-border);
   font-size: 13px;
   color: var(--ahd-text);
@@ -939,7 +946,7 @@
 .history-timeline__track {
   position: relative;
   height: 28px;
-  background: rgba(15, 23, 42, 0.9);
+  background: #ffffff;
   border-radius: 6px;
   border: 1px solid var(--coach-border);
   margin-bottom: 0.5rem;
@@ -1019,7 +1026,7 @@
   padding: 4px 6px;
   border-radius: 4px;
   border: 1px solid var(--coach-border);
-  background: rgba(15, 23, 42, 0.8);
+  background: #f4f4f5;
   color: var(--ahd-text);
 }
 
@@ -1045,24 +1052,320 @@
 }
 
 .coach-btn--primary {
-  background: rgba(13, 148, 136, 0.55);
-  border: 1px solid rgba(13, 148, 136, 0.75);
+  background: #111111;
+  border: 1px solid #111111;
   color: #fff;
 }
 
 .coach-btn--danger {
-  background: rgba(239, 68, 68, 0.85);
+  background: #b42318;
   color: #fff;
+  border: 1px solid #b42318;
 }
 
 .coach-btn--ghost {
-  background: transparent;
+  background: #fff;
   border: 1px solid var(--coach-border-strong);
   color: var(--ahd-text);
 }
 
 .coach-btn--ghost.coach-btn--active {
-  background: rgba(13, 148, 136, 0.2);
-  border-color: rgba(13, 148, 136, 0.65);
-  color: #5eead4;
+  background: rgba(31, 107, 74, 0.12);
+  border-color: rgba(31, 107, 74, 0.45);
+  color: var(--ahd-safety);
+}
+
+/* —— Dashboard crew tickets —— */
+.coach-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-bottom: 0.5rem;
+}
+
+.coach-dashboard__summary {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.coach-dash-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 0.45rem 0.7rem;
+  background: #fff;
+  border: 1px solid var(--coach-border);
+  border-radius: 999px;
+  font-size: 0.82rem;
+  color: var(--ahd-muted);
+}
+
+.coach-dash-pill strong {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--hub-ink, #111);
+  font-variant-numeric: tabular-nums;
+}
+
+.coach-dash-pill--water strong {
+  color: var(--ahd-safety);
+}
+
+.coach-ticket-section__title {
+  margin: 0.35rem 0 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ahd-muted);
+}
+
+.crew-ticket-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.crew-ticket {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.85rem 0.95rem;
+  background: #fff;
+  border: 1px solid var(--coach-border);
+  border-radius: 16px;
+  box-shadow: 0 1px 0 rgba(17, 17, 17, 0.03);
+}
+
+.crew-ticket--water {
+  border-color: rgba(31, 107, 74, 0.35);
+  box-shadow: inset 3px 0 0 var(--ahd-safety);
+}
+
+.crew-ticket--capsize {
+  border-color: rgba(180, 35, 24, 0.45);
+  box-shadow: inset 3px 0 0 var(--ahd-danger);
+}
+
+.crew-ticket--ashore {
+  opacity: 0.92;
+}
+
+.crew-ticket__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.crew-ticket__body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.crew-ticket__name {
+  font-size: 1.02rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--hub-ink, #111);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crew-ticket__meta {
+  font-size: 0.78rem;
+  color: var(--ahd-muted);
+}
+
+.crew-ticket__id {
+  font-size: 0.72rem;
+  color: var(--ahd-muted);
+}
+
+.crew-ticket__status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.crew-ticket__badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.28rem 0.5rem;
+  border-radius: 999px;
+}
+
+.crew-ticket__badge--water {
+  background: rgba(31, 107, 74, 0.12);
+  color: var(--ahd-safety);
+}
+
+.crew-ticket__badge--ashore {
+  background: rgba(107, 110, 115, 0.12);
+  color: var(--ahd-muted);
+}
+
+.crew-ticket__badge--capsize {
+  background: rgba(180, 35, 24, 0.12);
+  color: var(--ahd-danger);
+}
+
+.crew-ticket__stats {
+  display: flex;
+  gap: 0.55rem;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--hub-ink-soft, #333);
+}
+
+.crew-ticket__empty {
+  padding: 1.25rem;
+  text-align: center;
+  color: var(--ahd-muted);
+  background: #fff;
+  border-radius: 16px;
+  border: 1px dashed var(--coach-border);
+  list-style: none;
+}
+
+.coach-logbook {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.coach-logbook-lead {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--ahd-muted);
+  line-height: 1.4;
+}
+
+.coach-logbook-toolbar {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.coach-logbook-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.coach-logbook-day {
+  background: #fff;
+  border: 1px solid var(--coach-border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.coach-logbook-day[open] {
+  border-color: rgba(17, 17, 17, 0.22);
+}
+
+.coach-logbook-day__summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.85rem 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.coach-logbook-day__summary::-webkit-details-marker {
+  display: none;
+}
+
+.coach-logbook-day__date {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--hub-ink, #111);
+}
+
+.coach-logbook-day__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--ahd-muted);
+}
+
+.coach-logbook-day__stats .is-warn {
+  color: var(--ahd-danger);
+}
+
+.coach-logbook-day__body {
+  padding: 0 0.75rem 0.85rem;
+  border-top: 1px solid var(--coach-border);
+  background: #f7f7f8;
+}
+
+.coach-logbook-table-wrap {
+  overflow-x: auto;
+  margin-top: 0.65rem;
+}
+
+.coach-logbook-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.coach-logbook-table th,
+.coach-logbook-table td {
+  text-align: left;
+  padding: 0.4rem 0.35rem;
+  border-bottom: 1px solid rgba(17, 17, 17, 0.06);
+}
+
+.coach-logbook-table th {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ahd-muted);
+  font-weight: 650;
+}
+
+.coach-logbook-crew {
+  font-weight: 650;
+}
+
+.coach-logbook-capsize-yes {
+  color: var(--ahd-danger);
+  font-weight: 700;
+}
+
+.coach-logbook-capsize-no {
+  color: var(--ahd-muted);
+}
+
+.coach-logbook-empty {
+  margin: 0;
+  padding: 1rem;
+  text-align: center;
+  color: var(--ahd-muted);
+  font-size: 0.88rem;
+}
+
+.coach-map-panel-tools {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.coach-panel--map .coach-map {
+  min-height: 48vh;
 }
