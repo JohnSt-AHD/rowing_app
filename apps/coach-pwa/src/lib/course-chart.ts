@@ -23,8 +23,10 @@ export function drawPaceDistanceChart(
   const plotW = w - pad.l - pad.r;
   const plotH = h - pad.t - pad.b;
 
-  ctx.fillStyle = '#0c1220';
+  ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(51, 49, 50, 0.12)';
+  ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
 
   const maxDist = course.totalDist;
   let maxSpeed = 6;
@@ -38,7 +40,7 @@ export function drawPaceDistanceChart(
   const xAt = (distM: number) => pad.l + (distM / maxDist) * plotW;
   const yAt = (spd: number) => pad.t + plotH - (spd / maxSpeed) * plotH;
 
-  ctx.strokeStyle = 'rgba(0, 229, 255, 0.12)';
+  ctx.strokeStyle = 'rgba(51, 49, 50, 0.1)';
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = pad.t + (plotH * i) / 4;
@@ -56,7 +58,7 @@ export function drawPaceDistanceChart(
     if (dist <= 0 || dist >= maxDist) continue;
     const x = xAt(dist);
     ctx.strokeStyle =
-      line.lineType === 'finish' ? 'rgba(239, 68, 68, 0.55)' : 'rgba(59, 130, 246, 0.45)';
+      line.lineType === 'finish' ? 'rgba(180, 35, 24, 0.65)' : 'rgba(37, 99, 235, 0.55)';
     ctx.setLineDash(line.lineType === 'split' ? [4, 4] : []);
     ctx.beginPath();
     ctx.moveTo(x, pad.t);
@@ -65,10 +67,10 @@ export function drawPaceDistanceChart(
     ctx.setLineDash([]);
   }
 
-  ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+  ctx.strokeStyle = 'rgba(17, 17, 17, 0.28)';
   ctx.strokeRect(pad.l, pad.t, plotW, plotH);
 
-  ctx.fillStyle = '#94a3b8';
+  ctx.fillStyle = '#3f4349';
   ctx.font = '10px system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('Distance (m)', pad.l + plotW / 2, h - 6);

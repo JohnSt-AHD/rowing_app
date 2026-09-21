@@ -2,15 +2,16 @@ import type { HistoryPoint } from './api';
 import { smoothChartSeriesByTime } from './chart-smooth';
 import { parseBoatClass, prognosticPercent, splitSecFromMps } from '@rowing/rowing-pace';
 
+/** Saturated palette for light Manager backgrounds (charts, tickets, map dots). */
 export const DEVICE_COLORS = [
-  '#38bdf8',
-  '#a78bfa',
-  '#4ade80',
-  '#fb923c',
-  '#f472b6',
-  '#facc15',
-  '#2dd4bf',
-  '#818cf8',
+  '#0369a1',
+  '#6d28d9',
+  '#15803d',
+  '#c2410c',
+  '#be185d',
+  '#a16207',
+  '#0f766e',
+  '#4338ca',
 ] as const;
 
 export type DeviceTrack = {

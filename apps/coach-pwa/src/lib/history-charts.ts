@@ -48,21 +48,20 @@ export function drawMultiSeriesChart(
 
   ctx.clearRect(0, 0, w, h);
 
-  // Background
-  const bg = ctx.createLinearGradient(0, 0, 0, h);
-  bg.addColorStop(0, '#0f172a');
-  bg.addColorStop(1, '#1e293b');
-  ctx.fillStyle = bg;
+  // Light chart surface (matches Manager white theme)
+  ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(51, 49, 50, 0.12)';
+  ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
 
-  ctx.fillStyle = '#e2e8f0';
+  ctx.fillStyle = '#1a1b1d';
   ctx.font = '600 13px system-ui, sans-serif';
   ctx.fillText(opts.title, padL, 20);
 
   const plotted = series.filter((s) => s.points.length >= 2);
   const allPts = plotted.flatMap((s) => s.points);
   if (allPts.length < 2) {
-    ctx.fillStyle = '#64748b';
+    ctx.fillStyle = '#3f4349';
     ctx.font = '12px system-ui';
     ctx.fillText(
       series.length > 1 ? 'No data in selection for selected devices' : 'No data in selection',
@@ -90,7 +89,7 @@ export function drawMultiSeriesChart(
   const sy = (y: number) => padT + plotH - ((y - minY) / (maxY - minY)) * plotH;
 
   // Grid
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.15)';
+  ctx.strokeStyle = 'rgba(51, 49, 50, 0.1)';
   ctx.lineWidth = 1;
   for (const ty of niceTicks(minY, maxY, 4)) {
     const py = sy(ty);
@@ -98,7 +97,7 @@ export function drawMultiSeriesChart(
     ctx.moveTo(padL, py);
     ctx.lineTo(padL + plotW, py);
     ctx.stroke();
-    ctx.fillStyle = '#64748b';
+    ctx.fillStyle = '#3f4349';
     ctx.font = '10px system-ui';
     ctx.textAlign = 'right';
     const label = opts.yFormat ? opts.yFormat(ty) : ty.toFixed(1);
@@ -110,7 +109,7 @@ export function drawMultiSeriesChart(
     ctx.moveTo(px, padT);
     ctx.lineTo(px, padT + plotH);
     ctx.stroke();
-    ctx.fillStyle = '#64748b';
+    ctx.fillStyle = '#3f4349';
     ctx.textAlign = 'center';
     ctx.fillText(String(Math.round(tx * 10) / 10), px, h - 10);
   }
@@ -147,12 +146,12 @@ export function drawMultiSeriesChart(
     if (!s.points.length) continue;
     ctx.fillStyle = s.color;
     ctx.fillRect(lx, ly - 9, 10, 10);
-    ctx.fillStyle = '#94a3b8';
+    ctx.fillStyle = '#1a1b1d';
     ctx.fillText(s.label, lx + 14, ly);
     lx += ctx.measureText(s.label).width + 28;
   }
 
-  ctx.fillStyle = '#64748b';
+  ctx.fillStyle = '#3f4349';
   ctx.textAlign = 'right';
   ctx.fillText(opts.xLabel, w - padR, h - 10);
 }

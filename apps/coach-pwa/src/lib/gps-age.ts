@@ -53,8 +53,8 @@ export function isTelemetryStale(lastSeenAgoSec?: number | null): boolean {
 }
 
 export function markerColorForState(state: GpsFixState, capsize: boolean): string {
-  if (capsize) return '#ef4444';
-  if (state === 'live') return '#38bdf8';
-  if (state === 'amber') return '#fbbf24';
-  return '#94a3b8';
+  if (capsize) return '#dc2626';
+  if (state === 'live') return '#0369a1';
+  if (state === 'amber') return '#b45309';
+  return '#64748b';
 }

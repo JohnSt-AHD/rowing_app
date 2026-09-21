@@ -5,11 +5,11 @@
 :root {
   --ahd-bg: #e6e7e8;
   --ahd-bg-card: #ffffff;
-  --ahd-border: rgba(51, 49, 50, 0.1);
+  --ahd-border: rgba(51, 49, 50, 0.12);
   --ahd-accent: #111111;
   --ahd-accent-dim: #333132;
-  --ahd-text: #333132;
-  --ahd-muted: #6b6e73;
+  --ahd-text: #1a1b1d;
+  --ahd-muted: #3f4349;
   --ahd-safety: #1f6b4a;
   --ahd-danger: #b42318;
   --cs-teal: #0d9488;
@@ -17,8 +17,8 @@
   --cs-logo-bg: #ffffff;
   --hub-canvas: #e6e7e8;
   --hub-ink: #111111;
-  --hub-ink-soft: #333132;
-  --hub-mute: #6b6e73;
+  --hub-ink-soft: #1a1b1d;
+  --hub-mute: #3f4349;
   --hub-white: #ffffff;
   --hub-radius: 18px;
 }

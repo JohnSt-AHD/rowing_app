@@ -40,17 +40,18 @@ type PathTrackState = {
   frozenPolls: number;
 };
 
+/** Saturated palette for light Manager race map/charts. */
 export const DEVICE_COLORS = [
-  '#00e5ff',
-  '#4ade80',
-  '#a78bfa',
-  '#fbbf24',
-  '#fb7185',
-  '#38bdf8',
-  '#f97316',
-  '#86efac',
-  '#c084fc',
-  '#34d399',
+  '#0e7490',
+  '#15803d',
+  '#6d28d9',
+  '#b45309',
+  '#be123c',
+  '#0369a1',
+  '#c2410c',
+  '#166534',
+  '#7e22ce',
+  '#047857',
 ];
 
 export function colorForDevice(id: string) {
