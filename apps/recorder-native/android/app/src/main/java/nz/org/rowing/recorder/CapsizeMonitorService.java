@@ -1647,6 +1647,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             .putBoolean("standbyAutoStartTriggered", false)
             .putBoolean("autoStartedSession", false)
             .putBoolean("economyActive", false)
+            // Must clear with economy — leftover suppress drops all GPS uploads after stop/update.
+            .putBoolean("suppressRecordingActive", false)
             .putInt(BOOT_RETRY_COUNT_KEY, 0)
             .apply();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
