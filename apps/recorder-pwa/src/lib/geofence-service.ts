@@ -58,3 +58,8 @@ export function clearGeofenceCache(): void {
   cached = [];
   cachedAt = 0;
 }
+
+/** Last successfully fetched list (may be empty / stale). */
+export function getCachedGeofences(): GeofenceConfig[] {
+  return cached.slice();
+}

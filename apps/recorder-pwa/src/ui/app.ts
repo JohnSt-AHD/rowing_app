@@ -27,7 +27,17 @@ import {
   transitionToNativeGeofenceStandby,
   type NativeStandbyStatus,
 } from '../lib/native-capsize-monitor';
-import { fetchGeofences } from '../lib/geofence-service';
+import { fetchGeofences, getCachedGeofences } from '../lib/geofence-service';
+import type { GeofenceConfig } from '../lib/geofence';
+import {
+  clearSessionSpeedBuffer,
+  getSessionSpeedSamples,
+  getSessionTrailLatLon,
+  pushSessionSpeedSample,
+} from '../lib/session-speed-buffer';
+import { drawSpeedTimeChart } from '../lib/session-speed-chart';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { resolveResumeCandidate } from '../lib/session-resume';
 import { startRecorder, type RecorderController } from '../session/recorder';
 import {
@@ -40,7 +50,6 @@ import { flushOutbox } from '../upload/sync';
 import { postSessionEnd } from '../upload/telemetry-api';
 import { repairOversizedPendingOutbox } from '../session/store';
 import {
-  formatSplit500m,
   formatPaceWithPrognostic,
   hrToT,
   MetricRollingAvg,
@@ -52,6 +61,7 @@ import {
 } from './session-display';
 
 type View = 'record' | 'settings';
+type FsTab = 'metrics' | 'speed' | 'map';
 
 const IS_NATIVE = import.meta.env.VITE_PLATFORM === 'native';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION;
@@ -85,6 +95,11 @@ export function mountApp(root: HTMLElement): void {
   let hudTickTimer: ReturnType<typeof setInterval> | null = null;
   let logExpanded = false;
   let resumeInFlight = false;
+  let fsTab: FsTab = 'metrics';
+  let sessionMap: L.Map | null = null;
+  let sessionMapMarker: L.CircleMarker | null = null;
+  let sessionMapTrail: L.Polyline | null = null;
+  let sessionMapGeofenceLayer: L.LayerGroup | null = null;
   const speedAvg = new MetricRollingAvg(SPEED_AVG_WINDOW_MS, 0.15);
   const strokeRateAvg = new MetricRollingAvg(STROKE_AVG_WINDOW_MS, 0);
   const settings = loadSettings();
@@ -100,6 +115,12 @@ export function mountApp(root: HTMLElement): void {
     if (btn) {
       btn.textContent =
         document.fullscreenElement === stage ? 'Exit fullscreen' : 'Fullscreen';
+    }
+    if (document.fullscreenElement === stage) {
+      requestAnimationFrame(() => {
+        refreshFsPanels();
+        if (fsTab === 'map') invalidateSessionMap();
+      });
     }
   });
 
@@ -202,6 +223,9 @@ export function mountApp(root: HTMLElement): void {
       sessionStartedAt = null;
       speedAvg.clear();
       strokeRateAvg.clear();
+      clearSessionSpeedBuffer();
+      destroySessionMap();
+      fsTab = 'metrics';
       void exitStageFullscreen();
       stopBackgroundSession();
       await controller?.stop();
@@ -252,16 +276,173 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function setHudText(sel: string, text: string): void {
-    const el = root.querySelector(sel);
-    if (el) el.textContent = text;
+    root.querySelectorAll(sel).forEach((el) => {
+      el.textContent = text;
+    });
+  }
+
+  function destroySessionMap(): void {
+    if (sessionMap) {
+      sessionMap.remove();
+      sessionMap = null;
+    }
+    sessionMapMarker = null;
+    sessionMapTrail = null;
+    sessionMapGeofenceLayer = null;
+  }
+
+  function invalidateSessionMap(): void {
+    sessionMap?.invalidateSize();
+  }
+
+  function drawGeofencesOnMap(list: GeofenceConfig[]): void {
+    if (!sessionMap) return;
+    if (sessionMapGeofenceLayer) {
+      sessionMapGeofenceLayer.clearLayers();
+    } else {
+      sessionMapGeofenceLayer = L.layerGroup().addTo(sessionMap);
+    }
+    for (const g of list) {
+      if (!g.enabled) continue;
+      const isNotify = Boolean(g.notifyOnEnter);
+      const color = isNotify ? '#f87171' : g.kind === 'boat_park' ? '#f59e0b' : '#38bdf8';
+      if (g.shapeType === 'circle' && g.radiusM > 0) {
+        L.circle([g.centerLat, g.centerLon], {
+          radius: g.radiusM,
+          color,
+          fillColor: color,
+          fillOpacity: 0.14,
+          weight: 2,
+        })
+          .bindTooltip(g.name || 'Geofence')
+          .addTo(sessionMapGeofenceLayer);
+      } else if (g.shapeType === 'polygon' && g.polygonCoords?.length >= 3) {
+        L.polygon(
+          g.polygonCoords.map(([lat, lon]) => [lat, lon] as [number, number]),
+          {
+            color,
+            fillColor: color,
+            fillOpacity: 0.14,
+            weight: 2,
+          },
+        )
+          .bindTooltip(g.name || 'Geofence')
+          .addTo(sessionMapGeofenceLayer);
+      }
+    }
+  }
+
+  function ensureSessionMap(): void {
+    const el = root.querySelector('[data-session-map]') as HTMLElement | null;
+    if (!el) return;
+    if (!sessionMap) {
+      const stats = controller?.getStats();
+      const lat = stats?.lastGps?.lat ?? -37.928;
+      const lon = stats?.lastGps?.lon ?? 175.548;
+      sessionMap = L.map(el, {
+        preferCanvas: true,
+        zoomControl: true,
+        attributionControl: false,
+      }).setView([lat, lon], 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+      }).addTo(sessionMap);
+      drawGeofencesOnMap(getCachedGeofences());
+      void fetchGeofences(loadSettings().ingestUrl, loadSettings().ingestToken).then(
+        (list) => {
+          if (sessionMap) drawGeofencesOnMap(list);
+        },
+        () => {
+          /* keep cached */
+        },
+      );
+    }
+    updateSessionMapOverlay();
+    requestAnimationFrame(() => invalidateSessionMap());
+  }
+
+  function updateSessionMapOverlay(): void {
+    if (!sessionMap) return;
+    const stats = controller?.getStats();
+    const gps = stats?.lastGps;
+    const trail = getSessionTrailLatLon();
+    if (trail.length >= 2) {
+      if (!sessionMapTrail) {
+        sessionMapTrail = L.polyline(trail, {
+          color: '#00e5ff',
+          weight: 3,
+          opacity: 0.85,
+        }).addTo(sessionMap);
+      } else {
+        sessionMapTrail.setLatLngs(trail);
+      }
+    }
+    if (gps && Number.isFinite(gps.lat) && Number.isFinite(gps.lon)) {
+      const ll: [number, number] = [gps.lat, gps.lon];
+      if (!sessionMapMarker) {
+        sessionMapMarker = L.circleMarker(ll, {
+          radius: 8,
+          color: '#00e5ff',
+          fillColor: '#0d9488',
+          fillOpacity: 1,
+          weight: 2,
+        })
+          .bindTooltip('You')
+          .addTo(sessionMap);
+        sessionMap.setView(ll, Math.max(sessionMap.getZoom(), 15));
+      } else {
+        sessionMapMarker.setLatLng(ll);
+      }
+    }
+  }
+
+  function refreshSpeedChart(): void {
+    const canvas = root.querySelector('[data-speed-chart]') as HTMLCanvasElement | null;
+    if (!canvas || fsTab !== 'speed') return;
+    const now = Date.now();
+    const samples = getSessionSpeedSamples(now);
+    const points = samples.map((s) => ({
+      x: (s.t - now) / 60_000,
+      y: s.speedMps * 3.6,
+    }));
+    drawSpeedTimeChart(canvas, points, {
+      title: 'Speed vs time (last 8 min)',
+      yLabel: 'km/h',
+      xLabel: 'min',
+      color: '#00e5ff',
+    });
+  }
+
+  function setFsTab(tab: FsTab): void {
+    fsTab = tab;
+    root.querySelectorAll('[data-fs-tab]').forEach((btn) => {
+      btn.setAttribute(
+        'aria-selected',
+        btn.getAttribute('data-fs-tab') === tab ? 'true' : 'false',
+      );
+    });
+    root.querySelectorAll('[data-fs-panel]').forEach((panel) => {
+      panel.classList.toggle(
+        'is-active',
+        panel.getAttribute('data-fs-panel') === tab,
+      );
+    });
+    refreshFsPanels();
+  }
+
+  function refreshFsPanels(): void {
+    if (fsTab === 'speed') refreshSpeedChart();
+    if (fsTab === 'map') ensureSessionMap();
   }
 
   function updateLiveHud(): void {
     if (!recording || view !== 'record') return;
     const stats = controller?.getStats();
     const elapsed = sessionStartedAt != null ? Date.now() - sessionStartedAt : 0;
+    const elapsedText = formatElapsed(elapsed);
 
-    setHudText('[data-hud-timer]', formatElapsed(elapsed));
+    setHudText('[data-hud-timer]', elapsedText);
+    setHudText('[data-hud-timer-metric]', elapsedText);
 
     const spm = stats?.strokeRate;
     if (spm != null && spm > 0) strokeRateAvg.push(spm);
@@ -285,6 +466,16 @@ export function mountApp(root: HTMLElement): void {
       '[data-hud-split]',
       formatPaceWithPrognostic(avgMps, s.deviceId, s.athleteId),
     );
+
+    if (stats?.speedMps != null && stats.speedMps >= 0) {
+      const t = stats.lastGps?.t ?? Date.now();
+      pushSessionSpeedSample({
+        t,
+        speedMps: stats.speedMps,
+        lat: stats.lastGps?.lat,
+        lon: stats.lastGps?.lon,
+      });
+    }
 
     const splitSec = splitSecFromMps(avgMps);
     updateSpectrumRail(
@@ -345,6 +536,9 @@ export function mountApp(root: HTMLElement): void {
 
     const statsBar = root.querySelector('.hub-stats-bar');
     if (statsBar) statsBar.innerHTML = recordStatsBar(stats);
+
+    if (fsTab === 'speed') refreshSpeedChart();
+    if (fsTab === 'map' && sessionMap) updateSessionMapOverlay();
   }
 
   function startHudTimer(): void {
@@ -354,9 +548,13 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function render() {
+    destroySessionMap();
     root.innerHTML = view === 'settings' ? settingsHtml() : recordHtml();
     bind();
-    if (recording && view === 'record') updateLiveHud();
+    if (recording && view === 'record') {
+      updateLiveHud();
+      refreshFsPanels();
+    }
   }
 
   function hubHeader(): string {
@@ -366,7 +564,7 @@ export function mountApp(root: HTMLElement): void {
           <div class="hub-topbar-brands">
             <img src="${asset('assets/crewsight/crewsight-logo-full-color.png')}" alt="CrewSight" class="hub-crewsight-logo hub-crewsight-logo--recorder" width="300" height="300" />
           </div>
-          <p class="hub-tagline hub-tagline--title">GPS rowing recorder${IS_NATIVE ? ' · Native app' : ''}</p>
+          <p class="hub-tagline hub-tagline--title">Rowing GPS Tracker</p>
         </div>
       </header>
     `;
@@ -469,10 +667,73 @@ export function mountApp(root: HTMLElement): void {
     `;
   }
 
+  function metricsBlockHtml(
+    variant: 'hero' | 'column' | 'ticket',
+  ): string {
+    const wrapClass =
+      variant === 'hero'
+        ? 'session-metrics-block session-metrics-block--hero'
+        : variant === 'ticket'
+          ? 'session-metrics-block session-metrics-block--ticket'
+          : 'session-metrics-block session-metrics-block--column';
+    return `
+      <div class="${wrapClass}">
+        ${
+          variant === 'hero'
+            ? `<div class="session-metric session-metric--pace-hero">
+                <span class="session-metric__value" data-hud-split>—</span>
+                <span class="session-metric__label">Pace /500m <span class="session-metric__sub">10s avg</span></span>
+              </div>
+              <div class="session-live-hud__metrics session-live-hud__metrics--secondary">
+                <div class="session-metric session-metric--timer">
+                  <span class="session-metric__value" data-hud-timer-metric>0:00</span>
+                  <span class="session-metric__label">Time</span>
+                </div>
+                <div class="session-metric session-metric--spm">
+                  <span class="session-metric__value" data-hud-spm>—</span>
+                  <span class="session-metric__label">Strokes /min</span>
+                </div>
+                <div class="session-metric">
+                  <span class="session-metric__value" data-hud-hr>—</span>
+                  <span class="session-metric__label">HR</span>
+                </div>
+              </div>`
+            : `<div class="session-live-hud__metrics">
+                <div class="session-metric session-metric--timer">
+                  <span class="session-metric__value" data-hud-timer-metric>0:00</span>
+                  <span class="session-metric__label">Time</span>
+                </div>
+                <div class="session-metric session-metric--spm">
+                  <span class="session-metric__value" data-hud-spm>—</span>
+                  <span class="session-metric__label">Strokes /min</span>
+                </div>
+                <div class="session-metric">
+                  <span class="session-metric__value" data-hud-hr>—</span>
+                  <span class="session-metric__label">HR</span>
+                </div>
+                <div class="session-metric session-metric--pace">
+                  <span class="session-metric__value" data-hud-split>—</span>
+                  <span class="session-metric__label">Pace /500m</span>
+                </div>
+              </div>`
+        }
+      </div>
+    `;
+  }
+
   function liveHudHtml(): string {
     const regattaText = controller?.getStats()?.regattaMessage?.text?.trim() || '';
     return `
       <section class="session-live-hud" aria-live="polite">
+        <div class="session-fs-chrome">
+          <span class="session-fs-timer" data-hud-timer>0:00</span>
+          <nav class="session-fs-tabs" aria-label="Fullscreen view">
+            <button type="button" class="session-fs-tab" data-fs-tab="metrics" aria-selected="${fsTab === 'metrics' ? 'true' : 'false'}">Metrics</button>
+            <button type="button" class="session-fs-tab" data-fs-tab="speed" aria-selected="${fsTab === 'speed' ? 'true' : 'false'}">Speed</button>
+            <button type="button" class="session-fs-tab" data-fs-tab="map" aria-selected="${fsTab === 'map' ? 'true' : 'false'}">Map</button>
+          </nav>
+          <button type="button" class="hub-btn hub-btn--ghost session-live-hud__fs" data-action="toggle-fullscreen">Fullscreen</button>
+        </div>
         <div class="session-live-hud__alert" data-hud-capsize ${capsizeActive ? '' : 'hidden'} role="alert">
           ⚠ CAPSIZE — boat tipped. Check crew now.
         </div>
@@ -480,30 +741,29 @@ export function mountApp(root: HTMLElement): void {
           <span class="session-live-hud__regatta-label">Regatta control</span>
           <p class="session-live-hud__regatta-text" data-hud-regatta-text>${regattaText ? esc(regattaText) : ''}</p>
         </div>
-        <div class="session-zone-badge" data-hud-zone data-zone="unknown" aria-live="polite">
-          <span class="session-zone-badge__label">Locating…</span>
-          <span class="session-zone-badge__sub"></span>
+        <div class="session-fs-panel ${fsTab === 'metrics' ? 'is-active' : ''}" data-fs-panel="metrics">
+          <div class="session-zone-badge" data-hud-zone data-zone="unknown" aria-live="polite">
+            <span class="session-zone-badge__label">Locating…</span>
+            <span class="session-zone-badge__sub"></span>
+          </div>
+          ${metricsBlockHtml('hero')}
         </div>
-        <div class="session-live-hud__metrics">
-          <div class="session-metric session-metric--timer">
-            <span class="session-metric__value" data-hud-timer>0:00</span>
-            <span class="session-metric__label">Time</span>
-          </div>
-          <div class="session-metric session-metric--spm">
-            <span class="session-metric__value" data-hud-spm>—</span>
-            <span class="session-metric__label">Strokes /min</span>
-          </div>
-          <div class="session-metric">
-            <span class="session-metric__value" data-hud-hr>—</span>
-            <span class="session-metric__label">HR</span>
-          </div>
-          <div class="session-metric">
-            <span class="session-metric__value" data-hud-split>—</span>
-            <span class="session-metric__label">Pace /500m <span class="session-metric__sub">10s avg</span></span>
+        <div class="session-fs-panel session-fs-panel--split ${fsTab === 'speed' ? 'is-active' : ''}" data-fs-panel="speed">
+          ${metricsBlockHtml('column')}
+          <div class="session-speed-chart-wrap">
+            <canvas data-speed-chart aria-label="Speed versus time last 8 minutes"></canvas>
           </div>
         </div>
-        <div class="session-live-hud__bar">
-          <button type="button" class="hub-btn hub-btn--ghost session-live-hud__fs" data-action="toggle-fullscreen">Fullscreen</button>
+        <div class="session-fs-panel session-fs-panel--map ${fsTab === 'map' ? 'is-active' : ''}" data-fs-panel="map">
+          <div class="session-map-stage">
+            <div class="session-map-wrap" data-session-map></div>
+            <div class="session-metrics-ticket" aria-label="Session metrics">
+              ${metricsBlockHtml('ticket')}
+            </div>
+          </div>
+          <div class="session-fs-metrics-side">
+            ${metricsBlockHtml('column')}
+          </div>
         </div>
       </section>
     `;
@@ -521,20 +781,22 @@ export function mountApp(root: HTMLElement): void {
   function recordIdleHtml(): string {
     const s = loadSettings();
     const armed = Boolean(standby);
-    const standbyLine = armed
-      ? standbyStatus?.message || 'Geofence standby armed'
-      : s.geofenceSessionControl !== false
-        ? 'Geofence standby off — arm to auto-start when leaving the boat park'
-        : 'Geofence session control disabled in Settings';
+    const standbyLine = armed ? standbyStatus?.message || 'Standby on' : '';
+    const standbyInfo =
+      'Standby watches boat-park geofences and auto-starts a session when you leave the park. Recording pauses inside the park and can auto-stop when you re-enter.';
     return `
       <section class="hub-panel actions actions--idle session-actions-panel">
         <button type="button" class="hub-btn hub-btn--primary hub-btn-lg" data-action="start">Start session</button>
         ${
           s.geofenceSessionControl !== false
-            ? `<button type="button" class="hub-btn ${armed ? 'hub-btn--danger' : 'hub-btn--ghost'} hub-btn-lg" data-action="toggle-standby">${armed ? 'Disarm geofence standby' : 'Arm geofence standby'}</button>`
+            ? `<div class="standby-row">
+                <button type="button" class="hub-btn ${armed ? 'hub-btn--danger' : 'hub-btn--ghost'} hub-btn-lg" data-action="toggle-standby">${armed ? 'End standby' : 'Standby'}</button>
+                <button type="button" class="info-btn" data-info-toggle aria-label="About Standby">i</button>
+                <p class="info-help" hidden>${esc(standbyInfo)}</p>
+              </div>`
             : ''
         }
-        <p class="poll-line session-standby-hint">${esc(standbyLine)}</p>
+        ${standbyLine ? `<p class="poll-line session-standby-hint">${esc(standbyLine)}</p>` : '<p class="poll-line session-standby-hint" hidden></p>'}
         <button type="button" class="hub-btn hub-btn--ghost" data-action="clear-session">Clear session</button>
         <button type="button" class="hub-btn" data-nav="settings">Settings</button>
       </section>
@@ -566,15 +828,31 @@ export function mountApp(root: HTMLElement): void {
     return recording ? wrapRecordingStage(shell) : shell;
   }
 
+  function settingsField(
+    label: string,
+    info: string,
+    inputHtml: string,
+  ): string {
+    return `
+      <div class="form-row">
+        <div class="form-row__meta">
+          <span class="form-row__label">${label}</span>
+          <button type="button" class="info-btn" data-info-toggle aria-label="About ${label}">i</button>
+        </div>
+        ${inputHtml}
+        <p class="form-row__help info-help" hidden>${esc(info)}</p>
+      </div>
+    `;
+  }
+
   function settingsHtml(): string {
     const s = loadSettings();
     const sampleSec = sampleRateSecFromSettings(s);
+    const geofenceInfo =
+      'When enabled, use Standby on the Record screen to auto-start when leaving the boat park. Recording is suppressed inside the park and can auto-stop when you re-enter.';
     return `
       <div class="ahd-recorder-shell">
         ${hubHeader()}
-        <div class="hub-stats-bar">
-          <span class="hub-stats-item hub-stats-item--accent">Settings</span>
-        </div>
         <div class="ahd-recorder-main ahd-recorder-main--settings">
           <div class="ahd-toolbar">
             <h1>Settings</h1>
@@ -584,11 +862,31 @@ export function mountApp(root: HTMLElement): void {
           </div>
           <form class="hub-panel form" data-settings-form>
             <h2 class="hub-section-title">Device &amp; upload</h2>
-            <label>Device ID<input name="deviceId" value="${esc(s.deviceId)}" required placeholder="CREW-01" /></label>
-            <label>Athlete ID<input name="athleteId" value="${esc(s.athleteId)}" placeholder="optional" /></label>
-            <label>Ingest API URL<input name="ingestUrl" value="${esc(s.ingestUrl)}" placeholder="https://rowing-app-recorder-pwa.vercel.app/api/ingest" /></label>
-            <label>Ingest token<input class="form-input-light" name="ingestToken" type="password" value="${esc(s.ingestToken)}" autocomplete="off" /></label>
-            <label>Sample interval (seconds)<input class="form-input-light" name="sampleRateSec" type="number" min="0.5" step="0.5" value="${sampleSec}" inputmode="decimal" /></label>
+            ${settingsField(
+              'Device ID',
+              'Unique name for this phone or boat tracker. Coaches see this label on the live map and in history.',
+              `<input name="deviceId" value="${esc(s.deviceId)}" required placeholder="CREW-01" />`,
+            )}
+            ${settingsField(
+              'Athlete',
+              'Optional athlete name or ID linked to this device for session reports.',
+              `<input name="athleteId" value="${esc(s.athleteId)}" placeholder="optional" />`,
+            )}
+            ${settingsField(
+              'URL',
+              'Server address where GPS and sensor samples are uploaded. Use the CrewSight ingest endpoint for your club.',
+              `<input name="ingestUrl" value="${esc(s.ingestUrl)}" placeholder="https://rowing-app-recorder-pwa.vercel.app/api/ingest" />`,
+            )}
+            ${settingsField(
+              'Password',
+              'Access password (ingest token) required by the server. Ask your club admin if you do not have one.',
+              `<input class="form-input-light" name="ingestToken" type="password" value="${esc(s.ingestToken)}" autocomplete="off" />`,
+            )}
+            ${settingsField(
+              'Sample interval',
+              'How often GPS and sensors are sampled, in seconds. Lower values use more battery but give finer tracks (e.g. 1 = once per second).',
+              `<input class="form-input-light" name="sampleRateSec" type="number" min="0.5" step="0.5" value="${sampleSec}" inputmode="decimal" />`,
+            )}
             <fieldset class="fieldset checks">
               <legend>Sensors</legend>
               <label class="check"><input type="checkbox" name="enableGps" ${s.enableGps ? 'checked' : ''} /> GPS</label>
@@ -601,12 +899,18 @@ export function mountApp(root: HTMLElement): void {
               <label class="check"><input type="checkbox" name="keepScreenOn" ${s.keepScreenOn !== false ? 'checked' : ''} /> Keep screen on while recording</label>
             </fieldset>
             <fieldset class="fieldset checks">
-              <legend>Geofence session control</legend>
-              <label class="check"><input type="checkbox" name="geofenceSessionControl" ${s.geofenceSessionControl !== false ? 'checked' : ''} /> Auto start/stop via boat-park geofences <span class="form-hint">(arm standby on Record screen; suppress recording inside park; auto-stop when re-entering)</span></label>
+              <legend class="fieldset-legend-with-info">
+                Geofence session control
+                <button type="button" class="info-btn" data-info-toggle aria-label="About geofence session control">i</button>
+              </legend>
+              <p class="info-help" hidden>${esc(geofenceInfo)}</p>
+              <label class="check"><input type="checkbox" name="geofenceSessionControl" ${s.geofenceSessionControl !== false ? 'checked' : ''} /> Auto start/stop via boat-park geofences</label>
             </fieldset>
-            <button type="submit" class="hub-btn hub-btn--primary">Save settings</button>
-            ${IS_NATIVE ? '<button type="button" class="hub-btn" data-action="phone-setup">Phone permissions &amp; battery</button>' : ''}
-            <button type="button" class="hub-btn" data-action="clear-session">Clear session</button>
+            <div class="form-actions">
+              <button type="submit" class="hub-btn hub-btn--primary">Save settings</button>
+              ${IS_NATIVE ? '<button type="button" class="hub-btn" data-action="phone-setup">Phone permissions &amp; battery</button>' : ''}
+              <button type="button" class="hub-btn" data-action="clear-session">Clear session</button>
+            </div>
           </form>
           ${logPanelHtml()}
         </div>
@@ -646,10 +950,13 @@ export function mountApp(root: HTMLElement): void {
     };
     if (!recording && view === 'record') {
       const hint = root.querySelector('.session-standby-hint');
-      if (hint) hint.textContent = st.message;
+      if (hint) {
+        hint.textContent = st.message;
+        hint.hidden = !st.message;
+      }
       const btn = root.querySelector('[data-action="toggle-standby"]');
       if (btn) {
-        btn.textContent = 'Disarm geofence standby';
+        btn.textContent = 'End standby';
         btn.classList.add('hub-btn--danger');
         btn.classList.remove('hub-btn--ghost');
       }
@@ -797,10 +1104,13 @@ export function mountApp(root: HTMLElement): void {
           standbyStatus = st;
           if (!recording && view === 'record') {
             const hint = root.querySelector('.session-standby-hint');
-            if (hint) hint.textContent = st.message;
+            if (hint) {
+              hint.textContent = st.message;
+              hint.hidden = !st.message;
+            }
             const btn = root.querySelector('[data-action="toggle-standby"]');
             if (btn && standby) {
-              btn.textContent = 'Disarm geofence standby';
+              btn.textContent = 'End standby';
               btn.classList.add('hub-btn--danger');
               btn.classList.remove('hub-btn--ghost');
             }
@@ -856,6 +1166,9 @@ export function mountApp(root: HTMLElement): void {
     sessionStartedAt = opts?.resume?.startedAt ?? Date.now();
     speedAvg.clear();
     strokeRateAvg.clear();
+    if (!opts?.resume) clearSessionSpeedBuffer();
+    fsTab = 'metrics';
+    destroySessionMap();
 
     if (!opts?.resume) {
       await clearPendingOutbox();
@@ -886,6 +1199,9 @@ export function mountApp(root: HTMLElement): void {
             sessionStartedAt = null;
             speedAvg.clear();
             strokeRateAvg.clear();
+            clearSessionSpeedBuffer();
+            destroySessionMap();
+            fsTab = 'metrics';
             void exitStageFullscreen();
             stopBackgroundSession();
             const settingsNow = loadSettings();
@@ -1052,6 +1368,20 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function bind() {
+    root.querySelectorAll('[data-info-toggle]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const host =
+          (btn as HTMLElement).closest('.form-row, .standby-row, .fieldset') ||
+          btn.parentElement;
+        const help = host?.querySelector('.info-help') as HTMLElement | null;
+        if (!help) return;
+        help.hidden = !help.hidden;
+        btn.setAttribute('aria-expanded', help.hidden ? 'false' : 'true');
+      });
+    });
+
     root.querySelector('[data-nav="settings"]')?.addEventListener('click', () => {
       view = 'settings';
       render();
@@ -1112,6 +1442,9 @@ export function mountApp(root: HTMLElement): void {
       sessionStartedAt = null;
       speedAvg.clear();
       strokeRateAvg.clear();
+      clearSessionSpeedBuffer();
+      destroySessionMap();
+      fsTab = 'metrics';
       void exitStageFullscreen();
       stopBackgroundSession();
       await controller?.stop();
@@ -1122,6 +1455,13 @@ export function mountApp(root: HTMLElement): void {
       clearRecordingActive();
       await runSync(true);
       render();
+    });
+
+    root.querySelectorAll('[data-fs-tab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tab = btn.getAttribute('data-fs-tab') as FsTab | null;
+        if (tab === 'metrics' || tab === 'speed' || tab === 'map') setFsTab(tab);
+      });
     });
 
     root.querySelector('[data-action="toggle-fullscreen"]')?.addEventListener('click', async () => {

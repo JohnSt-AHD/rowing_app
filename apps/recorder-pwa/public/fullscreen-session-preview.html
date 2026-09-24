@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fullscreen session preview · Metrics / Speed / Map</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      :root {
+        --ahd-bg: #0a1628;
+        --ahd-accent: #00e5ff;
+        --ahd-text: #e8f4fc;
+        --ahd-muted: #94a3b8;
+        --ahd-border: rgba(0, 229, 255, 0.35);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        background: linear-gradient(180deg, #0a1628 0%, #061018 100%);
+        color: var(--ahd-text);
+        padding: 1.25rem clamp(12px, 3vw, 28px) 2rem;
+      }
+      h1 { margin: 0 0 0.35rem; font-size: 1.35rem; font-weight: 700; }
+      .lead {
+        margin: 0 0 1.25rem;
+        color: var(--ahd-muted);
+        font-size: 0.95rem;
+        max-width: 44rem;
+        line-height: 1.45;
+      }
+      .global-tabs {
+        display: inline-flex;
+        gap: 0.35rem;
+        margin-bottom: 1.25rem;
+        padding: 0.3rem;
+        border-radius: 10px;
+        border: 1px solid var(--ahd-border);
+        background: rgba(12, 28, 52, 0.85);
+      }
+      .global-tabs button {
+        appearance: none;
+        border: 0;
+        border-radius: 7px;
+        padding: 0.45rem 0.9rem;
+        font: inherit;
+        font-weight: 650;
+        font-size: 0.85rem;
+        color: var(--ahd-muted);
+        background: transparent;
+        cursor: pointer;
+      }
+      .global-tabs button[aria-selected='true'] {
+        color: #0a1628;
+        background: var(--ahd-accent);
+      }
+      .frames {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+        align-items: flex-start;
+      }
+      .frame-wrap { display: flex; flex-direction: column; gap: 0.5rem; }
+      .frame-label {
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ahd-accent);
+      }
+      .device {
+        position: relative;
+        border-radius: 28px;
+        border: 3px solid #1e293b;
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+        overflow: hidden;
+        background: var(--ahd-bg);
+      }
+      .device--portrait {
+        width: 390px;
+        height: 844px;
+        max-width: calc(100vw - 2rem);
+        max-height: 78vh;
+      }
+      .device--landscape {
+        width: 844px;
+        height: 390px;
+        max-width: calc(100vw - 2rem);
+        max-height: 52vh;
+      }
+      .fs-shell {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        background: #0a1628;
+        color: var(--ahd-text);
+      }
+      .device--landscape .fs-shell { flex-direction: row; }
+      .fs-chrome {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0.55rem 0.75rem;
+        border-bottom: 1px solid var(--ahd-border);
+        flex-shrink: 0;
+      }
+      .device--landscape .fs-chrome {
+        flex-direction: column;
+        width: 7.5rem;
+        height: 100%;
+        border-bottom: 0;
+        border-right: 1px solid var(--ahd-border);
+        justify-content: flex-start;
+        padding-top: 0.75rem;
+      }
+      .fs-timer {
+        font-size: 1.15rem;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        color: var(--ahd-accent);
+      }
+      .fs-tabs { display: flex; gap: 0.25rem; }
+      .device--landscape .fs-tabs {
+        flex-direction: column;
+        width: 100%;
+        margin-top: 0.75rem;
+      }
+      .fs-tabs button {
+        appearance: none;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        padding: 0.35rem 0.55rem;
+        font: inherit;
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: var(--ahd-muted);
+        background: transparent;
+        cursor: pointer;
+      }
+      .fs-tabs button[aria-selected='true'] {
+        color: var(--ahd-accent);
+        border-color: var(--ahd-border);
+        background: rgba(0, 229, 255, 0.1);
+      }
+      .fs-exit {
+        appearance: none;
+        border: 1px solid var(--ahd-border);
+        border-radius: 6px;
+        padding: 0.3rem 0.55rem;
+        font: inherit;
+        font-size: 0.7rem;
+        font-weight: 650;
+        color: var(--ahd-accent);
+        background: transparent;
+        cursor: pointer;
+      }
+      .device--landscape .fs-exit { margin-top: auto; width: 100%; }
+      .fs-body {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 0.65rem 0.75rem 0.85rem;
+      }
+      .fs-panel {
+        flex: 1;
+        min-height: 0;
+        display: none;
+        flex-direction: column;
+      }
+      .fs-panel.is-active { display: flex; }
+      .zone {
+        align-self: center;
+        margin: 0 0 0.75rem;
+        padding: 0.4rem 0.85rem;
+        border-radius: 8px;
+        border: 1px solid rgba(56, 189, 248, 0.45);
+        background: rgba(14, 116, 144, 0.22);
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #bae6fd;
+      }
+      .metrics-hero {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.1rem;
+        text-align: center;
+      }
+      .pace-hero {
+        font-size: clamp(2.8rem, 12vw, 4.5rem);
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        color: var(--ahd-accent);
+        line-height: 1;
+      }
+      .pace-hero-label {
+        font-size: 0.8rem;
+        color: var(--ahd-muted);
+        margin-top: 0.35rem;
+      }
+      .metrics-row {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.5rem 0.75rem;
+        width: min(100%, 20rem);
+      }
+      .metric { text-align: center; }
+      .metric__v {
+        display: block;
+        font-size: 1.25rem;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+      }
+      .metric__l {
+        display: block;
+        font-size: 0.65rem;
+        color: var(--ahd-muted);
+        margin-top: 0.1rem;
+      }
+      .metrics-grid-4 {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.55rem 0.65rem;
+        width: 100%;
+      }
+      .panel-split .metrics-half .metric__v {
+        font-size: clamp(1.45rem, 5.5vw, 2.1rem);
+        font-weight: 800;
+      }
+      .panel-split .metrics-half .metric__l {
+        font-size: 0.72rem;
+      }
+      .panel-split .metrics-half .metric:first-child .metric__v,
+      .panel-split .metrics-half .metric:nth-child(4) .metric__v {
+        color: var(--ahd-accent);
+      }
+      .panel-split {
+        gap: 0.55rem;
+      }
+      .panel-split .metrics-half {
+        flex: 1 1 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 0;
+      }
+      .panel-split .chart-wrap {
+        flex: 1 1 50%;
+        min-height: 0;
+      }
+      .device--landscape .panel-split.is-active {
+        flex-direction: row;
+      }
+      .device--landscape .panel-split .chart-wrap {
+        flex: 1 1 auto;
+        order: 1;
+      }
+      .device--landscape .panel-split .metrics-half {
+        flex: 0 0 11rem;
+        order: 2;
+      }
+      .device--landscape .panel-split .metrics-grid-4 {
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+      }
+      .device--landscape .panel-split .metrics-half .metric__v {
+        font-size: 1.55rem;
+      }
+      .chart-wrap {
+        border-radius: 12px;
+        border: 1px solid var(--ahd-border);
+        overflow: hidden;
+        background: rgba(12, 28, 52, 0.92);
+      }
+      .chart-wrap canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .map-stage {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+      }
+      .map-wrap {
+        height: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--ahd-border);
+        overflow: hidden;
+      }
+      .map-wrap .leaflet-container {
+        width: 100%;
+        height: 100%;
+        background: #0c1c34;
+      }
+      .metrics-ticket {
+        position: absolute;
+        right: 0.55rem;
+        bottom: 0.55rem;
+        z-index: 500;
+        max-width: 46%;
+        padding: 0.4rem 0.5rem;
+        border-radius: 10px;
+        border: 1px solid var(--ahd-border);
+        background: rgba(10, 22, 40, 0.9);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      }
+      .metrics-ticket .metrics-grid-4 {
+        grid-template-columns: 1fr 1fr;
+      }
+      .metrics-ticket .metric__v { font-size: 0.9rem; }
+      .metrics-ticket .metric__l { font-size: 0.55rem; }
+      .panel-map .metrics-side { display: none; }
+      .device--landscape .panel-map.is-active {
+        flex-direction: row;
+      }
+      .device--landscape .panel-map .map-stage {
+        flex: 1;
+        order: 1;
+      }
+      .device--landscape .panel-map .metrics-ticket { display: none; }
+      .device--landscape .panel-map .metrics-side {
+        display: flex;
+        flex: 0 0 9rem;
+        order: 2;
+        align-items: center;
+      }
+      .device--landscape .panel-map .metrics-side .metrics-grid-4 {
+        grid-template-columns: 1fr;
+      }
+      .hint {
+        margin-top: 1.5rem;
+        font-size: 0.85rem;
+        color: var(--ahd-muted);
+      }
+      .hint code { color: var(--ahd-accent); }
+    </style>
+  </head>
+  <body>
+    <h1>Fullscreen session preview</h1>
+    <p class="lead">
+      Metrics: large centered pace. Speed: metrics + half-height chart (portrait), metrics on the right
+      (landscape). Map: ticket bottom-right (portrait), metrics column on the right (landscape).
+    </p>
+    <div class="global-tabs" role="tablist" aria-label="Fullscreen view">
+      <button type="button" role="tab" data-tab="metrics" aria-selected="true">Metrics</button>
+      <button type="button" role="tab" data-tab="speed" aria-selected="false">Speed</button>
+      <button type="button" role="tab" data-tab="map" aria-selected="false">Map</button>
+    </div>
+    <div class="frames">
+      <div class="frame-wrap">
+        <span class="frame-label">Portrait · 390×844</span>
+        <div class="device device--portrait" data-frame="portrait"></div>
+      </div>
+      <div class="frame-wrap">
+        <span class="frame-label">Landscape · 844×390</span>
+        <div class="device device--landscape" data-frame="landscape"></div>
+      </div>
+    </div>
+    <p class="hint">
+      Open at <code>/fullscreen-session-preview.html</code> while <code>npm run dev</code> is running.
+    </p>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script>
+      const METRICS4 = `
+        <div class="metrics-grid-4">
+          <div class="metric"><span class="metric__v">12:48</span><span class="metric__l">Time</span></div>
+          <div class="metric"><span class="metric__v">28</span><span class="metric__l">SPM</span></div>
+          <div class="metric"><span class="metric__v">152</span><span class="metric__l">HR</span></div>
+          <div class="metric"><span class="metric__v">1:48</span><span class="metric__l">Pace</span></div>
+        </div>`;
+
+      const SHELL = `
+        <div class="fs-shell">
+          <header class="fs-chrome">
+            <span class="fs-timer">12:48</span>
+            <nav class="fs-tabs" aria-label="View">
+              <button type="button" data-local-tab="metrics" aria-selected="true">Metrics</button>
+              <button type="button" data-local-tab="speed" aria-selected="false">Speed</button>
+              <button type="button" data-local-tab="map" aria-selected="false">Map</button>
+            </nav>
+            <button type="button" class="fs-exit">Exit</button>
+          </header>
+          <div class="fs-body">
+            <div class="fs-panel is-active" data-panel="metrics">
+              <div class="zone">On water</div>
+              <div class="metrics-hero">
+                <div>
+                  <div class="pace-hero">1:48.2</div>
+                  <div class="pace-hero-label">Pace /500m · 10s avg</div>
+                </div>
+                <div class="metrics-row">
+                  <div class="metric"><span class="metric__v">12:48</span><span class="metric__l">Time</span></div>
+                  <div class="metric"><span class="metric__v">28</span><span class="metric__l">Strokes /min</span></div>
+                  <div class="metric"><span class="metric__v">152</span><span class="metric__l">HR</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="fs-panel panel-split" data-panel="speed">
+              <div class="metrics-half">${METRICS4}</div>
+              <div class="chart-wrap"><canvas data-speed-canvas></canvas></div>
+            </div>
+            <div class="fs-panel panel-map" data-panel="map">
+              <div class="map-stage">
+                <div class="map-wrap" data-map></div>
+                <div class="metrics-ticket">${METRICS4}</div>
+              </div>
+              <div class="metrics-side">${METRICS4}</div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      function niceTicks(min, max, count) {
+        if (max <= min) return [min];
+        const span = max - min;
+        const step = Math.pow(10, Math.floor(Math.log10(span / count)));
+        const err = span / step / count;
+        let tickStep = step;
+        if (err >= 7.5) tickStep = step * 10;
+        else if (err >= 3.5) tickStep = step * 5;
+        else if (err >= 1.5) tickStep = step * 2;
+        const start = Math.ceil(min / tickStep) * tickStep;
+        const ticks = [];
+        for (let v = start; v <= max + tickStep * 0.01; v += tickStep) ticks.push(v);
+        return ticks.length ? ticks : [min, max];
+      }
+
+      function drawSpeedChart(canvas) {
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const cssW = canvas.clientWidth || 300;
+        const cssH = canvas.clientHeight || 160;
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const padL = 36, padR = 10, padT = 30, padB = 24;
+        const plotW = cssW - padL - padR;
+        const plotH = cssH - padT - padB;
+        const points = [];
+        for (let i = 0; i <= 96; i++) {
+          points.push({
+            x: (i / 96) * 8,
+            y: 12 + 4 * Math.sin(i / 7) + 1.5 * Math.sin(i / 3),
+          });
+        }
+        const bg = ctx.createLinearGradient(0, 0, 0, cssH);
+        bg.addColorStop(0, 'rgba(12, 28, 52, 0.98)');
+        bg.addColorStop(1, 'rgba(10, 22, 40, 0.98)');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, cssW, cssH);
+        ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
+        ctx.strokeRect(0.5, 0.5, cssW - 1, cssH - 1);
+        ctx.fillStyle = '#e8f4fc';
+        ctx.font = '600 11px system-ui, sans-serif';
+        ctx.fillText('Speed vs time (last 8 min)', padL, 18);
+        let minY = Math.min(...points.map((p) => p.y));
+        let maxY = Math.max(...points.map((p) => p.y));
+        minY = Math.max(0, minY - 1);
+        maxY += 1;
+        const sx = (x) => padL + (x / 8) * plotW;
+        const sy = (y) => padT + plotH - ((y - minY) / (maxY - minY)) * plotH;
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.14)';
+        for (const ty of niceTicks(minY, maxY, 4)) {
+          const py = sy(ty);
+          ctx.beginPath();
+          ctx.moveTo(padL, py);
+          ctx.lineTo(padL + plotW, py);
+          ctx.stroke();
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = '10px system-ui';
+          ctx.textAlign = 'right';
+          ctx.fillText(ty.toFixed(0), padL - 4, py + 3);
+        }
+        ctx.beginPath();
+        points.forEach((p, i) => {
+          const px = sx(p.x), py = sy(p.y);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.lineTo(sx(points[points.length - 1].x), padT + plotH);
+        ctx.lineTo(sx(points[0].x), padT + plotH);
+        ctx.closePath();
+        const area = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+        area.addColorStop(0, 'rgba(0, 229, 255, 0.28)');
+        area.addColorStop(1, 'rgba(0, 229, 255, 0.02)');
+        ctx.fillStyle = area;
+        ctx.fill();
+        ctx.beginPath();
+        points.forEach((p, i) => {
+          const px = sx(p.x), py = sy(p.y);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.strokeStyle = '#00e5ff';
+        ctx.lineWidth = 2.4;
+        ctx.lineJoin = 'round';
+        ctx.shadowColor = 'rgba(0, 229, 255, 0.4)';
+        ctx.shadowBlur = 6;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        const end = points[points.length - 1];
+        ctx.beginPath();
+        ctx.arc(sx(end.x), sy(end.y), 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#00e5ff';
+        ctx.fill();
+      }
+
+      const maps = new Map();
+      function ensureMap(el) {
+        if (!el || maps.has(el) || typeof L === 'undefined') return;
+        const map = L.map(el, { zoomControl: false, attributionControl: false }).setView(
+          [-37.928, 175.548],
+          14,
+        );
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+        L.circle([-37.9265, 175.542], {
+          radius: 120, color: '#f59e0b', fillColor: '#f59e0b', fillOpacity: 0.15, weight: 2,
+        }).addTo(map);
+        L.circle([-37.931, 175.555], {
+          radius: 80, color: '#f87171', fillColor: '#f87171', fillOpacity: 0.18, weight: 2,
+        }).addTo(map);
+        L.circleMarker([-37.9295, 175.55], {
+          radius: 8, color: '#00e5ff', fillColor: '#0d9488', fillOpacity: 1, weight: 2,
+        }).addTo(map);
+        L.polyline(
+          [[-37.927, 175.545], [-37.928, 175.547], [-37.929, 175.549], [-37.9295, 175.55]],
+          { color: '#00e5ff', weight: 3, opacity: 0.8 },
+        ).addTo(map);
+        maps.set(el, map);
+        setTimeout(() => map.invalidateSize(), 80);
+      }
+
+      function mountFrames() {
+        document.querySelectorAll('[data-frame]').forEach((host) => {
+          host.innerHTML = SHELL;
+          host.querySelectorAll('[data-local-tab]').forEach((btn) => {
+            btn.addEventListener('click', () => setTab(btn.getAttribute('data-local-tab')));
+          });
+        });
+      }
+
+      function setTab(tab) {
+        document.querySelectorAll('.global-tabs [data-tab]').forEach((btn) => {
+          btn.setAttribute('aria-selected', btn.getAttribute('data-tab') === tab ? 'true' : 'false');
+        });
+        document.querySelectorAll('[data-frame]').forEach((host) => {
+          host.querySelectorAll('[data-local-tab]').forEach((btn) => {
+            btn.setAttribute(
+              'aria-selected',
+              btn.getAttribute('data-local-tab') === tab ? 'true' : 'false',
+            );
+          });
+          host.querySelectorAll('[data-panel]').forEach((panel) => {
+            panel.classList.toggle('is-active', panel.getAttribute('data-panel') === tab);
+          });
+          if (tab === 'speed') {
+            const canvas = host.querySelector('[data-speed-canvas]');
+            if (canvas) requestAnimationFrame(() => drawSpeedChart(canvas));
+          }
+          if (tab === 'map') {
+            const mapEl = host.querySelector('[data-map]');
+            ensureMap(mapEl);
+            const map = maps.get(mapEl);
+            if (map) setTimeout(() => map.invalidateSize(), 60);
+          }
+        });
+      }
+
+      mountFrames();
+      document.querySelectorAll('.global-tabs [data-tab]').forEach((btn) => {
+        btn.addEventListener('click', () => setTab(btn.getAttribute('data-tab')));
+      });
+      setTab('metrics');
+      window.addEventListener('resize', () => {
+        document.querySelectorAll('[data-speed-canvas]').forEach((c) => {
+          if (c.closest('.fs-panel.is-active')) drawSpeedChart(c);
+        });
+        maps.forEach((m) => m.invalidateSize());
+      });
+    </script>
+  </body>
+</html>

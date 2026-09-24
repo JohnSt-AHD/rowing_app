@@ -26,6 +26,13 @@
 
 .ahd-recorder-main--settings {
   max-width: 100%;
+  padding-top: 2rem;
+}
+
+.ahd-recorder-main--settings .ahd-toolbar {
+  margin-top: 0.35rem;
+  margin-bottom: 2rem;
+  padding-bottom: 0.5rem;
 }
 
 .hub-crewsight-logo--recorder {
@@ -37,6 +44,7 @@
   background-color: #0a1628;
   background-image: none;
   border-bottom-color: rgba(0, 229, 255, 0.15);
+  overflow: visible;
 }
 
 .hub-topbar--recorder::after {
@@ -176,6 +184,110 @@
   color: var(--ahd-muted);
 }
 
+.form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 15rem;
+  align-items: center;
+  column-gap: 0.75rem;
+  row-gap: 0.4rem;
+  margin-bottom: 0.85rem;
+}
+
+.form-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.form-row__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ahd-muted);
+}
+
+.form-row__help,
+.info-help {
+  margin: 0;
+  padding: 0.45rem 0.65rem;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid var(--ahd-border);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--ahd-muted);
+}
+
+.form-row .form-row__help,
+.form-row .info-help {
+  grid-column: 1 / -1;
+}
+
+.info-btn {
+  flex: 0 0 auto;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--ahd-border);
+  background: rgba(15, 23, 42, 0.65);
+  color: var(--ahd-accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, 'Times New Roman', serif;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.info-btn:hover,
+.info-btn:focus-visible {
+  border-color: var(--ahd-accent);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 229, 255, 0.2);
+}
+
+.fieldset-legend-with-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.standby-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.standby-row .hub-btn {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.standby-row .info-btn {
+  align-self: center;
+}
+
+.standby-row .info-help {
+  flex: 1 1 100%;
+}
+
+.form-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 1.35rem;
+  margin-top: 1.5rem;
+}
+
+.form-actions .hub-btn {
+  width: 100%;
+  margin: 0;
+}
+
 .form input[type='text'],
 .form input[type='url'],
 .form input[type='password'],
@@ -192,6 +304,22 @@
   color: var(--ahd-text);
   font-size: 1rem;
   font-family: inherit;
+}
+
+.form .form-row > input {
+  grid-column: 2;
+  width: 15rem;
+  max-width: 15rem;
+  min-width: 15rem;
+  height: 2.5rem;
+  margin-top: 0;
+  margin-left: 0;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  line-height: 1.25;
+  font-size: 1rem;
+  font-family: inherit;
+  text-align: left;
 }
 
 .form input:focus {
@@ -248,8 +376,10 @@
 .ahd-toolbar,
 .ahd-toolbar-actions,
 .form label,
+.form-row,
 .form .fieldset,
-.form .hub-btn {
+.form .hub-btn,
+.form-actions .hub-btn {
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
@@ -606,6 +736,218 @@
   padding: 0.35rem 0.75rem;
 }
 
+.session-fs-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.session-fs-timer {
+  font-size: 1.1rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--ahd-accent);
+  min-width: 3.5rem;
+}
+
+.session-fs-tabs {
+  display: flex;
+  gap: 0.25rem;
+  flex: 1 1 auto;
+  justify-content: center;
+}
+
+.session-fs-tab {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ahd-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.session-fs-tab[aria-selected='true'] {
+  color: var(--ahd-accent);
+  border-color: var(--ahd-border);
+  background: rgba(0, 229, 255, 0.1);
+}
+
+.session-fs-panel {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.session-fs-panel.is-active {
+  display: flex;
+}
+
+.session-metrics-block--hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  text-align: center;
+}
+
+.session-metric--pace-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.session-metric--pace-hero .session-metric__value {
+  font-size: clamp(2.75rem, 14vw, 5.5rem);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--ahd-accent);
+}
+
+.session-metric--pace-hero .session-metric__label {
+  font-size: 0.85rem;
+  color: var(--ahd-muted);
+}
+
+.session-live-hud__metrics--secondary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(100%, 28rem);
+  gap: 0.5rem 0.75rem;
+}
+
+.session-fs-panel--split {
+  gap: 0.65rem;
+}
+
+.session-fs-panel--split .session-metrics-block--column {
+  flex: 1 1 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.session-fs-panel--split .session-live-hud__metrics {
+  width: 100%;
+  max-width: 28rem;
+  margin: 0 auto;
+  gap: 0.65rem 0.85rem;
+}
+
+.session-fs-panel--split .session-metric__value {
+  font-size: clamp(1.55rem, 6.5vw, 2.35rem);
+  font-weight: 800;
+}
+
+.session-fs-panel--split .session-metric--pace .session-metric__value,
+.session-fs-panel--split .session-metric--timer .session-metric__value {
+  color: var(--ahd-accent);
+}
+
+.session-fs-panel--split .session-metric__label {
+  font-size: 0.78rem;
+  margin-top: 0.2rem;
+}
+
+.session-fs-panel--split .session-speed-chart-wrap {
+  flex: 1 1 50%;
+  min-height: 140px;
+  max-height: none;
+}
+
+.session-speed-chart-wrap {
+  flex: 1;
+  min-height: 140px;
+  border-radius: 12px;
+  border: 1px solid var(--ahd-border);
+  overflow: hidden;
+  background: rgba(12, 28, 52, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(0, 229, 255, 0.06);
+}
+
+.session-speed-chart-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 140px;
+}
+
+.session-fs-panel--map {
+  position: relative;
+  gap: 0;
+}
+
+.session-map-stage {
+  position: relative;
+  flex: 1;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-map-wrap {
+  flex: 1;
+  min-height: 220px;
+  border-radius: 10px;
+  border: 1px solid var(--ahd-border);
+  overflow: hidden;
+  background: #0c1c34;
+}
+
+.session-map-wrap .leaflet-container {
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+  background: #0c1c34;
+}
+
+.session-metrics-ticket {
+  position: absolute;
+  right: 0.65rem;
+  bottom: 0.65rem;
+  z-index: 500;
+  max-width: min(11.5rem, 46%);
+  padding: 0.45rem 0.55rem;
+  border-radius: 10px;
+  border: 1px solid var(--ahd-border);
+  background: rgba(10, 22, 40, 0.88);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+}
+
+.session-metrics-ticket .session-live-hud__metrics {
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem 0.5rem;
+}
+
+.session-metrics-ticket .session-metric__value {
+  font-size: 0.95rem;
+}
+
+.session-metrics-ticket .session-metric__label {
+  font-size: 0.58rem;
+}
+
+.session-fs-metrics-side {
+  display: none;
+}
+
+.session-fs-panel--split .session-live-hud__metrics,
+.session-fs-metrics-side .session-live-hud__metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 /* Fullscreen live dashboard */
 .session-stage:fullscreen,
 .session-stage--fullscreen {
@@ -653,21 +995,34 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: stretch;
   max-width: none;
   width: auto;
   margin: 0.5rem 0;
-  padding: clamp(1rem, 3vw, 2rem);
+  padding: clamp(0.75rem, 2vw, 1.5rem);
+  min-height: 0;
 }
 
-.session-stage:fullscreen .session-live-hud__metrics,
-.session-stage--fullscreen .session-live-hud__metrics {
-  gap: 0.75rem 1rem;
+.session-stage:fullscreen .session-fs-chrome,
+.session-stage--fullscreen .session-fs-chrome {
+  margin-bottom: 0.75rem;
 }
 
-.session-stage:fullscreen .session-metric__value,
-.session-stage--fullscreen .session-metric__value {
-  font-size: clamp(1.75rem, 6vw, 3rem);
+.session-stage:fullscreen .session-fs-panel--split.is-active,
+.session-stage--fullscreen .session-fs-panel--split.is-active {
+  min-height: 0;
+}
+
+.session-stage:fullscreen .session-fs-panel--split .session-speed-chart-wrap,
+.session-stage--fullscreen .session-fs-panel--split .session-speed-chart-wrap {
+  flex: 1 1 50%;
+  max-height: none;
+  min-height: 0;
+}
+
+.session-stage:fullscreen .session-metric--pace-hero .session-metric__value,
+.session-stage--fullscreen .session-metric--pace-hero .session-metric__value {
+  font-size: clamp(3.5rem, 16vw, 7rem);
 }
 
 .session-stage:fullscreen .session-live-hud__regatta-text,
@@ -684,17 +1039,115 @@
 }
 
 @media (orientation: landscape) {
-  .session-stage:fullscreen .session-live-hud__metrics,
-  .session-stage--fullscreen .session-live-hud__metrics {
-    grid-template-columns: repeat(4, 1fr);
-    max-width: min(960px, 92vw);
-    margin: 0 auto;
-  }
-
   .session-stage:fullscreen .session-live-hud,
   .session-stage--fullscreen .session-live-hud {
-    padding-left: 2rem;
-    padding-right: 2rem;
+    flex-direction: row;
+    align-items: stretch;
+    padding-left: 1rem;
+    padding-right: 1rem;
+    gap: 0.75rem;
+  }
+
+  .session-stage:fullscreen .session-fs-chrome,
+  .session-stage--fullscreen .session-fs-chrome {
+    flex-direction: column;
+    width: 7.25rem;
+    flex: 0 0 7.25rem;
+    margin-bottom: 0;
+    border-right: 1px solid var(--ahd-border);
+    padding-right: 0.65rem;
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+
+  .session-stage:fullscreen .session-fs-tabs,
+  .session-stage--fullscreen .session-fs-tabs {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .session-stage:fullscreen .session-live-hud__fs,
+  .session-stage--fullscreen .session-live-hud__fs {
+    margin-top: auto;
+    width: 100%;
+  }
+
+  .session-stage:fullscreen .session-fs-panel.is-active,
+  .session-stage--fullscreen .session-fs-panel.is-active {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .session-stage:fullscreen .session-fs-panel--split.is-active,
+  .session-stage--fullscreen .session-fs-panel--split.is-active {
+    flex-direction: row;
+    align-items: stretch;
+  }
+
+  .session-stage:fullscreen .session-fs-panel--split .session-speed-chart-wrap,
+  .session-stage--fullscreen .session-fs-panel--split .session-speed-chart-wrap {
+    flex: 1 1 auto;
+    max-height: none;
+    order: 1;
+  }
+
+  .session-stage:fullscreen .session-fs-panel--split .session-metrics-block--column,
+  .session-stage--fullscreen .session-fs-panel--split .session-metrics-block--column {
+    flex: 0 0 11rem;
+    order: 2;
+    display: flex;
+    align-items: center;
+  }
+
+  .session-stage:fullscreen .session-fs-panel--split .session-live-hud__metrics,
+  .session-stage--fullscreen .session-fs-panel--split .session-live-hud__metrics {
+    grid-template-columns: 1fr;
+    width: 100%;
+    max-width: none;
+    gap: 0.85rem;
+  }
+
+  .session-stage:fullscreen .session-fs-panel--split .session-metric__value,
+  .session-stage--fullscreen .session-fs-panel--split .session-metric__value {
+    font-size: clamp(1.45rem, 3.2vw, 2rem);
+  }
+
+  .session-stage:fullscreen .session-fs-panel--map.is-active,
+  .session-stage--fullscreen .session-fs-panel--map.is-active {
+    flex-direction: row;
+    align-items: stretch;
+  }
+
+  .session-stage:fullscreen .session-fs-panel--map .session-map-stage,
+  .session-stage--fullscreen .session-fs-panel--map .session-map-stage {
+    flex: 1 1 auto;
+    min-width: 0;
+    order: 1;
+  }
+
+  .session-stage:fullscreen .session-fs-panel--map .session-metrics-ticket,
+  .session-stage--fullscreen .session-fs-panel--map .session-metrics-ticket {
+    display: none;
+  }
+
+  .session-stage:fullscreen .session-fs-panel--map .session-fs-metrics-side,
+  .session-stage--fullscreen .session-fs-panel--map .session-fs-metrics-side {
+    display: flex;
+    flex: 0 0 9.5rem;
+    order: 2;
+    align-items: center;
+  }
+
+  .session-stage:fullscreen .session-fs-metrics-side .session-live-hud__metrics,
+  .session-stage--fullscreen .session-fs-metrics-side .session-live-hud__metrics {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .session-stage:fullscreen .session-live-hud__metrics--secondary,
+  .session-stage--fullscreen .session-live-hud__metrics--secondary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    max-width: min(720px, 70vw);
   }
 
   .spectrum-rail {

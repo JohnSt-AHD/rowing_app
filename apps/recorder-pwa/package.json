@@ -10,19 +10,21 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@rowing/telemetry-types": "*",
+    "@capacitor-community/background-geolocation": "^1.2.26",
+    "@capacitor-community/bluetooth-le": "^7.1.1",
+    "@capacitor/core": "^7.2.0",
+    "@capacitor/geolocation": "^7.1.1",
+    "@capacitor/local-notifications": "^7.0.1",
+    "@capacitor/motion": "^7.0.0",
     "@rowing/motion-analysis": "*",
     "@rowing/rowing-pace": "*",
     "@rowing/sensor-adapters": "*",
+    "@rowing/telemetry-types": "*",
     "@vercel/postgres": "^0.10.0",
-    "@capacitor/core": "^7.2.0",
-    "@capacitor/geolocation": "^7.1.1",
-    "@capacitor/motion": "^7.0.0",
-    "@capacitor-community/bluetooth-le": "^7.1.1",
-    "@capacitor-community/background-geolocation": "^1.2.26",
-    "@capacitor/local-notifications": "^7.0.1"
+    "leaflet": "^1.9.4"
   },
   "devDependencies": {
+    "@types/leaflet": "^1.9.22",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vite-plugin-pwa": "^0.21.1"
