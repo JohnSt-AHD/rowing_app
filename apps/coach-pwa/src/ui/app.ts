@@ -159,13 +159,20 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function monitorStatusHtml(): string {
-    if (quietHoursActive) return QUIET_HOURS_MESSAGE;
+    if (quietHoursActive) {
+      return `<span>${esc(QUIET_HOURS_MESSAGE)}</span>`;
+    }
     if (monitoring) {
-      return serviceRunning
+      const label = serviceRunning
         ? '● Monitoring fleet (background active)'
         : '● Monitoring (foreground poll only)';
+      return `<span>${esc(label)}</span>`;
     }
-    return 'Monitoring off — no background alerts';
+    return `
+      <span>Monitoring off</span>
+      <button type="button" class="info-btn" data-info-toggle aria-label="About monitoring off" aria-expanded="false">i</button>
+      <p class="info-help" hidden>No background alerts while monitoring is off. Start monitoring to receive capsize alerts when the app is in the background.</p>
+    `;
   }
 
   function monitorBarHtml(): string {
@@ -178,6 +185,11 @@ export function mountApp(root: HTMLElement): void {
         : `<button type="button" class="coach-btn coach-btn--primary" data-start-monitor>Start monitoring</button>`) +
       `</div>`
     );
+  }
+
+  function topbarMonitoringBadge(): string {
+    if (!monitoring || quietHoursActive) return '';
+    return `<span class="coach-topbar__monitoring" aria-live="polite">Monitoring</span>`;
   }
 
   async function acknowledgeCapsizeAlerts() {
@@ -447,11 +459,13 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function setStatus(msg: string, err = false) {
-    const el = root.querySelector('[data-poll-status]');
-    if (el) {
-      el.textContent = msg;
-      el.classList.toggle('err', err);
-    }
+    const text = String(msg ?? '').trim();
+    const show = Boolean(text) && text !== '—';
+    root.querySelectorAll('[data-poll-status]').forEach((el) => {
+      el.textContent = show ? text : '';
+      el.classList.toggle('err', err && show);
+      if (el instanceof HTMLElement) el.hidden = !show;
+    });
   }
 
   function destroyMap() {
@@ -935,7 +949,10 @@ export function mountApp(root: HTMLElement): void {
           />
           <div class="coach-topbar__text">
             <span class="coach-topbar__brand">CrewSight</span>
-            <span class="coach-topbar__product">Manager</span>
+            <div class="coach-topbar__title-row">
+              <span class="coach-topbar__product">Manager</span>
+              ${topbarMonitoringBadge()}
+            </div>
           </div>
         </header>
         <div class="coach-sticky-chrome">
@@ -953,7 +970,7 @@ export function mountApp(root: HTMLElement): void {
         </div>
         <section class="coach-panel coach-panel--dashboard" data-panel="dashboard" ${tab === 'dashboard' ? '' : 'hidden'}>
           ${monitorBarHtml()}
-          <p class="poll-line" data-poll-status>—</p>
+          <p class="poll-line" data-poll-status hidden></p>
           <div class="coach-dashboard">
             <div class="coach-dashboard__summary">
               <span class="coach-dash-pill coach-dash-pill--water"><strong data-on-water-count>0</strong> on water</span>
@@ -970,7 +987,7 @@ export function mountApp(root: HTMLElement): void {
           </div>
         </section>
         <section class="coach-panel coach-panel--map" data-panel="map" ${tab === 'map' ? '' : 'hidden'}>
-          <p class="poll-line" data-poll-status>—</p>
+          <p class="poll-line" data-poll-status hidden></p>
           <div class="coach-map-panel-tools">
             <button type="button" class="coach-btn coach-btn--ghost ${mapFollowFleet ? 'coach-btn--active' : ''}" data-map-follow aria-pressed="${mapFollowFleet ? 'true' : 'false'}">Follow fleet</button>
             <span class="coach-dash-pill"><strong data-map-active-count>0</strong> on water</span>
@@ -982,7 +999,7 @@ export function mountApp(root: HTMLElement): void {
           <div data-logbook-root></div>
         </section>
         <section class="coach-panel coach-panel--race" data-panel="race" ${tab === 'race' ? '' : 'hidden'}>
-          <p class="poll-line" data-poll-status>—</p>
+          <p class="poll-line" data-poll-status hidden></p>
           <div class="race-panel-root" data-race-root></div>
         </section>
         <section class="coach-panel coach-panel--history" data-panel="history" ${tab === 'history' ? '' : 'hidden'}>

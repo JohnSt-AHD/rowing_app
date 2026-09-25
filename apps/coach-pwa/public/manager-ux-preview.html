@@ -109,15 +109,40 @@
         font-weight: 600;
         letter-spacing: 0.06em;
         text-transform: uppercase;
-        color: rgba(232, 244, 252, 0.72);
+        color: #ffffff;
         line-height: 1;
       }
       .product {
         font-size: 1.32rem;
         font-weight: 700;
         letter-spacing: -0.02em;
-        color: #e8f4fc;
+        color: #ffffff;
         line-height: 1;
+      }
+      .title-row {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        flex-wrap: wrap;
+      }
+      .monitoring-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        background: rgba(34, 211, 238, 0.2);
+        border: 1px solid rgba(34, 211, 238, 0.55);
+        color: #ffffff;
+        font-size: 0.72rem;
+        font-weight: 700;
+      }
+      .monitoring-pill::before {
+        content: '';
+        width: 0.45rem;
+        height: 0.45rem;
+        border-radius: 50%;
+        background: #22d3ee;
       }
       .monitor {
         margin: 0 0 0.75rem;
@@ -131,12 +156,25 @@
         gap: 0.5rem;
         flex-shrink: 0;
       }
+      .monitor .status-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.88rem;
+        font-weight: 600;
+        color: var(--ahd-text);
+        flex: 1;
+        min-width: 0;
+      }
+      .monitor .status-line.on { color: var(--ahd-safety); }
+      .monitor .status-line .info-help { flex: 1 1 100%; }
       .monitor span { font-size: 0.82rem; color: var(--ahd-muted); }
       .monitor.monitoring {
         border-color: rgba(31, 107, 74, 0.35);
         background: #f3faf6;
       }
-      .monitor.monitoring span { color: var(--ahd-safety); font-weight: 600; }
+      .monitor.monitoring .status-line { color: var(--ahd-safety); }
       .screen {
         flex: 1;
         overflow: auto;
@@ -502,15 +540,20 @@
             />
             <div>
               <div class="brand">CrewSight</div>
-              <div class="product">Manager</div>
+              <div class="title-row">
+                <div class="product">Manager</div>
+                <span class="monitoring-pill" data-monitoring-pill hidden>Monitoring</span>
+              </div>
             </div>
           </header>
 
           <!-- HOME -->
           <div class="screen" data-screen="home">
             <div class="monitor monitoring" data-monitor>
-              <span>Monitoring · live</span>
-              <button type="button" class="coach-btn coach-btn--ghost">Stop monitoring</button>
+              <span class="status-line on" data-monitor-status>
+                <span>● Monitoring fleet (background active)</span>
+              </span>
+              <button type="button" class="coach-btn coach-btn--ghost" data-toggle-monitor>Stop monitoring</button>
             </div>
             <p class="poll-line">Updated just now</p>
             <div class="pills">
@@ -771,7 +814,7 @@
             e.stopPropagation();
             const host =
               btn.closest(
-                '.form-row, .coach-heading-with-info, .history-devices-field, .coach-logbook-heading, fieldset',
+                '.form-row, .coach-heading-with-info, .history-devices-field, .coach-logbook-heading, .status-line, fieldset',
               ) || btn.parentElement;
             const help = host?.querySelector('.info-help');
             if (!help) return;
@@ -807,6 +850,39 @@
       }
 
       bindInfoToggles(document);
+
+      let monitoringOn = true;
+      const monitorEl = document.querySelector('[data-monitor]');
+      const monitorStatus = document.querySelector('[data-monitor-status]');
+      const monitorBtn = document.querySelector('[data-toggle-monitor]');
+      const monitoringPill = document.querySelector('[data-monitoring-pill]');
+
+      function syncMonitorPreview() {
+        if (!monitorEl || !monitorStatus || !monitorBtn || !monitoringPill) return;
+        monitorEl.classList.toggle('monitoring', monitoringOn);
+        monitoringPill.hidden = !monitoringOn;
+        if (monitoringOn) {
+          monitorStatus.className = 'status-line on';
+          monitorStatus.innerHTML = '<span>● Monitoring fleet (background active)</span>';
+          monitorBtn.textContent = 'Stop monitoring';
+          monitorBtn.className = 'coach-btn coach-btn--ghost';
+        } else {
+          monitorStatus.className = 'status-line';
+          monitorStatus.innerHTML =
+            '<span>Monitoring off</span>' +
+            '<button type="button" class="info-btn" data-info-toggle aria-label="About monitoring off" aria-expanded="false">i</button>' +
+            '<p class="info-help" hidden>No background alerts while monitoring is off. Start monitoring to receive capsize alerts when the app is in the background.</p>';
+          monitorBtn.textContent = 'Start monitoring';
+          monitorBtn.className = 'coach-btn coach-btn--primary';
+          bindInfoToggles(monitorStatus);
+        }
+      }
+      monitoringPill.hidden = false;
+      monitorBtn?.addEventListener('click', () => {
+        monitoringOn = !monitoringOn;
+        syncMonitorPreview();
+      });
+
       document.querySelectorAll('[data-preview-tab]').forEach((btn) => {
         btn.addEventListener('click', () => setScreen(btn.getAttribute('data-preview-tab')));
       });

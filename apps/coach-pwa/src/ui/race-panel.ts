@@ -72,7 +72,7 @@ export class RacePanel {
         </div>
       </div>
       <p class="race-meta" data-race-meta>Load timing lines using your ingest token.</p>
-      <p class="poll-line" data-race-status>—</p>
+      <p class="poll-line" data-race-status hidden></p>
       <div class="race-splits" data-race-splits></div>
       <div class="race-map-card">
         <h3 class="race-section-title">Course map</h3>
@@ -259,11 +259,13 @@ export class RacePanel {
   }
 
   private setRaceStatus(msg: string, err = false) {
-    const el = this.root?.querySelector('[data-race-status]');
-    if (el) {
-      el.textContent = msg;
-      el.classList.toggle('err', err);
-    }
+    const el = this.root?.querySelector('[data-race-status]') as HTMLElement | null;
+    if (!el) return;
+    const text = String(msg ?? '').trim();
+    const show = Boolean(text) && text !== '—';
+    el.textContent = show ? text : '';
+    el.classList.toggle('err', err && show);
+    el.hidden = !show;
   }
 
   private syncCourseSelect() {

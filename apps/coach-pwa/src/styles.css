@@ -41,6 +41,7 @@
   flex-direction: column;
   gap: 0;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .coach-topbar__brand {
@@ -48,7 +49,7 @@
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(232, 244, 252, 0.72);
+  color: #ffffff;
   line-height: 1;
 }
 
@@ -56,8 +57,39 @@
   font-size: 1.32rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: #e8f4fc;
+  color: #ffffff;
   line-height: 1;
+}
+
+.coach-topbar__title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.coach-topbar__monitoring {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(34, 211, 238, 0.2);
+  border: 1px solid rgba(34, 211, 238, 0.55);
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.coach-topbar__monitoring::before {
+  content: '';
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: #22d3ee;
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.25);
 }
 
 .coach-sticky-chrome {
@@ -88,14 +120,24 @@
 }
 
 .coach-monitor-bar .status-line {
-  font-size: 0.85rem;
-  color: var(--ahd-muted);
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--ahd-text);
   flex: 1 1 12rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
 }
 
 .coach-monitor-bar .status-line.on {
   color: var(--ahd-safety);
-  font-weight: 600;
+  font-weight: 700;
+}
+
+.coach-monitor-bar .status-line .info-help {
+  flex: 1 1 100%;
 }
 
 .coach-monitor-bar .coach-btn {
@@ -858,6 +900,11 @@
 .poll-line {
   color: var(--ahd-muted);
   font-size: 0.85rem;
+}
+
+.poll-line:empty,
+.poll-line[hidden] {
+  display: none;
 }
 
 .poll-line.err {

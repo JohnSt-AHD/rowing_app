@@ -139,7 +139,7 @@ export class LogbookPanel {
       `<div class="coach-logbook-toolbar">` +
       `<button type="button" class="coach-btn coach-btn--ghost" data-logbook-refresh>Refresh</button>` +
       `</div>` +
-      `<p class="poll-line" data-logbook-status>—</p>` +
+      `<p class="poll-line" data-logbook-status hidden></p>` +
       `<div class="coach-logbook-list" data-logbook-list></div>` +
       `</div>`;
     bindInfoToggles(this.root);
@@ -184,8 +184,11 @@ export class LogbookPanel {
       return;
     }
     this.loading = true;
-    const status = this.root?.querySelector('[data-logbook-status]');
-    if (status) status.textContent = 'Loading logbook…';
+    const status = this.root?.querySelector('[data-logbook-status]') as HTMLElement | null;
+    if (status) {
+      status.hidden = false;
+      status.textContent = 'Loading logbook…';
+    }
     this.renderDays();
     try {
       const data = await fetchLogbook(settings, 45, TZ);
@@ -195,11 +198,15 @@ export class LogbookPanel {
         status.textContent = this.days.length
           ? `${this.days.length} day${this.days.length === 1 ? '' : 's'}`
           : 'No sessions in lookback';
+        status.hidden = false;
       }
       this.onStatus('Logbook updated');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (status) status.textContent = msg;
+      if (status) {
+        status.textContent = msg;
+        status.hidden = false;
+      }
       this.onStatus(msg, true);
     } finally {
       this.loading = false;

@@ -6,7 +6,7 @@ export function bindInfoToggles(root: ParentNode): void {
       e.stopPropagation();
       const host =
         (btn as HTMLElement).closest(
-          '.form-row, .coach-heading-with-info, .history-devices-field, .coach-logbook-heading, fieldset',
+          '.form-row, .coach-heading-with-info, .history-devices-field, .coach-logbook-heading, .status-line, .coach-monitor-bar, fieldset',
         ) || btn.parentElement;
       const help = host?.querySelector('.info-help') as HTMLElement | null;
       if (!help) return;
