@@ -902,6 +902,19 @@
   min-height: 140px;
 }
 
+.session-stage:fullscreen .session-speed-chart-wrap,
+.session-stage--fullscreen .session-speed-chart-wrap {
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.session-stage:fullscreen .session-speed-chart-wrap canvas,
+.session-stage--fullscreen .session-speed-chart-wrap canvas {
+  min-height: 0;
+  max-height: 100%;
+}
+
 .session-fs-panel--map {
   position: relative;
   gap: 0;
@@ -975,7 +988,8 @@
   width: 100%;
   height: 100%;
   max-height: 100dvh;
-  overflow: auto;
+  overflow: hidden;
+  box-sizing: border-box;
   background: #0a1628;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
     env(safe-area-inset-left);
@@ -997,7 +1011,10 @@
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  min-width: 0;
   max-width: none;
+  overflow: hidden;
   padding-left: 22px;
   padding-right: 22px;
 }
@@ -1007,6 +1024,9 @@
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .session-stage:fullscreen .session-live-hud,
@@ -1019,14 +1039,26 @@
   justify-content: stretch;
   max-width: none;
   width: auto;
-  margin: 0.5rem 0;
-  padding: clamp(0.75rem, 2vw, 1.5rem);
+  margin: 0;
+  padding: clamp(0.5rem, 1.5vw, 1rem);
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .session-stage:fullscreen .session-fs-chrome,
 .session-stage--fullscreen .session-fs-chrome {
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.session-stage:fullscreen .session-fs-panel.is-active,
+.session-stage--fullscreen .session-fs-panel.is-active {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .session-stage:fullscreen .session-fs-panel--split.is-active,
@@ -1057,6 +1089,15 @@
   width: auto;
   margin-left: 0;
   margin-right: 0;
+}
+
+.session-stage:fullscreen .session-fs-panel--map .session-map-stage,
+.session-stage:fullscreen .session-fs-panel--map .session-map-wrap,
+.session-stage:fullscreen .session-fs-panel--map .session-map-wrap .leaflet-container,
+.session-stage--fullscreen .session-fs-panel--map .session-map-stage,
+.session-stage--fullscreen .session-fs-panel--map .session-map-wrap,
+.session-stage--fullscreen .session-fs-panel--map .session-map-wrap .leaflet-container {
+  min-height: 0;
 }
 
 @media (orientation: landscape) {
@@ -1111,53 +1152,87 @@
   .session-stage--fullscreen .session-fs-panel.is-active {
     flex: 1;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .session-stage:fullscreen .session-fs-panel--split.is-active,
   .session-stage--fullscreen .session-fs-panel--split.is-active {
     flex-direction: row;
     align-items: stretch;
+    gap: 0.75rem;
   }
 
   .session-stage:fullscreen .session-fs-panel--split .session-speed-chart-wrap,
   .session-stage--fullscreen .session-fs-panel--split .session-speed-chart-wrap {
-    flex: 1 1 auto;
-    max-height: none;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    max-height: 100%;
+    overflow: hidden;
     order: 1;
   }
 
   .session-stage:fullscreen .session-fs-panel--split .session-metrics-block--column,
   .session-stage--fullscreen .session-fs-panel--split .session-metrics-block--column {
     flex: 0 0 11rem;
+    width: 11rem;
+    max-width: 11rem;
     order: 2;
     display: flex;
+    flex-direction: column;
     align-items: center;
+    justify-content: center;
+    min-height: 0;
+    overflow: hidden;
+    box-sizing: border-box;
   }
 
   .session-stage:fullscreen .session-fs-panel--split .session-live-hud__metrics,
   .session-stage--fullscreen .session-fs-panel--split .session-live-hud__metrics {
     grid-template-columns: 1fr;
     width: 100%;
-    max-width: none;
+    max-width: 100%;
     gap: 0.85rem;
   }
 
   .session-stage:fullscreen .session-fs-panel--split .session-metric__value,
-  .session-stage--fullscreen .session-fs-panel--split .session-metric__value {
-    font-size: clamp(1.45rem, 3.2vw, 2rem);
+  .session-stage--fullscreen .session-fs-panel--split .session-metric__value,
+  .session-stage:fullscreen .session-fs-panel--split .session-metric--spm .session-metric__value,
+  .session-stage--fullscreen .session-fs-panel--split .session-metric--spm .session-metric__value {
+    font-size: clamp(1.35rem, 2.6vh, 1.85rem);
+  }
+
+  .session-stage:fullscreen .session-fs-panel--split .session-metric__label,
+  .session-stage--fullscreen .session-fs-panel--split .session-metric__label {
+    font-size: 0.72rem;
+  }
+
+  .session-stage:fullscreen .session-metric--pace-hero .session-metric__value,
+  .session-stage--fullscreen .session-metric--pace-hero .session-metric__value {
+    font-size: clamp(2.5rem, 14vh, 5rem);
+  }
+
+  .session-stage:fullscreen .session-stage__inner,
+  .session-stage--fullscreen .session-stage__inner {
+    padding-left: 28px;
+    padding-right: 28px;
   }
 
   .session-stage:fullscreen .session-fs-panel--map.is-active,
   .session-stage--fullscreen .session-fs-panel--map.is-active {
     flex-direction: row;
     align-items: stretch;
+    gap: 0.75rem;
   }
 
   .session-stage:fullscreen .session-fs-panel--map .session-map-stage,
   .session-stage--fullscreen .session-fs-panel--map .session-map-stage {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-width: 0;
+    min-height: 0;
     order: 1;
+    overflow: hidden;
   }
 
   .session-stage:fullscreen .session-fs-panel--map .session-metrics-ticket,
@@ -1168,15 +1243,47 @@
   .session-stage:fullscreen .session-fs-panel--map .session-fs-metrics-side,
   .session-stage--fullscreen .session-fs-panel--map .session-fs-metrics-side {
     display: flex;
-    flex: 0 0 9.5rem;
+    flex-direction: column;
+    flex: 0 0 11rem;
+    width: 11rem;
+    max-width: 11rem;
     order: 2;
     align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 0 0.25rem;
+  }
+
+  .session-stage:fullscreen .session-fs-metrics-side .session-metrics-block--column,
+  .session-stage--fullscreen .session-fs-metrics-side .session-metrics-block--column {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    max-width: 100%;
   }
 
   .session-stage:fullscreen .session-fs-metrics-side .session-live-hud__metrics,
   .session-stage--fullscreen .session-fs-metrics-side .session-live-hud__metrics {
     grid-template-columns: 1fr;
     width: 100%;
+    max-width: 100%;
+    gap: 0.85rem;
+  }
+
+  .session-stage:fullscreen .session-fs-metrics-side .session-metric__value,
+  .session-stage--fullscreen .session-fs-metrics-side .session-metric__value,
+  .session-stage:fullscreen .session-fs-metrics-side .session-metric--spm .session-metric__value,
+  .session-stage--fullscreen .session-fs-metrics-side .session-metric--spm .session-metric__value {
+    font-size: clamp(1.35rem, 2.6vh, 1.85rem);
+  }
+
+  .session-stage:fullscreen .session-fs-metrics-side .session-metric__label,
+  .session-stage--fullscreen .session-fs-metrics-side .session-metric__label {
+    font-size: 0.72rem;
   }
 
   .session-stage:fullscreen .session-live-hud__metrics--secondary,

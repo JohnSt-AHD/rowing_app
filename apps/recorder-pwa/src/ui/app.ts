@@ -124,6 +124,19 @@ export function mountApp(root: HTMLElement): void {
     }
   });
 
+  const onFsViewportChange = () => {
+    const stage = root.querySelector('[data-session-stage]');
+    if (!stage?.classList.contains('session-stage--fullscreen') && document.fullscreenElement !== stage) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      refreshFsPanels();
+      if (fsTab === 'map') invalidateSessionMap();
+    });
+  };
+  window.addEventListener('resize', onFsViewportChange);
+  window.addEventListener('orientationchange', onFsViewportChange);
+
   const logLines: string[] = [];
   const refreshLogPre = () => {
     const pre = root.querySelector('.hub-panel.log pre');

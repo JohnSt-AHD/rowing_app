@@ -260,21 +260,34 @@
       }
       .device--landscape .panel-split.is-active {
         flex-direction: row;
+        gap: 0.75rem;
+        min-height: 0;
+        overflow: hidden;
       }
       .device--landscape .panel-split .chart-wrap {
-        flex: 1 1 auto;
+        flex: 1 1 0;
+        min-width: 0;
+        min-height: 0;
+        max-height: 100%;
+        overflow: hidden;
         order: 1;
       }
       .device--landscape .panel-split .metrics-half {
         flex: 0 0 11rem;
+        width: 11rem;
+        max-width: 11rem;
         order: 2;
+        flex-direction: column;
+        justify-content: center;
+        overflow: hidden;
       }
       .device--landscape .panel-split .metrics-grid-4 {
         grid-template-columns: 1fr;
         gap: 0.75rem;
+        width: 100%;
       }
       .device--landscape .panel-split .metrics-half .metric__v {
-        font-size: 1.55rem;
+        font-size: clamp(1.35rem, 2.6vh, 1.85rem);
       }
       .chart-wrap {
         border-radius: 12px;
@@ -323,20 +336,36 @@
       .panel-map .metrics-side { display: none; }
       .device--landscape .panel-map.is-active {
         flex-direction: row;
+        gap: 0.75rem;
       }
       .device--landscape .panel-map .map-stage {
         flex: 1;
+        min-width: 0;
         order: 1;
+        overflow: hidden;
       }
       .device--landscape .panel-map .metrics-ticket { display: none; }
       .device--landscape .panel-map .metrics-side {
         display: flex;
-        flex: 0 0 9rem;
+        flex-direction: column;
+        flex: 0 0 11rem;
+        width: 11rem;
+        max-width: 11rem;
         order: 2;
         align-items: center;
+        justify-content: center;
+        min-width: 0;
+        overflow: hidden;
+        box-sizing: border-box;
+        padding: 0 0.25rem;
       }
       .device--landscape .panel-map .metrics-side .metrics-grid-4 {
         grid-template-columns: 1fr;
+        width: 100%;
+        gap: 0.85rem;
+      }
+      .device--landscape .panel-map .metrics-side .metric__v {
+        font-size: clamp(1.35rem, 2.6vh, 1.85rem);
       }
       .hint {
         margin-top: 1.5rem;
