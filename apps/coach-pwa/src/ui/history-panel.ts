@@ -26,12 +26,17 @@ import {
   type HistorySelection,
 } from '../lib/history-track';
 import { HistoryTimeline } from '../lib/history-timeline';
+import { bindInfoToggles } from '../lib/info-toggle';
 
 type StatusFn = (msg: string, err?: boolean) => void;
 
 const SETUP_HTML = `
   <fieldset class="history-devices-field">
-    <legend>Devices <span class="history-hint">(select one or more)</span></legend>
+    <legend class="fieldset-legend-with-info">
+      Devices
+      <button type="button" class="info-btn" data-info-toggle aria-label="About Devices" aria-expanded="false">i</button>
+    </legend>
+    <p class="info-help" hidden>Select one or more devices. Load the device list or type IDs below.</p>
     <div class="history-device-list" data-device-list>
       <p class="poll-line">Load device list or type IDs below.</p>
     </div>
@@ -117,6 +122,7 @@ export class HistoryPanel {
   mountSetup(host: HTMLElement): void {
     this.setupHost = host;
     host.innerHTML = SETUP_HTML;
+    bindInfoToggles(host);
     host.querySelector('[data-load-devices]')?.addEventListener('click', () => void this.loadDeviceList());
     host.querySelector('[data-load-sessions]')?.addEventListener('click', () => void this.loadSessions());
     host.querySelector('[data-load-track]')?.addEventListener('click', () => void this.loadTracks());

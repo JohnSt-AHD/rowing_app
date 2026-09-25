@@ -19,16 +19,19 @@
 .coach-topbar {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  padding: 0.55rem clamp(12px, 4vw, 20px);
-  background: #ffffff;
-  border-bottom: 1px solid rgba(17, 17, 17, 0.06);
+  gap: 0.5rem;
+  padding: 0 clamp(6px, 2.5vw, 12px);
+  height: 86px;
+  background: #0a1628;
+  border-bottom: 1px solid rgba(0, 229, 255, 0.18);
   flex-shrink: 0;
+  overflow: visible;
 }
 
 .coach-topbar__icon {
-  width: 40px;
-  height: 40px;
+  width: 97px;
+  height: 97px;
+  margin-block: -5.5px;
   object-fit: contain;
   flex-shrink: 0;
 }
@@ -36,25 +39,25 @@
 .coach-topbar__text {
   display: flex;
   flex-direction: column;
-  gap: 0.05rem;
+  gap: 0;
   min-width: 0;
 }
 
 .coach-topbar__brand {
-  font-size: 0.72rem;
+  font-size: 0.79rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--ahd-muted);
-  line-height: 1.1;
+  color: rgba(232, 244, 252, 0.72);
+  line-height: 1;
 }
 
 .coach-topbar__product {
-  font-size: 1.1rem;
+  font-size: 1.32rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--hub-ink, #111);
-  line-height: 1.15;
+  color: #e8f4fc;
+  line-height: 1;
 }
 
 .coach-sticky-chrome {
@@ -66,7 +69,7 @@
 }
 
 .coach-monitor-bar {
-  margin: 0.5rem clamp(12px, 4vw, 20px) 0;
+  margin: 0 0 0.75rem;
   padding: 0.65rem 0.85rem;
   background: #ffffff;
   border: 1px solid var(--coach-border);
@@ -693,6 +696,136 @@
   font: inherit;
 }
 
+.form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, 15rem);
+  align-items: center;
+  column-gap: 0.75rem;
+  row-gap: 0.4rem;
+  margin-bottom: 0.85rem;
+}
+
+.form-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.form-row__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ahd-muted);
+}
+
+.form-row > input {
+  grid-column: 2;
+  width: 100%;
+  max-width: 15rem;
+  min-width: 0;
+  height: 2.5rem;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--coach-border);
+  background: #f4f4f5;
+  color: var(--ahd-text);
+  font: inherit;
+}
+
+.form-row__help,
+.info-help {
+  margin: 0;
+  padding: 0.45rem 0.65rem;
+  border-radius: 6px;
+  background: #f4f4f5;
+  border: 1px solid var(--coach-border);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--ahd-muted);
+}
+
+.form-row .form-row__help,
+.form-row .info-help {
+  grid-column: 1 / -1;
+}
+
+.info-btn {
+  flex: 0 0 auto;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--coach-border);
+  background: #ffffff;
+  color: var(--ahd-accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, 'Times New Roman', serif;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.info-btn:hover,
+.info-btn:focus-visible {
+  border-color: var(--ahd-accent);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(17, 17, 17, 0.12);
+}
+
+.fieldset-legend-with-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.coach-heading-with-info {
+  margin: 1rem 0 0.65rem;
+}
+
+.coach-heading-with-info:first-child {
+  margin-top: 0;
+}
+
+.coach-heading-with-info .coach-section-title {
+  margin: 0;
+}
+
+.coach-section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.coach-heading-with-info .info-help {
+  margin-top: 0.5rem;
+}
+
+.coach-settings-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 1.35rem;
+  margin: 0.35rem 0 0.5rem;
+}
+
+.history-devices-field .info-help {
+  margin-bottom: 0.55rem;
+}
+
+@media (max-width: 420px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .form-row > input {
+    grid-column: 1;
+    max-width: none;
+  }
+}
+
 .coach-field input::placeholder,
 .history-timeline__dist-input input::placeholder {
   color: #5c6168;
@@ -763,7 +896,7 @@
 .history-setup {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 1.35rem;
 }
 
 .history-main {
@@ -1285,6 +1418,19 @@
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
+}
+
+.coach-logbook-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.coach-logbook-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ahd-text);
 }
 
 .coach-logbook-lead {

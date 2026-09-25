@@ -1,5 +1,6 @@
 import type { CoachSettings } from '../lib/settings';
 import { fetchLogbook, type LogbookDay } from '../lib/api';
+import { bindInfoToggles } from '../lib/info-toggle';
 
 const TZ = 'Pacific/Auckland';
 
@@ -128,13 +129,20 @@ export class LogbookPanel {
     if (!this.root) return;
     this.root.innerHTML =
       `<div class="coach-logbook">` +
-      `<p class="coach-logbook-lead">Daily sessions by crew — distance and capsizes (NZ calendar day).</p>` +
+      `<div class="coach-logbook-heading">` +
+      `<div class="coach-logbook-title-row">` +
+      `<h2 class="coach-logbook-title">Logbook</h2>` +
+      `<button type="button" class="info-btn" data-info-toggle aria-label="About Logbook" aria-expanded="false">i</button>` +
+      `</div>` +
+      `<p class="coach-logbook-lead info-help" hidden>Daily sessions by crew — distance and capsizes (NZ calendar day).</p>` +
+      `</div>` +
       `<div class="coach-logbook-toolbar">` +
       `<button type="button" class="coach-btn coach-btn--ghost" data-logbook-refresh>Refresh</button>` +
       `</div>` +
       `<p class="poll-line" data-logbook-status>—</p>` +
       `<div class="coach-logbook-list" data-logbook-list></div>` +
       `</div>`;
+    bindInfoToggles(this.root);
     this.root.querySelector('[data-logbook-refresh]')?.addEventListener('click', () => {
       void this.reload(true);
     });

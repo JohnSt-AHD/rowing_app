@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Manager UX preview · all screens</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ahd-bg: #e6e7e8;
+        --ahd-border: rgba(51, 49, 50, 0.12);
+        --ahd-accent: #111111;
+        --ahd-text: #1a1b1d;
+        --ahd-muted: #3f4349;
+        --ahd-safety: #1f6b4a;
+        --coach-border: rgba(51, 49, 50, 0.12);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Outfit, 'Segoe UI', system-ui, sans-serif;
+        background: linear-gradient(180deg, #c8c9cb 0%, #b4b6b9 100%);
+        color: var(--ahd-text);
+        padding: 1.25rem clamp(12px, 3vw, 28px) 2rem;
+      }
+      h1 { margin: 0 0 0.35rem; font-size: 1.35rem; font-weight: 700; }
+      .lead {
+        margin: 0 0 1rem;
+        color: #444;
+        font-size: 0.95rem;
+        max-width: 48rem;
+        line-height: 1.45;
+      }
+      .global-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin-bottom: 1.25rem;
+        padding: 0.3rem;
+        border-radius: 10px;
+        border: 1px solid rgba(0, 0, 0, 0.1);
+        background: rgba(255, 255, 255, 0.75);
+        max-width: 42rem;
+      }
+      .global-tabs button {
+        appearance: none;
+        border: 0;
+        border-radius: 7px;
+        padding: 0.45rem 0.75rem;
+        font: inherit;
+        font-weight: 650;
+        font-size: 0.82rem;
+        color: var(--ahd-muted);
+        background: transparent;
+        cursor: pointer;
+      }
+      .global-tabs button[aria-selected='true'] {
+        color: #fff;
+        background: var(--ahd-accent);
+      }
+      .frames { display: flex; flex-wrap: wrap; gap: 1.5rem; }
+      .frame-label {
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #333;
+        margin-bottom: 0.5rem;
+      }
+      .device {
+        width: 390px;
+        height: 780px;
+        max-width: calc(100vw - 2rem);
+        max-height: 82vh;
+        border-radius: 28px;
+        border: 3px solid #333132;
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+        overflow: hidden;
+        background: var(--ahd-bg);
+        display: flex;
+        flex-direction: column;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0 0.65rem;
+        height: 86px;
+        background: #0a1628;
+        border-bottom: 1px solid rgba(0, 229, 255, 0.18);
+        flex-shrink: 0;
+        overflow: visible;
+      }
+      .topbar img {
+        width: 97px;
+        height: 97px;
+        margin-block: -5.5px;
+        object-fit: contain;
+        flex-shrink: 0;
+      }
+      .brand {
+        font-size: 0.79rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(232, 244, 252, 0.72);
+        line-height: 1;
+      }
+      .product {
+        font-size: 1.32rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        color: #e8f4fc;
+        line-height: 1;
+      }
+      .monitor {
+        margin: 0 0 0.75rem;
+        padding: 0.65rem 0.85rem;
+        background: #fff;
+        border: 1px solid var(--coach-border);
+        border-radius: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        flex-shrink: 0;
+      }
+      .monitor span { font-size: 0.82rem; color: var(--ahd-muted); }
+      .monitor.monitoring {
+        border-color: rgba(31, 107, 74, 0.35);
+        background: #f3faf6;
+      }
+      .monitor.monitoring span { color: var(--ahd-safety); font-weight: 600; }
+      .screen {
+        flex: 1;
+        overflow: auto;
+        padding: 0.65rem 0.85rem 0.75rem;
+      }
+      .screen[hidden] { display: none !important; }
+      .tabs {
+        display: flex;
+        gap: 0.2rem;
+        padding: 0.45rem 0.5rem calc(0.45rem + env(safe-area-inset-bottom, 0));
+        background: #fff;
+        border-top: 1px solid rgba(17, 17, 17, 0.08);
+        flex-shrink: 0;
+      }
+      .tabs button {
+        flex: 1;
+        appearance: none;
+        border: 0;
+        background: transparent;
+        font: inherit;
+        font-size: 0.72rem;
+        font-weight: 600;
+        color: var(--ahd-muted);
+        padding: 0.55rem 0.15rem;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      .tabs button.active { background: #111; color: #fff; }
+
+      .pills { display: flex; gap: 0.45rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+      .pill {
+        display: inline-flex;
+        gap: 0.3rem;
+        align-items: baseline;
+        padding: 0.4rem 0.7rem;
+        background: #fff;
+        border: 1px solid var(--coach-border);
+        border-radius: 999px;
+        font-size: 0.8rem;
+        color: var(--ahd-muted);
+      }
+      .pill strong { color: #111; font-size: 0.95rem; }
+      .pill--water strong { color: var(--ahd-safety); }
+      .sec {
+        font-size: 0.72rem;
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--ahd-muted);
+        margin: 0.55rem 0 0.4rem;
+      }
+      .tickets { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+      .ticket {
+        display: grid;
+        grid-template-columns: 10px 1fr auto;
+        gap: 0.65rem;
+        align-items: start;
+        padding: 0.75rem 0.85rem;
+        background: #fff;
+        border: 1px solid var(--coach-border);
+        border-radius: 14px;
+      }
+      .ticket--water { border-color: rgba(31, 107, 74, 0.28); }
+      .ticket--ashore { opacity: 0.92; }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-top: 0.35rem;
+      }
+      .name { font-weight: 700; font-size: 0.95rem; }
+      .id { font-size: 0.78rem; color: var(--ahd-muted); }
+      .meta { font-size: 0.72rem; color: var(--ahd-muted); margin-top: 0.15rem; }
+      .status { text-align: right; }
+      .badge {
+        display: inline-block;
+        font-size: 0.68rem;
+        font-weight: 700;
+        padding: 0.2rem 0.45rem;
+        border-radius: 999px;
+      }
+      .badge--water { background: rgba(31, 107, 74, 0.12); color: var(--ahd-safety); }
+      .badge--ashore { background: rgba(17, 17, 17, 0.08); color: var(--ahd-muted); }
+      .stats { font-size: 0.75rem; color: var(--ahd-muted); margin-top: 0.35rem; }
+
+      .map-tools {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.55rem;
+        flex-wrap: wrap;
+      }
+      .map-fake {
+        position: relative;
+        height: 280px;
+        border-radius: 14px;
+        border: 1px solid var(--coach-border);
+        background:
+          linear-gradient(180deg, rgba(255,255,255,0.55), rgba(255,255,255,0.2)),
+          repeating-linear-gradient(0deg, transparent, transparent 27px, rgba(17,17,17,0.04) 28px),
+          repeating-linear-gradient(90deg, transparent, transparent 27px, rgba(17,17,17,0.04) 28px),
+          #dce8e4;
+        overflow: hidden;
+      }
+      .map-fake::after {
+        content: 'Lake Karapiro · sample';
+        position: absolute;
+        left: 0.65rem;
+        bottom: 0.55rem;
+        font-size: 0.7rem;
+        font-weight: 600;
+        color: var(--ahd-muted);
+        background: rgba(255,255,255,0.85);
+        padding: 0.2rem 0.45rem;
+        border-radius: 6px;
+      }
+      .pin {
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid #fff;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+        transform: translate(-50%, -50%);
+      }
+      .chart-fake {
+        margin-top: 0.65rem;
+        height: 120px;
+        border-radius: 10px;
+        border: 1px solid var(--coach-border);
+        background: #fff;
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        padding: 0.65rem 0.75rem;
+      }
+      .chart-fake span {
+        flex: 1;
+        border-radius: 3px 3px 0 0;
+        background: #0d9488;
+        opacity: 0.75;
+      }
+
+      .race-field { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.65rem; }
+      .race-field__label { font-size: 0.78rem; font-weight: 650; color: var(--ahd-muted); }
+      .race-select, .coach-field input, .coach-field select, .form-row > input {
+        padding: 8px 12px;
+        border-radius: 6px;
+        border: 1px solid var(--coach-border);
+        background: #f4f4f5;
+        color: var(--ahd-text);
+        font: inherit;
+        width: 100%;
+      }
+      .race-toolbar__row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+        align-items: center;
+        margin-bottom: 0.65rem;
+      }
+      .race-check { font-size: 0.82rem; color: var(--ahd-muted); display: inline-flex; gap: 0.35rem; align-items: center; }
+      .race-meta { margin: 0 0 0.65rem; font-size: 0.82rem; color: var(--ahd-muted); }
+      .race-section-title {
+        margin: 0 0 0.45rem;
+        font-size: 0.85rem;
+        font-weight: 650;
+      }
+      .race-map-card, .race-chart-card {
+        background: #fff;
+        border: 1px solid var(--coach-border);
+        border-radius: 12px;
+        padding: 0.65rem;
+        margin-bottom: 0.65rem;
+      }
+      .splits {
+        display: grid;
+        grid-template-columns: 1.2fr repeat(3, 1fr);
+        gap: 0.35rem;
+        font-size: 0.72rem;
+        margin-bottom: 0.75rem;
+        background: #fff;
+        border: 1px solid var(--coach-border);
+        border-radius: 10px;
+        padding: 0.55rem;
+      }
+      .splits strong { font-size: 0.78rem; }
+      .splits .head { color: var(--ahd-muted); font-weight: 650; }
+
+      .coach-section-title {
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: var(--ahd-text);
+        margin: 1rem 0 0.65rem;
+      }
+      .coach-section-title:first-child { margin-top: 0; }
+      .form-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(8rem, 15rem);
+        align-items: center;
+        column-gap: 0.75rem;
+        row-gap: 0.4rem;
+        margin-bottom: 0.85rem;
+      }
+      .form-row__meta { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
+      .form-row__label { font-size: 13px; font-weight: 600; color: var(--ahd-muted); }
+      .form-row > input {
+        grid-column: 2;
+        max-width: 15rem;
+        height: 2.5rem;
+        margin: 0;
+      }
+      .form-row__help, .info-help {
+        margin: 0;
+        padding: 0.45rem 0.65rem;
+        border-radius: 6px;
+        background: #f4f4f5;
+        border: 1px solid var(--coach-border);
+        font-size: 0.78rem;
+        line-height: 1.4;
+        color: var(--ahd-muted);
+      }
+      .form-row .info-help { grid-column: 1 / -1; }
+      .info-btn {
+        flex: 0 0 auto;
+        width: 1.35rem;
+        height: 1.35rem;
+        padding: 0;
+        border-radius: 999px;
+        border: 1px solid var(--coach-border);
+        background: #fff;
+        color: var(--ahd-accent);
+        font-size: 0.72rem;
+        font-weight: 700;
+        font-style: italic;
+        font-family: Georgia, 'Times New Roman', serif;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .coach-heading-with-info { margin: 1rem 0 0.65rem; }
+      .coach-heading-with-info .coach-section-title { margin: 0; }
+      .coach-section-title-row { display: flex; align-items: center; gap: 0.4rem; }
+      .coach-heading-with-info .info-help { margin-top: 0.5rem; }
+      .coach-settings-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 1.35rem;
+        margin: 0.35rem 0 0.5rem;
+      }
+      .coach-btn {
+        appearance: none;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: 0.55rem 0.9rem;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      .coach-btn--primary { background: #111; color: #fff; }
+      .coach-btn--ghost {
+        background: #fff;
+        color: #111;
+        border-color: var(--coach-border);
+      }
+      .coach-btn--ghost.active, .coach-btn--ghost.coach-btn--active {
+        border-color: #111;
+        background: rgba(17, 17, 17, 0.06);
+      }
+      .coach-btn.block { width: 100%; }
+      .history-devices-field {
+        border: 1px solid var(--coach-border);
+        border-radius: 10px;
+        padding: 0.65rem 0.85rem;
+        margin: 0 0 0.5rem;
+        background: #fff;
+      }
+      .fieldset-legend-with-info {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--ahd-muted);
+        padding: 0 0.35rem;
+      }
+      .history-devices-field .info-help { margin-bottom: 0.55rem; }
+      .history-device-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem; }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.35rem 0.55rem;
+        border-radius: 999px;
+        background: #fff;
+        border: 1px solid var(--coach-border);
+        font-size: 0.8rem;
+      }
+      .history-setup { display: flex; flex-direction: column; gap: 1.35rem; }
+      .coach-field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--ahd-muted);
+      }
+      .coach-logbook-title-row { display: flex; align-items: center; gap: 0.4rem; }
+      .coach-logbook-title {
+        margin: 0;
+        font-size: 0.95rem;
+        font-weight: 600;
+      }
+      .coach-logbook-lead {
+        margin: 0.5rem 0 0;
+        font-size: 0.88rem;
+        color: var(--ahd-muted);
+        line-height: 1.4;
+      }
+      .day {
+        background: #fff;
+        border: 1px solid var(--coach-border);
+        border-radius: 14px;
+        padding: 0.75rem 0.9rem;
+        margin: 0.55rem 0 0;
+      }
+      .day strong { display: block; font-size: 0.92rem; }
+      .day span { font-size: 0.8rem; color: var(--ahd-muted); }
+      .poll-line { margin: 0 0 0.5rem; font-size: 0.82rem; color: var(--ahd-muted); }
+      .hint { margin: 0.75rem 0 0; font-size: 0.78rem; color: #555; }
+      @media (max-width: 420px) {
+        .form-row { grid-template-columns: 1fr; }
+        .form-row > input { grid-column: 1; max-width: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Manager UX preview</h1>
+    <p class="lead">
+      Matches the live app chrome: navy top bar with the real <strong>CrewSight</strong> logo,
+      light body theme, Start/Stop monitoring on <strong>Home only</strong>, and client-style
+      <strong>(i)</strong> tips on Settings / History / Logbook.
+    </p>
+
+    <div class="global-tabs" role="tablist" aria-label="Preview screen">
+      <button type="button" data-preview-tab="home" aria-selected="true">Home</button>
+      <button type="button" data-preview-tab="map" aria-selected="false">Map</button>
+      <button type="button" data-preview-tab="logbook" aria-selected="false">Logbook</button>
+      <button type="button" data-preview-tab="race" aria-selected="false">Race</button>
+      <button type="button" data-preview-tab="history" aria-selected="false">History</button>
+      <button type="button" data-preview-tab="settings" aria-selected="false">Settings</button>
+    </div>
+
+    <div class="frames">
+      <div>
+        <div class="frame-label">Phone · portrait</div>
+        <div class="device" aria-label="Manager phone preview">
+          <header class="topbar">
+            <img
+              src="./assets/crewsight/crewsight-logo-icon-only-manager-color.png"
+              alt=""
+              width="97"
+              height="97"
+            />
+            <div>
+              <div class="brand">CrewSight</div>
+              <div class="product">Manager</div>
+            </div>
+          </header>
+
+          <!-- HOME -->
+          <div class="screen" data-screen="home">
+            <div class="monitor monitoring" data-monitor>
+              <span>Monitoring · live</span>
+              <button type="button" class="coach-btn coach-btn--ghost">Stop monitoring</button>
+            </div>
+            <p class="poll-line">Updated just now</p>
+            <div class="pills">
+              <span class="pill pill--water"><strong>2</strong> on water</span>
+              <span class="pill"><strong>4</strong> crews</span>
+            </div>
+            <div class="sec">On water</div>
+            <ul class="tickets">
+              <li class="ticket ticket--water">
+                <span class="dot" style="background:#0d9488"></span>
+                <div>
+                  <div class="name">Tom Murray</div>
+                  <div class="id">M1x TM</div>
+                  <div class="meta">GPS live</div>
+                </div>
+                <div class="status">
+                  <span class="badge badge--water">On water</span>
+                  <div class="stats">18.4 km/h · 28 spm</div>
+                </div>
+              </li>
+              <li class="ticket ticket--water">
+                <span class="dot" style="background:#2563eb"></span>
+                <div>
+                  <div class="name">Emma / Hannah</div>
+                  <div class="id">W2x EH</div>
+                  <div class="meta">GPS live</div>
+                </div>
+                <div class="status">
+                  <span class="badge badge--water">On water</span>
+                  <div class="stats">16.1 km/h · 26 spm</div>
+                </div>
+              </li>
+            </ul>
+            <div class="sec">Ashore</div>
+            <ul class="tickets">
+              <li class="ticket ticket--ashore">
+                <span class="dot" style="background:#b45309"></span>
+                <div>
+                  <div class="name">Junior Squad</div>
+                  <div class="id">M4x JS</div>
+                  <div class="meta">Last seen 42m ago</div>
+                </div>
+                <div class="status"><span class="badge badge--ashore">Ashore</span></div>
+              </li>
+              <li class="ticket ticket--ashore">
+                <span class="dot" style="background:#7c3aed"></span>
+                <div>
+                  <div class="name">Lucy</div>
+                  <div class="id">W1x LS</div>
+                  <div class="meta">Offline</div>
+                </div>
+                <div class="status"><span class="badge badge--ashore">Ashore</span></div>
+              </li>
+            </ul>
+          </div>
+
+          <!-- MAP -->
+          <div class="screen" data-screen="map" hidden>
+            <p class="poll-line">Updated just now</p>
+            <div class="map-tools">
+              <button type="button" class="coach-btn coach-btn--ghost coach-btn--active">Follow fleet</button>
+              <span class="pill pill--water"><strong>2</strong> on water</span>
+            </div>
+            <div class="map-fake" aria-label="Sample fleet map">
+              <span class="pin" style="left:42%; top:48%; background:#0d9488"></span>
+              <span class="pin" style="left:55%; top:58%; background:#2563eb"></span>
+            </div>
+            <div class="chart-fake" aria-label="Sample live speed chart">
+              <span style="height:35%"></span>
+              <span style="height:48%"></span>
+              <span style="height:55%"></span>
+              <span style="height:62%"></span>
+              <span style="height:58%"></span>
+              <span style="height:70%"></span>
+              <span style="height:66%"></span>
+              <span style="height:72%"></span>
+              <span style="height:68%"></span>
+              <span style="height:75%"></span>
+              <span style="height:80%"></span>
+              <span style="height:78%"></span>
+            </div>
+          </div>
+
+          <!-- LOGBOOK -->
+          <div class="screen" data-screen="logbook" hidden>
+            <div class="coach-logbook-heading">
+              <div class="coach-logbook-title-row">
+                <h2 class="coach-logbook-title">Logbook</h2>
+                <button type="button" class="info-btn" data-info-toggle aria-label="About Logbook" aria-expanded="false">i</button>
+              </div>
+              <p class="coach-logbook-lead info-help" hidden>
+                Daily sessions by crew — distance and capsizes (NZ calendar day).
+              </p>
+            </div>
+            <div style="margin:0.65rem 0">
+              <button type="button" class="coach-btn coach-btn--ghost">Refresh</button>
+            </div>
+            <div class="day">
+              <strong>Fri 25 Sep 2026</strong>
+              <span>4 crews · 38.2 km · 0 capsizes</span>
+            </div>
+            <div class="day">
+              <strong>Thu 24 Sep 2026</strong>
+              <span>6 crews · 51.0 km · 1 capsize</span>
+            </div>
+            <div class="day">
+              <strong>Wed 23 Sep 2026</strong>
+              <span>3 crews · 22.7 km · 0 capsizes</span>
+            </div>
+          </div>
+
+          <!-- RACE -->
+          <div class="screen" data-screen="race" hidden>
+            <p class="poll-line">Updated just now</p>
+            <label class="race-field">
+              <span class="race-field__label">Course</span>
+              <select class="race-select">
+                <option>Karapiro 2000m</option>
+                <option>Karapiro 1000m</option>
+              </select>
+            </label>
+            <div class="race-toolbar__row">
+              <label class="race-check"><input type="checkbox" /> Reverse</label>
+              <label class="race-check"><input type="checkbox" checked /> Rolling start</label>
+              <button type="button" class="coach-btn coach-btn--ghost">Reset</button>
+            </div>
+            <p class="race-meta">Load timing lines using your ingest token.</p>
+            <div class="splits">
+              <span class="head">Crew</span>
+              <span class="head">500</span>
+              <span class="head">1000</span>
+              <span class="head">Finish</span>
+              <strong>W2x EH</strong>
+              <span>1:46.2</span>
+              <span>3:34.8</span>
+              <span>—</span>
+              <strong>M1x TM</strong>
+              <span>1:48.1</span>
+              <span>—</span>
+              <span>—</span>
+            </div>
+            <div class="race-map-card">
+              <h3 class="race-section-title">Course map</h3>
+              <div class="map-fake" style="height:160px">
+                <span class="pin" style="left:28%; top:52%; background:#2563eb"></span>
+                <span class="pin" style="left:46%; top:48%; background:#0d9488"></span>
+              </div>
+            </div>
+            <div class="race-chart-card">
+              <h3 class="race-section-title">Pace vs distance</h3>
+              <div class="chart-fake" style="margin:0;height:100px">
+                <span style="height:70%;background:#2563eb"></span>
+                <span style="height:66%;background:#2563eb"></span>
+                <span style="height:62%;background:#2563eb"></span>
+                <span style="height:64%;background:#2563eb"></span>
+                <span style="height:60%;background:#2563eb"></span>
+                <span style="height:55%;background:#0d9488"></span>
+                <span style="height:58%;background:#0d9488"></span>
+                <span style="height:52%;background:#0d9488"></span>
+                <span style="height:50%;background:#0d9488"></span>
+                <span style="height:48%;background:#0d9488"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- HISTORY -->
+          <div class="screen" data-screen="history" hidden>
+            <h2 class="coach-section-title">Session review</h2>
+            <div class="history-setup">
+              <fieldset class="history-devices-field">
+                <legend class="fieldset-legend-with-info">
+                  Devices
+                  <button type="button" class="info-btn" data-info-toggle aria-label="About Devices" aria-expanded="false">i</button>
+                </legend>
+                <p class="info-help" hidden>
+                  Select one or more devices. Load the device list or type IDs below.
+                </p>
+                <div class="history-device-list">
+                  <label class="chip"><input type="checkbox" checked /> W2X-EH</label>
+                  <label class="chip"><input type="checkbox" /> M1X-TM</label>
+                  <label class="chip"><input type="checkbox" /> M4X-JS</label>
+                </div>
+                <label class="coach-field">
+                  Add device ID
+                  <input type="text" placeholder="e.g. A2" />
+                </label>
+                <button type="button" class="coach-btn coach-btn--ghost block" style="margin-top:0.5rem">Refresh device list</button>
+              </fieldset>
+              <button type="button" class="coach-btn coach-btn--ghost block">Load sessions (first device)</button>
+              <label class="coach-field">
+                Session
+                <select>
+                  <option>Today · 06:42 · 12.4 km</option>
+                  <option>Yesterday · 17:10 · 8.1 km</option>
+                </select>
+              </label>
+              <button type="button" class="coach-btn coach-btn--primary block">Load trace &amp; charts</button>
+            </div>
+          </div>
+
+          <!-- SETTINGS -->
+          <div class="screen" data-screen="settings" hidden>
+            <h2 class="coach-section-title">Connection</h2>
+            <div class="form-row">
+              <div class="form-row__meta">
+                <span class="form-row__label">URL</span>
+                <button type="button" class="info-btn" data-info-toggle aria-label="About URL" aria-expanded="false">i</button>
+              </div>
+              <input type="url" value="https://rowing-app-recorder-pwa.vercel.app" readonly />
+              <p class="form-row__help info-help" hidden>
+                Same URL and password as the rower app. Stop monitoring before changing the URL.
+              </p>
+            </div>
+            <div class="form-row">
+              <div class="form-row__meta">
+                <span class="form-row__label">Password</span>
+                <button type="button" class="info-btn" data-info-toggle aria-label="About Password" aria-expanded="false">i</button>
+              </div>
+              <input type="password" value="••••••••••••" readonly />
+              <p class="form-row__help info-help" hidden>
+                Ingest access password (Bearer token). Ask your club admin if you do not have one.
+              </p>
+            </div>
+            <div class="coach-settings-actions">
+              <button type="button" class="coach-btn coach-btn--primary block">Save settings</button>
+            </div>
+            <div class="coach-heading-with-info">
+              <div class="coach-section-title-row">
+                <h2 class="coach-section-title">Session history</h2>
+                <button type="button" class="info-btn" data-info-toggle aria-label="About Session history" aria-expanded="false">i</button>
+              </div>
+              <p class="info-help" hidden>
+                GPS track review for a single outing (separate from the daily logbook).
+              </p>
+            </div>
+            <div class="coach-settings-actions">
+              <button type="button" class="coach-btn coach-btn--ghost block" data-open-history>Open session review</button>
+            </div>
+            <p class="hint">Help text stays hidden until you tap <em>i</em> — same pattern as the rower client.</p>
+          </div>
+
+          <nav class="tabs" aria-label="Manager sections">
+            <button type="button" class="active" data-nav="home">Home</button>
+            <button type="button" data-nav="map">Map</button>
+            <button type="button" data-nav="logbook">Logbook</button>
+            <button type="button" data-nav="race">Race</button>
+            <button type="button" data-nav="settings">Settings</button>
+          </nav>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function bindInfoToggles(root) {
+        root.querySelectorAll('[data-info-toggle]').forEach((btn) => {
+          btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const host =
+              btn.closest(
+                '.form-row, .coach-heading-with-info, .history-devices-field, .coach-logbook-heading, fieldset',
+              ) || btn.parentElement;
+            const help = host?.querySelector('.info-help');
+            if (!help) return;
+            help.hidden = !help.hidden;
+            btn.setAttribute('aria-expanded', help.hidden ? 'false' : 'true');
+          });
+        });
+      }
+
+      const bottomFor = {
+        home: 'home',
+        map: 'map',
+        logbook: 'logbook',
+        race: 'race',
+        history: 'settings',
+        settings: 'settings',
+      };
+
+      function setScreen(name) {
+        document.querySelectorAll('[data-screen]').forEach((el) => {
+          el.hidden = el.getAttribute('data-screen') !== name;
+        });
+        document.querySelectorAll('[data-preview-tab]').forEach((btn) => {
+          btn.setAttribute(
+            'aria-selected',
+            btn.getAttribute('data-preview-tab') === name ? 'true' : 'false',
+          );
+        });
+        const nav = bottomFor[name] || 'home';
+        document.querySelectorAll('.tabs button').forEach((btn) => {
+          btn.classList.toggle('active', btn.getAttribute('data-nav') === nav);
+        });
+      }
+
+      bindInfoToggles(document);
+      document.querySelectorAll('[data-preview-tab]').forEach((btn) => {
+        btn.addEventListener('click', () => setScreen(btn.getAttribute('data-preview-tab')));
+      });
+      document.querySelectorAll('.tabs button[data-nav]').forEach((btn) => {
+        btn.addEventListener('click', () => setScreen(btn.getAttribute('data-nav')));
+      });
+      document.querySelector('[data-open-history]')?.addEventListener('click', () => setScreen('history'));
+    </script>
+  </body>
+</html>

@@ -33,7 +33,13 @@ import {
   resolveStrokeRate,
   syncMapTracks,
 } from '../lib/map-smooth';
-import { loadSettings, saveSettings, DEFAULT_API_BASE_URL, type CoachSettings } from '../lib/settings';
+import {
+  loadSettings,
+  saveSettings,
+  DEFAULT_API_BASE_URL,
+  type CoachSettings,
+} from '../lib/settings';
+import { bindInfoToggles } from '../lib/info-toggle';
 import {
   gpsFixState,
   gpsStatusLabel,
@@ -924,8 +930,8 @@ export function mountApp(root: HTMLElement): void {
             src="${asset('assets/crewsight/crewsight-logo-icon-only-manager-color.png')}"
             alt=""
             class="coach-topbar__icon"
-            width="40"
-            height="40"
+            width="97"
+            height="97"
           />
           <div class="coach-topbar__text">
             <span class="coach-topbar__brand">CrewSight</span>
@@ -944,9 +950,9 @@ export function mountApp(root: HTMLElement): void {
             <span data-capsize-text>${caps > 0 ? capsizeBannerText() : ''}</span>
             <button type="button" class="capsize-banner__clear" data-capsize-clear>Acknowledge / clear</button>
           </div>
-          ${monitorBarHtml()}
         </div>
         <section class="coach-panel coach-panel--dashboard" data-panel="dashboard" ${tab === 'dashboard' ? '' : 'hidden'}>
+          ${monitorBarHtml()}
           <p class="poll-line" data-poll-status>—</p>
           <div class="coach-dashboard">
             <div class="coach-dashboard__summary">
@@ -980,24 +986,35 @@ export function mountApp(root: HTMLElement): void {
           <div class="race-panel-root" data-race-root></div>
         </section>
         <section class="coach-panel coach-panel--history" data-panel="history" ${tab === 'history' ? '' : 'hidden'}>
-          <h2 class="coach-section-title">Load session</h2>
-          <div class="history-setup" data-history-setup-root></div>
           <h2 class="coach-section-title">Session review</h2>
+          <div class="history-setup" data-history-setup-root></div>
           <div class="history-panel" data-history-track-root></div>
         </section>
         <section class="coach-panel" data-panel="settings" ${tab === 'settings' ? '' : 'hidden'}>
           <h2 class="coach-section-title">Connection</h2>
-          <label class="coach-field">API base URL
-            <input type="url" id="apiBase" value="${esc(settings.apiBaseUrl)}" placeholder="${esc(DEFAULT_API_BASE_URL)}" />
-          </label>
-          <label class="coach-field">Ingest token (Bearer)
-            <input type="password" id="ingestToken" value="${esc(settings.ingestToken)}" autocomplete="off" />
-          </label>
-          <button type="button" class="coach-btn coach-btn--primary" data-save-settings>Save settings</button>
-          <p class="poll-line">Same URL and token as the rower app / dashboard. Monitoring must be stopped to change URL safely.</p>
-          <h2 class="coach-section-title">Session history</h2>
-          <p class="poll-line">GPS track review for a single outing (separate from the daily logbook).</p>
-          <button type="button" class="coach-btn coach-btn--ghost" data-open-history>Open session review</button>
+          ${settingsField(
+            'URL',
+            'Same URL and password as the rower app. Stop monitoring before changing the URL.',
+            `<input type="url" id="apiBase" value="${esc(settings.apiBaseUrl)}" placeholder="${esc(DEFAULT_API_BASE_URL)}" />`,
+          )}
+          ${settingsField(
+            'Password',
+            'Ingest access password (Bearer token). Ask your club admin if you do not have one.',
+            `<input type="password" id="ingestToken" value="${esc(settings.ingestToken)}" autocomplete="off" />`,
+          )}
+          <div class="coach-settings-actions">
+            <button type="button" class="coach-btn coach-btn--primary" data-save-settings>Save settings</button>
+          </div>
+          <div class="coach-heading-with-info">
+            <div class="coach-section-title-row">
+              <h2 class="coach-section-title">Session history</h2>
+              <button type="button" class="info-btn" data-info-toggle aria-label="About Session history" aria-expanded="false">i</button>
+            </div>
+            <p class="info-help" hidden>GPS track review for a single outing (separate from the daily logbook).</p>
+          </div>
+          <div class="coach-settings-actions">
+            <button type="button" class="coach-btn coach-btn--ghost" data-open-history>Open session review</button>
+          </div>
         </section>
         <nav class="coach-tabs coach-tabs--bottom" aria-label="Manager sections">
           <button type="button" class="coach-tab coach-tab--home ${tab === 'dashboard' ? 'active' : ''}" data-tab="dashboard">Home</button>
@@ -1007,6 +1024,8 @@ export function mountApp(root: HTMLElement): void {
           <button type="button" class="coach-tab ${tab === 'settings' || tab === 'history' ? 'active' : ''}" data-tab="settings">Settings</button>
         </nav>
       </div>`;
+
+    bindInfoToggles(root);
 
     root.querySelector('[data-map-follow]')?.addEventListener('click', () => {
       mapFollowFleet = !mapFollowFleet;
@@ -1142,4 +1161,17 @@ function esc(s: unknown): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/"/g, '&quot;');
+}
+
+function settingsField(label: string, info: string, inputHtml: string): string {
+  return `
+      <div class="form-row">
+        <div class="form-row__meta">
+          <span class="form-row__label">${label}</span>
+          <button type="button" class="info-btn" data-info-toggle aria-label="About ${label}" aria-expanded="false">i</button>
+        </div>
+        ${inputHtml}
+        <p class="form-row__help info-help" hidden>${esc(info)}</p>
+      </div>
+    `;
 }
