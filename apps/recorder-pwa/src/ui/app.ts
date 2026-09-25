@@ -226,7 +226,7 @@ export function mountApp(root: HTMLElement): void {
       clearSessionSpeedBuffer();
       destroySessionMap();
       fsTab = 'metrics';
-      void exitStageFullscreen();
+      await exitStageFullscreen();
       stopBackgroundSession();
       await controller?.stop();
       controller = null;
@@ -732,7 +732,10 @@ export function mountApp(root: HTMLElement): void {
             <button type="button" class="session-fs-tab" data-fs-tab="speed" aria-selected="${fsTab === 'speed' ? 'true' : 'false'}">Speed</button>
             <button type="button" class="session-fs-tab" data-fs-tab="map" aria-selected="${fsTab === 'map' ? 'true' : 'false'}">Map</button>
           </nav>
-          <button type="button" class="hub-btn hub-btn--ghost session-live-hud__fs" data-action="toggle-fullscreen">Fullscreen</button>
+          <div class="session-fs-chrome__actions">
+            <button type="button" class="hub-btn hub-btn--danger session-fs-chrome__stop" data-action="stop">Stop</button>
+            <button type="button" class="hub-btn hub-btn--ghost session-live-hud__fs" data-action="toggle-fullscreen">Fullscreen</button>
+          </div>
         </div>
         <div class="session-live-hud__alert" data-hud-capsize ${capsizeActive ? '' : 'hidden'} role="alert">
           ⚠ CAPSIZE — boat tipped. Check crew now.
@@ -1202,7 +1205,7 @@ export function mountApp(root: HTMLElement): void {
             clearSessionSpeedBuffer();
             destroySessionMap();
             fsTab = 'metrics';
-            void exitStageFullscreen();
+            await exitStageFullscreen();
             stopBackgroundSession();
             const settingsNow = loadSettings();
             if (IS_NATIVE && settingsNow.geofenceSessionControl !== false) {
@@ -1436,25 +1439,27 @@ export function mountApp(root: HTMLElement): void {
       }
     });
 
-    root.querySelector('[data-action="stop"]')?.addEventListener('click', async () => {
-      if (syncTimer) clearInterval(syncTimer);
-      stopHudTimer();
-      sessionStartedAt = null;
-      speedAvg.clear();
-      strokeRateAvg.clear();
-      clearSessionSpeedBuffer();
-      destroySessionMap();
-      fsTab = 'metrics';
-      void exitStageFullscreen();
-      stopBackgroundSession();
-      await controller?.stop();
-      controller = null;
-      recording = false;
-      capsizeActive = false;
-      backgroundStatus = 'foreground';
-      clearRecordingActive();
-      await runSync(true);
-      render();
+    root.querySelectorAll('[data-action="stop"]').forEach((el) => {
+      el.addEventListener('click', async () => {
+        if (syncTimer) clearInterval(syncTimer);
+        stopHudTimer();
+        sessionStartedAt = null;
+        speedAvg.clear();
+        strokeRateAvg.clear();
+        clearSessionSpeedBuffer();
+        destroySessionMap();
+        fsTab = 'metrics';
+        await exitStageFullscreen();
+        stopBackgroundSession();
+        await controller?.stop();
+        controller = null;
+        recording = false;
+        capsizeActive = false;
+        backgroundStatus = 'foreground';
+        clearRecordingActive();
+        await runSync(true);
+        render();
+      });
     });
 
     root.querySelectorAll('[data-fs-tab]').forEach((btn) => {
