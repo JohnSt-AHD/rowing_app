@@ -8,8 +8,8 @@
   --ahd-border: rgba(51, 49, 50, 0.12);
   --ahd-accent: #111111;
   --ahd-accent-dim: #333132;
-  --ahd-text: #1a1b1d;
-  --ahd-muted: #2f3338;
+  --ahd-text: #111111;
+  --ahd-muted: #1a1b1d;
   --ahd-safety: #1f6b4a;
   --ahd-danger: #b42318;
   --cs-teal: #0d9488;
@@ -17,8 +17,8 @@
   --cs-logo-bg: #ffffff;
   --hub-canvas: #e6e7e8;
   --hub-ink: #111111;
-  --hub-ink-soft: #1a1b1d;
-  --hub-mute: #2f3338;
+  --hub-ink-soft: #111111;
+  --hub-mute: #1a1b1d;
   --hub-white: #ffffff;
   --hub-radius: 18px;
 }

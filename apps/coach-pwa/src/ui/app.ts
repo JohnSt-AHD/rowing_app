@@ -158,31 +158,34 @@ export function mountApp(root: HTMLElement): void {
     if (text) text.textContent = caps.length > 0 ? capsizeBannerText() : '';
   }
 
-  function monitorStatusHtml(): string {
+  function monitorBarHtml(): string {
+    const on = monitoring && !quietHoursActive;
+    let statusInner: string;
+    let helpHtml = '';
     if (quietHoursActive) {
-      return `<span>${esc(QUIET_HOURS_MESSAGE)}</span>`;
-    }
-    if (monitoring) {
+      statusInner = `<span>${esc(QUIET_HOURS_MESSAGE)}</span>`;
+    } else if (monitoring) {
       const label = serviceRunning
         ? '● Monitoring fleet (background active)'
         : '● Monitoring (foreground poll only)';
-      return `<span>${esc(label)}</span>`;
+      statusInner = `<span>${esc(label)}</span>`;
+    } else {
+      statusInner = `
+        <span>Monitoring off</span>
+        <button type="button" class="info-btn" data-info-toggle aria-label="About monitoring off" aria-expanded="false">i</button>
+      `;
+      helpHtml =
+        `<p class="info-help" hidden>No background alerts while monitoring is off. Start monitoring to receive capsize alerts when the app is in the background.</p>`;
     }
-    return `
-      <span>Monitoring off</span>
-      <button type="button" class="info-btn" data-info-toggle aria-label="About monitoring off" aria-expanded="false">i</button>
-      <p class="info-help" hidden>No background alerts while monitoring is off. Start monitoring to receive capsize alerts when the app is in the background.</p>
-    `;
-  }
-
-  function monitorBarHtml(): string {
-    const on = monitoring && !quietHoursActive;
     return (
       `<div class="coach-monitor-bar ${on ? 'monitoring' : ''}" data-monitor-bar>` +
-      `<div class="status-line ${on ? 'on' : ''}">${monitorStatusHtml()}</div>` +
+      `<div class="coach-monitor-bar__main">` +
+      `<div class="status-line ${on ? 'on' : ''}">${statusInner}</div>` +
       (monitoring
         ? `<button type="button" class="coach-btn coach-btn--danger" data-stop-monitor>Stop monitoring</button>`
         : `<button type="button" class="coach-btn coach-btn--primary" data-start-monitor>Start monitoring</button>`) +
+      `</div>` +
+      helpHtml +
       `</div>`
     );
   }

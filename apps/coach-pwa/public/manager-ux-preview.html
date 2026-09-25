@@ -151,25 +151,29 @@
         border: 1px solid var(--coach-border);
         border-radius: 14px;
         display: flex;
-        align-items: center;
-        justify-content: space-between;
+        flex-direction: column;
         gap: 0.5rem;
         flex-shrink: 0;
       }
-      .monitor .status-line {
+      .monitor-main {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.65rem;
+      }
+      .monitor .status-line {
+        display: inline-flex;
+        flex-wrap: nowrap;
         align-items: center;
         gap: 0.4rem;
-        font-size: 0.88rem;
-        font-weight: 600;
-        color: var(--ahd-text);
+        font-size: 0.9rem;
+        font-weight: 700;
+        color: #111;
         flex: 1;
         min-width: 0;
       }
       .monitor .status-line.on { color: var(--ahd-safety); }
-      .monitor .status-line .info-help { flex: 1 1 100%; }
-      .monitor span { font-size: 0.82rem; color: var(--ahd-muted); }
       .monitor.monitoring {
         border-color: rgba(31, 107, 74, 0.35);
         background: #f3faf6;
@@ -550,10 +554,12 @@
           <!-- HOME -->
           <div class="screen" data-screen="home">
             <div class="monitor monitoring" data-monitor>
-              <span class="status-line on" data-monitor-status>
-                <span>● Monitoring fleet (background active)</span>
-              </span>
-              <button type="button" class="coach-btn coach-btn--ghost" data-toggle-monitor>Stop monitoring</button>
+              <div class="monitor-main">
+                <span class="status-line on" data-monitor-status>
+                  <span>● Monitoring fleet (background active)</span>
+                </span>
+                <button type="button" class="coach-btn coach-btn--ghost" data-toggle-monitor>Stop monitoring</button>
+              </div>
             </div>
             <p class="poll-line">Updated just now</p>
             <div class="pills">
@@ -861,20 +867,29 @@
         if (!monitorEl || !monitorStatus || !monitorBtn || !monitoringPill) return;
         monitorEl.classList.toggle('monitoring', monitoringOn);
         monitoringPill.hidden = !monitoringOn;
+        let help = monitorEl.querySelector(':scope > .info-help');
         if (monitoringOn) {
           monitorStatus.className = 'status-line on';
           monitorStatus.innerHTML = '<span>● Monitoring fleet (background active)</span>';
           monitorBtn.textContent = 'Stop monitoring';
           monitorBtn.className = 'coach-btn coach-btn--ghost';
+          help?.remove();
         } else {
           monitorStatus.className = 'status-line';
           monitorStatus.innerHTML =
             '<span>Monitoring off</span>' +
-            '<button type="button" class="info-btn" data-info-toggle aria-label="About monitoring off" aria-expanded="false">i</button>' +
-            '<p class="info-help" hidden>No background alerts while monitoring is off. Start monitoring to receive capsize alerts when the app is in the background.</p>';
+            '<button type="button" class="info-btn" data-info-toggle aria-label="About monitoring off" aria-expanded="false">i</button>';
           monitorBtn.textContent = 'Start monitoring';
           monitorBtn.className = 'coach-btn coach-btn--primary';
-          bindInfoToggles(monitorStatus);
+          if (!help) {
+            help = document.createElement('p');
+            help.className = 'info-help';
+            help.hidden = true;
+            help.textContent =
+              'No background alerts while monitoring is off. Start monitoring to receive capsize alerts when the app is in the background.';
+            monitorEl.appendChild(help);
+          }
+          bindInfoToggles(monitorEl);
         }
       }
       monitoringPill.hidden = false;

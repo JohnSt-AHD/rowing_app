@@ -107,11 +107,8 @@
   border: 1px solid var(--coach-border);
   border-radius: 14px;
   display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem 0.75rem;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .coach-monitor-bar.monitoring {
@@ -119,13 +116,23 @@
   background: rgba(31, 107, 74, 0.08);
 }
 
-.coach-monitor-bar .status-line {
-  font-size: 0.88rem;
-  font-weight: 600;
-  color: var(--ahd-text);
-  flex: 1 1 12rem;
+.coach-monitor-bar__main {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  width: 100%;
+}
+
+.coach-monitor-bar .status-line {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #111111;
+  flex: 1 1 auto;
+  display: inline-flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.4rem;
   min-width: 0;
@@ -133,16 +140,16 @@
 
 .coach-monitor-bar .status-line.on {
   color: var(--ahd-safety);
-  font-weight: 700;
 }
 
-.coach-monitor-bar .status-line .info-help {
-  flex: 1 1 100%;
+.coach-monitor-bar > .info-help {
+  margin: 0;
 }
 
 .coach-monitor-bar .coach-btn {
   flex: 0 0 auto;
   min-height: 44px;
+  white-space: nowrap;
 }
 
 .coach-tabs {
@@ -724,8 +731,8 @@
   gap: 0.25rem;
   margin-bottom: 0.75rem;
   font-size: 13px;
-  font-weight: 600;
-  color: var(--ahd-muted);
+  font-weight: 650;
+  color: #111111;
 }
 
 .coach-field input,
@@ -733,9 +740,12 @@
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid var(--coach-border);
-  background: #f4f4f5;
-  color: var(--ahd-text);
+  background: #ffffff;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
+  caret-color: #111111;
   font: inherit;
+  font-weight: 500;
 }
 
 .form-row {
@@ -756,8 +766,8 @@
 
 .form-row__label {
   font-size: 13px;
-  font-weight: 600;
-  color: var(--ahd-muted);
+  font-weight: 700;
+  color: #111111;
 }
 
 .form-row > input {
@@ -771,9 +781,12 @@
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid var(--coach-border);
-  background: #f4f4f5;
-  color: var(--ahd-text);
+  background: #ffffff;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
+  caret-color: #111111;
   font: inherit;
+  font-weight: 500;
 }
 
 .form-row__help,
@@ -869,8 +882,10 @@
 }
 
 .coach-field input::placeholder,
+.form-row > input::placeholder,
 .history-timeline__dist-input input::placeholder {
   color: #5c6168;
+  -webkit-text-fill-color: #5c6168;
   opacity: 1;
 }
 
@@ -931,8 +946,8 @@
 
 .coach-section-title {
   font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--ahd-text);
+  font-weight: 700;
+  color: #111111;
   margin: 1rem 0 0.65rem;
 }
 
@@ -1476,14 +1491,14 @@
 .coach-logbook-title {
   margin: 0;
   font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--ahd-text);
+  font-weight: 700;
+  color: #111111;
 }
 
 .coach-logbook-lead {
   margin: 0;
   font-size: 0.88rem;
-  color: var(--ahd-muted);
+  color: #1a1b1d;
   line-height: 1.4;
 }
 
@@ -1525,15 +1540,20 @@
 .coach-logbook-day__date {
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--hub-ink, #111);
+  color: #111111;
 }
 
 .coach-logbook-day__stats {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem 0.75rem;
-  font-size: 0.78rem;
-  color: var(--ahd-muted);
+  font-size: 0.8rem;
+  color: #1a1b1d;
+}
+
+.coach-logbook-day__stats strong {
+  color: #111111;
+  font-weight: 700;
 }
 
 .coach-logbook-day__stats .is-warn {
@@ -1562,18 +1582,20 @@
   text-align: left;
   padding: 0.4rem 0.35rem;
   border-bottom: 1px solid rgba(17, 17, 17, 0.06);
+  color: #111111;
 }
 
 .coach-logbook-table th {
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--ahd-muted);
-  font-weight: 650;
+  color: #1a1b1d;
+  font-weight: 700;
 }
 
 .coach-logbook-crew {
-  font-weight: 650;
+  font-weight: 700;
+  color: #111111;
 }
 
 .coach-logbook-capsize-yes {
@@ -1582,14 +1604,14 @@
 }
 
 .coach-logbook-capsize-no {
-  color: var(--ahd-muted);
+  color: #1a1b1d;
 }
 
 .coach-logbook-empty {
   margin: 0;
   padding: 1rem;
   text-align: center;
-  color: var(--ahd-muted);
+  color: #1a1b1d;
   font-size: 0.88rem;
 }
 
