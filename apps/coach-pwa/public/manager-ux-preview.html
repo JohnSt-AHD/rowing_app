@@ -249,9 +249,9 @@
         border-radius: 50%;
         margin-top: 0.35rem;
       }
-      .name { font-weight: 700; font-size: 0.95rem; }
-      .id { font-size: 0.78rem; color: var(--ahd-muted); }
-      .meta { font-size: 0.72rem; color: var(--ahd-muted); margin-top: 0.15rem; }
+      .name { font-weight: 700; font-size: 0.95rem; color: #111; -webkit-text-fill-color: #111; }
+      .id { font-size: 0.78rem; font-weight: 700; color: #111; -webkit-text-fill-color: #111; }
+      .meta { font-size: 0.72rem; font-weight: 600; color: #1a1b1d; -webkit-text-fill-color: #1a1b1d; margin-top: 0.15rem; }
       .status { text-align: right; }
       .badge {
         display: inline-block;
@@ -261,8 +261,8 @@
         border-radius: 999px;
       }
       .badge--water { background: rgba(31, 107, 74, 0.12); color: var(--ahd-safety); }
-      .badge--ashore { background: rgba(17, 17, 17, 0.08); color: var(--ahd-muted); }
-      .stats { font-size: 0.75rem; color: var(--ahd-muted); margin-top: 0.35rem; }
+      .badge--ashore { background: rgba(17, 17, 17, 0.08); color: #111; }
+      .stats { font-size: 0.75rem; font-weight: 700; color: #111; -webkit-text-fill-color: #111; margin-top: 0.35rem; }
 
       .map-tools {
         display: flex;
@@ -429,23 +429,29 @@
         margin: 0.35rem 0 0.5rem;
       }
       .coach-btn {
+        -webkit-appearance: none;
         appearance: none;
         border: 1px solid transparent;
         border-radius: 10px;
         padding: 0.55rem 0.9rem;
         font: inherit;
-        font-weight: 650;
+        font-weight: 700;
         cursor: pointer;
+        color: #111;
+        -webkit-text-fill-color: #111;
       }
-      .coach-btn--primary { background: #111; color: #fff; }
+      .coach-btn--primary { background: #111; color: #fff; -webkit-text-fill-color: #fff; }
       .coach-btn--ghost {
         background: #fff;
         color: #111;
-        border-color: var(--coach-border);
+        -webkit-text-fill-color: #111;
+        border-color: rgba(17, 17, 17, 0.35);
       }
       .coach-btn--ghost.active, .coach-btn--ghost.coach-btn--active {
-        border-color: #111;
-        background: rgba(17, 17, 17, 0.06);
+        border-color: rgba(31, 107, 74, 0.45);
+        background: rgba(31, 107, 74, 0.12);
+        color: #145a3c;
+        -webkit-text-fill-color: #145a3c;
       }
       .coach-btn.block { width: 100%; }
       .history-devices-field {

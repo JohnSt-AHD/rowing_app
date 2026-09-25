@@ -169,11 +169,12 @@
 .coach-tab {
   flex: 1;
   background: transparent;
-  color: #3f4349;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
   border: 1px solid transparent;
   border-radius: 10px;
   padding: 0.55rem 0.2rem;
-  font-weight: 600;
+  font-weight: 650;
   font-family: inherit;
   font-size: 0.72rem;
   cursor: pointer;
@@ -189,14 +190,16 @@
 .coach-tab.active {
   background: rgba(17, 17, 17, 0.06);
   border-color: rgba(17, 17, 17, 0.12);
-  color: var(--hub-ink, #111);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
   font-weight: 700;
 }
 
 .coach-tab--home.active {
   background: #111;
   border-color: #111;
-  color: #fff;
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
 }
 
 .coach-panel--race {
@@ -231,8 +234,8 @@
 
 .race-field__label {
   font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--ahd-muted);
+  font-weight: 700;
+  color: #111111;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -249,13 +252,14 @@
   align-items: center;
   gap: 0.35rem;
   font-size: 0.88rem;
-  color: var(--ahd-text);
+  font-weight: 600;
+  color: #111111;
 }
 
 .race-meta {
   margin: 0;
   font-size: 0.82rem;
-  color: var(--ahd-muted);
+  color: #1a1b1d;
   line-height: 1.4;
 }
 
@@ -294,19 +298,22 @@
   flex: 1;
   font-size: 0.95rem;
   font-weight: 700;
-  color: var(--hub-ink, #111);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .race-boat-card__hide {
-  background: transparent;
-  border: 1px solid var(--coach-border);
-  color: var(--ahd-muted);
+  background: #fff;
+  border: 1px solid rgba(17, 17, 17, 0.28);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
   border-radius: 6px;
   padding: 0.2rem 0.45rem;
   font-size: 0.72rem;
+  font-weight: 700;
   cursor: pointer;
   font-family: inherit;
 }
@@ -327,8 +334,9 @@
 .race-split-cell dt {
   margin: 0;
   font-size: 0.68rem;
-  font-weight: 600;
-  color: var(--ahd-muted);
+  font-weight: 700;
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
   text-transform: uppercase;
 }
 
@@ -336,9 +344,10 @@
 .race-split-cell dd {
   margin: 0.1rem 0 0;
   font-size: 0.92rem;
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--ahd-text);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
 }
 
 .race-boat-card__splits {
@@ -361,8 +370,9 @@
 .race-section-title {
   margin: 0 0 0.5rem;
   font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--ahd-muted);
+  font-weight: 700;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -474,8 +484,10 @@
 }
 
 .device-list__empty {
-  color: var(--ahd-muted);
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
   font-size: 0.9rem;
+  font-weight: 600;
   padding: 0.5rem 0;
 }
 
@@ -552,7 +564,8 @@
 
 .device-card__name {
   font-weight: 700;
-  color: var(--ahd-text);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -560,7 +573,9 @@
 
 .device-card__id-tag {
   font-size: 0.75rem;
-  color: var(--ahd-muted);
+  font-weight: 600;
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
   flex-shrink: 0;
 }
 
@@ -618,15 +633,17 @@
   font-weight: 750;
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
-  color: var(--ahd-text);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
 }
 
 .device-card__stat-label {
   font-size: 0.65rem;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--ahd-muted);
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
 }
 
 .device-card__body {
@@ -650,7 +667,8 @@
 
 .device-card__id {
   font-weight: 700;
-  color: var(--ahd-text);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
 }
 
 .device-card__meta {
@@ -797,9 +815,10 @@
   background: #f4f4f5;
   border: 1px solid var(--coach-border);
   font-size: 0.78rem;
-  font-weight: 400;
+  font-weight: 500;
   line-height: 1.4;
-  color: var(--ahd-muted);
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
 }
 
 .form-row .form-row__help,
@@ -895,12 +914,14 @@
   border-radius: 8px;
   border: 1px solid var(--coach-border);
   background: #ffffff;
-  color: var(--ahd-text);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
   font: inherit;
+  font-weight: 600;
 }
 
 .race-select option {
-  color: #1a1b1d;
+  color: #111111;
   background: #ffffff;
 }
 
@@ -913,7 +934,7 @@
 }
 
 .poll-line {
-  color: var(--ahd-muted);
+  color: #1a1b1d;
   font-size: 0.85rem;
 }
 
@@ -1036,15 +1057,15 @@
 
 .history-devices-field legend {
   font-size: 13px;
-  font-weight: 600;
-  color: var(--ahd-muted);
+  font-weight: 700;
+  color: #111111;
   padding: 0 0.35rem;
 }
 
 .history-hint {
   font-weight: 400;
   opacity: 1;
-  color: var(--ahd-muted);
+  color: #1a1b1d;
 }
 
 .history-device-list {
@@ -1061,9 +1082,11 @@
   padding: 0.35rem 0.55rem;
   border-radius: 999px;
   background: #ffffff;
-  border: 1px solid var(--coach-border);
+  border: 1px solid rgba(17, 17, 17, 0.22);
   font-size: 13px;
-  color: var(--ahd-text);
+  font-weight: 650;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
   cursor: pointer;
 }
 
@@ -1141,13 +1164,16 @@
 }
 
 .history-stats__dl dt {
-  color: var(--ahd-muted);
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
+  font-weight: 600;
 }
 
 .history-stats__dl dd {
   margin: 0;
-  color: var(--ahd-text);
-  font-weight: 600;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
+  font-weight: 700;
 }
 
 .history-timeline {
@@ -1174,7 +1200,9 @@
 
 .history-timeline__times {
   font-size: 11px;
-  color: var(--ahd-muted);
+  font-weight: 600;
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
 }
 
 .history-timeline__track {
@@ -1271,42 +1299,58 @@
 .history-timeline__dist-label {
   display: block;
   font-size: 11px;
-  color: var(--ahd-muted);
+  font-weight: 600;
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
   margin-bottom: 0.25rem;
 }
 
 .coach-btn {
+  -webkit-appearance: none;
+  appearance: none;
   border: none;
   border-radius: 8px;
   padding: 0.65rem 1rem;
   font-size: 1rem;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
   font-family: inherit;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
 }
 
 .coach-btn--primary {
   background: #111111;
   border: 1px solid #111111;
-  color: #fff;
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
 }
 
 .coach-btn--danger {
   background: #b42318;
-  color: #fff;
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
   border: 1px solid #b42318;
 }
 
 .coach-btn--ghost {
-  background: #fff;
-  border: 1px solid var(--coach-border-strong);
-  color: var(--ahd-text);
+  background: #ffffff;
+  border: 1px solid rgba(17, 17, 17, 0.35);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
+  font-weight: 700;
+}
+
+button.coach-btn.coach-btn--ghost {
+  color: #111111;
+  -webkit-text-fill-color: #111111;
 }
 
 .coach-btn--ghost.coach-btn--active {
   background: rgba(31, 107, 74, 0.12);
   border-color: rgba(31, 107, 74, 0.45);
-  color: var(--ahd-safety);
+  color: #145a3c;
+  -webkit-text-fill-color: #145a3c;
 }
 
 /* —— Dashboard crew tickets —— */
@@ -1332,13 +1376,13 @@
   border: 1px solid var(--coach-border);
   border-radius: 999px;
   font-size: 0.82rem;
-  color: var(--ahd-muted);
+  color: #1a1b1d;
 }
 
 .coach-dash-pill strong {
   font-size: 1rem;
   font-weight: 700;
-  color: var(--hub-ink, #111);
+  color: #111111;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1349,10 +1393,10 @@
 .coach-ticket-section__title {
   margin: 0.35rem 0 0.45rem;
   font-size: 0.78rem;
-  font-weight: 650;
+  font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--ahd-muted);
+  color: #111111;
 }
 
 .crew-ticket-list {
@@ -1408,7 +1452,8 @@
   font-size: 1.02rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-  color: var(--hub-ink, #111);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1416,12 +1461,16 @@
 
 .crew-ticket__meta {
   font-size: 0.78rem;
-  color: var(--ahd-muted);
+  font-weight: 600;
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
 }
 
 .crew-ticket__id {
   font-size: 0.72rem;
-  color: var(--ahd-muted);
+  font-weight: 700;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
 }
 
 .crew-ticket__status {
@@ -1447,9 +1496,9 @@
 }
 
 .crew-ticket__badge--ashore {
-  background: rgba(63, 67, 73, 0.14);
-  color: #2f3338;
-  border: 1px solid rgba(63, 67, 73, 0.22);
+  background: rgba(17, 17, 17, 0.08);
+  color: #111111;
+  border: 1px solid rgba(17, 17, 17, 0.2);
 }
 
 .crew-ticket__badge--capsize {
@@ -1462,14 +1511,15 @@
   gap: 0.55rem;
   font-variant-numeric: tabular-nums;
   font-size: 0.82rem;
-  font-weight: 650;
-  color: var(--hub-ink-soft, #333);
+  font-weight: 700;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
 }
 
 .crew-ticket__empty {
   padding: 1.25rem;
   text-align: center;
-  color: var(--ahd-muted);
+  color: #1a1b1d;
   background: #fff;
   border-radius: 16px;
   border: 1px dashed var(--coach-border);
