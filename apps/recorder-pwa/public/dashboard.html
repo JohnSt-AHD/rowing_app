@@ -161,14 +161,15 @@
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
             <h2 class="hub-section-title">Capsize email alerts</h2>
           </button>
+          <div class="dashboard-section__tools">
+            <button type="button" class="info-tip-btn" data-info-tip="alerts" aria-expanded="false" aria-controls="info-tip-alerts" title="About capsize email alerts" aria-label="About capsize email alerts">i</button>
+          </div>
+        </div>
+        <div class="info-tip-panel" id="info-tip-alerts" hidden>
+          <p>When a phone reports a capsize, CrewSight emails these addresses with boat name, NZ time, and GPS location.</p>
+          <p>Uses the ingest token on this page. Needs <code>RESEND_API_KEY</code> and <code>CAPSIZE_NOTIFY_FROM</code> on Vercel.</p>
         </div>
         <div class="dashboard-section__body" id="section-body-capsize-emails" hidden>
-          <p class="capsize-email-intro">
-            When a device reports a <strong>capsize</strong>, CrewSight emails these addresses with the
-            <strong>boat name</strong>, <strong>NZ time</strong>, and <strong>location</strong> (when GPS is available).
-            Uses the same ingest token as the rest of this page. Requires <code>RESEND_API_KEY</code> and
-            <code>CAPSIZE_NOTIFY_FROM</code> on Vercel.
-          </p>
           <p class="poll-line" id="capsizeEmailMeta">Loading…</p>
           <p class="poll-line" id="capsizeEmailStorageNote"></p>
           <ul class="capsize-email-list" id="capsizeEmailList" aria-live="polite"></ul>
@@ -202,12 +203,15 @@
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
             <h2 class="hub-section-title">Regatta control</h2>
           </button>
+          <div class="dashboard-section__tools">
+            <button type="button" class="info-tip-btn" data-info-tip="messages" aria-expanded="false" aria-controls="info-tip-messages" title="About regatta messages" aria-label="About regatta messages">i</button>
+          </div>
+        </div>
+        <div class="info-tip-panel" id="info-tip-messages" hidden>
+          <p>Send a message to one device or all devices that are currently recording. It appears on the rower&rsquo;s session screen, not as a phone notification.</p>
+          <p>Devices check for new messages about every 15 seconds.</p>
         </div>
         <div class="dashboard-section__body" id="section-body-regatta" hidden>
-          <p class="regatta-intro">
-            Send a message to one device or <strong>all devices</strong> in the current device list while they are recording.
-            The text appears on the rower&rsquo;s session HUD (no phone notification). Devices poll every ~15&nbsp;s.
-          </p>
           <div id="regattaActiveList" class="regatta-active-list" aria-live="polite"></div>
           <form id="regattaForm" class="regatta-form">
             <div class="ahd-inline-fields">
@@ -237,6 +241,13 @@
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
             <h2 class="hub-section-title">Geofence zones</h2>
           </button>
+          <div class="dashboard-section__tools">
+            <button type="button" class="info-tip-btn" data-info-tip="geofences" aria-expanded="false" aria-controls="info-tip-geofences" title="About geofence zones" aria-label="About geofence zones">i</button>
+          </div>
+        </div>
+        <div class="info-tip-panel" id="info-tip-geofences" hidden>
+          <p>Boat-park zones tell phones to slow GPS, optionally turn capsize off, and can pause recording, auto-stop on enter, or auto-start on exit.</p>
+          <p>Recorders download zones automatically. Use the map to pick a centre, draw a polygon, or drag handles when edit is on.</p>
         </div>
         <div class="dashboard-section__body" id="section-body-geofences">
           <div class="setup-geo-layout">
@@ -248,18 +259,8 @@
                 <span class="map-legend-item" style="color:#2563eb">● Split</span>
               </p>
               <div id="setupMap" class="fleet-map setup-map" role="application" aria-label="Geofence and race course map"></div>
-              <p class="poll-line map-status">
-                Click this map to pick a zone centre, draw a polygon, or place start and finish lines. Drag handles when edit is on.
-              </p>
             </div>
             <div class="setup-geo-forms">
-          <p class="geofence-intro">
-            Define boat-park zones for phones: <strong>economy mode</strong> (slower GPS),
-            optional <strong>capsize off</strong>, and session control —
-            <strong>suppress recording inside</strong>, <strong>auto-stop on enter</strong>,
-            and <strong>auto-start on exit</strong> (arm standby on the CrewSight app).
-            Recorders fetch these zones automatically.
-          </p>
           <div id="geofenceList" class="geofence-list" aria-live="polite"></div>
           <div class="geofence-form__actions">
             <button type="button" class="hub-btn hub-btn--ghost" id="geofenceEditToggle">Edit zones on map</button>
@@ -302,9 +303,7 @@
               </div>
             </div>
             <div id="geofencePolygonFields" class="geofence-shape-fields" hidden>
-              <p class="geofence-draw-help">
-                Click <strong>Draw on map</strong>, then click the map to place corners. Use at least three points, then finish the shape.
-              </p>
+              <p class="geofence-draw-help">Click the map to add corners, then Finish polygon.</p>
               <p class="geofence-draw-status poll-line" id="geofenceDrawStatus">No polygon drawn yet.</p>
               <div class="geofence-form__actions">
                 <button type="button" class="hub-btn" id="geofenceDrawBtn">Draw on map</button>
@@ -361,13 +360,14 @@
 
           <hr class="hub-divider" />
 
-          <h3 class="hub-subsection-title">Timing courses</h3>
-          <p class="geofence-intro">
-            Create a <strong>course</strong> by drawing or selecting a <strong>start</strong> and
-            <strong>finish</strong> line on this map. Split lines are placed at equal distances in between.
-            Use <em>Adjust to target distance</em> to snap the finish line (and splits) to an exact length
-            while keeping lines parallel.
-          </p>
+          <h3 class="hub-subsection-title">
+            Timing courses
+            <button type="button" class="info-tip-btn" data-info-tip="timing" aria-expanded="false" aria-controls="info-tip-timing" title="About timing courses" aria-label="About timing courses">i</button>
+          </h3>
+          <div class="info-tip-panel" id="info-tip-timing" hidden>
+            <p>Draw or select a start and finish line on the map. Split lines are spaced evenly between them.</p>
+            <p>Turn on Adjust finish to target distance to snap the course to an exact length with parallel lines.</p>
+          </div>
           <div id="timingLineList" class="timing-line-list" aria-live="polite"></div>
 
           <label class="ahd-field timing-course-monitor-label">
@@ -459,6 +459,12 @@
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
             <h2 class="hub-section-title">GPS &amp; upload debug</h2>
           </button>
+          <div class="dashboard-section__tools">
+            <button type="button" class="info-tip-btn" data-info-tip="debug" aria-expanded="false" aria-controls="info-tip-debug" title="About GPS and upload debug" aria-label="About GPS and upload debug">i</button>
+          </div>
+        </div>
+        <div class="info-tip-panel" id="info-tip-debug" hidden>
+          <p>The chart tracks GPS fix age, upload lag, ingest rate, boat-park economy, and capsize for the selected device or the fleet average.</p>
         </div>
         <div class="dashboard-section__body" id="section-body-monitor-stats" hidden>
           <div class="monitor-chart-toolbar ahd-inline-fields">
@@ -492,13 +498,15 @@
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
             <h2 class="hub-section-title">Session history</h2>
           </button>
+          <div class="dashboard-section__tools">
+            <button type="button" class="info-tip-btn" data-info-tip="history" aria-expanded="false" aria-controls="info-tip-history" title="About session history" aria-label="About session history">i</button>
+          </div>
         </div>
         <div class="dashboard-section__body" id="section-body-history" hidden>
-          <p class="history-intro">
-            Searches the <strong>database</strong> (all uploads from the apps, not just this browser session).
-            Pick a <strong>session</strong> for one outing, or a device + date range. Use <strong>All stored for device</strong>
-            if a short range shows no data.
-          </p>
+          <div class="info-tip-panel" id="info-tip-history" hidden>
+            <p>This searches the database of all app uploads, not just this browser. Pick a session for one outing, or a device plus date range.</p>
+            <p>Use All stored for device if a short range shows nothing. The GPS map and charts appear below after you load.</p>
+          </div>
           <div class="ahd-inline-fields history-fields">
             <label class="ahd-field">
               Device ID
@@ -507,7 +515,7 @@
               </select>
             </label>
             <label class="ahd-field history-field--wide">
-              Session <span class="history-field-hint">(easiest — loads that outing)</span>
+              Session
               <select id="historySessionId">
                 <option value="">— pick a recorded session —</option>
               </select>
@@ -550,8 +558,7 @@
             <button type="button" class="hub-btn hub-btn--primary" id="historyLoadBtn">Load history</button>
             <button type="button" class="hub-btn" id="historyRefreshListsBtn">Refresh lists</button>
           </div>
-          <p class="poll-line" id="historyStatus">Select a session (recommended) or device + date range.</p>
-          <p class="history-results-hint">After loading, the <strong>GPS map and charts</strong> appear below.</p>
+          <p class="poll-line" id="historyStatus">Select a session or device + date range.</p>
           <div id="historyResults" class="history-results" hidden aria-hidden="true">
             <p class="history-meta" id="historyMeta"></p>
             <h3 class="history-subtitle">GPS trace</h3>
@@ -585,6 +592,13 @@
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
             <h2 class="hub-section-title">Monitor settings</h2>
           </button>
+          <div class="dashboard-section__tools">
+            <button type="button" class="info-tip-btn" data-info-tip="settings" aria-expanded="false" aria-controls="info-tip-settings" title="About monitor settings" aria-label="About monitor settings">i</button>
+          </div>
+        </div>
+        <div class="info-tip-panel" id="info-tip-settings" hidden>
+          <p>Ingest token must match <code>INGEST_TOKEN</code> on Vercel. Map position is display-only: Raw shows the last GPS fix; Smoothed predicts to now using motion between fixes.</p>
+          <p>Predict speed cap limits that offset (rowing vs car testing). Refresh is how often this page polls. Hide offline after drops stale boats from the map.</p>
         </div>
         <div class="dashboard-section__body" id="section-body-settings" hidden>
           <details class="dashboard-health-details">
@@ -616,7 +630,6 @@
                 <option value="raw" selected>Raw GPS fix</option>
                 <option value="smoothed">Smoothed (predict-to-now)</option>
               </select>
-              <span class="field-hint">All devices on the live map — display only; phones unchanged. Smoothed uses 1 s refresh + motion between fixes.</span>
             </label>
             <label class="ahd-field" id="predictModeField">
               Predict speed cap
@@ -624,7 +637,6 @@
                 <option value="rowing" selected>Rowing boats (12 m/s)</option>
                 <option value="car">Car test (120 km/h)</option>
               </select>
-              <span class="field-hint">When smoothed — limits predict offset for every device (rowing vs in-car testing)</span>
             </label>
             <label class="ahd-field">
               Refresh
@@ -654,21 +666,22 @@
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-data-manage">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
-            <h2 class="hub-section-title">Stored data (Vercel / Neon)</h2>
+            <h2 class="hub-section-title">Stored data</h2>
           </button>
+          <div class="dashboard-section__tools">
+            <button type="button" class="info-tip-btn" data-info-tip="data" aria-expanded="false" aria-controls="info-tip-data" title="About stored data" aria-label="About stored data">i</button>
+          </div>
+        </div>
+        <div class="info-tip-panel" id="info-tip-data" hidden>
+          <p>GPS, motion, and capsize history is stored in Postgres when <code>POSTGRES_URL</code> is set on Vercel. Review storage here, then delete by session, device, or date range.</p>
+          <p>Deletes need the ingest token and cannot be undone. To wipe everything, type <code>DELETE ALL RNZ DATA</code>.</p>
         </div>
         <div class="dashboard-section__body" id="section-body-data-manage" hidden>
-          <p class="data-manage-intro">
-            Uploaded GPS, motion, and capsize history lives in your project&apos;s
-            <strong>Postgres</strong> database when <code>POSTGRES_URL</code> is set on Vercel.
-            Use this section to review what is stored and delete data permanently.
-          </p>
-
           <div class="data-manage-stats" id="dataManageStats" aria-live="polite">
             <p class="poll-line">Loading storage summary…</p>
           </div>
 
-          <details class="data-manage-security" id="dataManageSecurity" open>
+          <details class="data-manage-security" id="dataManageSecurity">
             <summary>How safe is this data?</summary>
             <div class="data-manage-security-body" id="dataManageSecurityBody">
               <p class="poll-line">Loading security details…</p>
@@ -677,10 +690,7 @@
 
           <div class="data-manage-actions">
             <h3 class="data-manage-subtitle">Delete stored data</h3>
-            <p class="data-manage-hint">
-              Requires the same <strong>ingest token</strong> as above. Deletes are
-              <strong>permanent</strong> and cannot be undone.
-            </p>
+            <p class="data-manage-hint">Deletes are permanent.</p>
 
             <div class="data-manage-block">
               <h4 class="data-manage-label">Delete one session</h4>

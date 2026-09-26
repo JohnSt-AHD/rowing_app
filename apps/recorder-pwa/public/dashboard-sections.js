@@ -72,6 +72,7 @@
 
   function setSetupTab(tab, opts = {}) {
     const next = SETUP_TABS.includes(tab) ? tab : 'geofences';
+    if (next !== currentSetupTab()) closeInfoTips();
     document.body.setAttribute('data-setup-tab', next);
     try {
       localStorage.setItem(LS_SETUP_TAB, next);
@@ -142,6 +143,43 @@
         const open = !section.classList.contains('dashboard-section--open');
         setSectionOpen(section, open);
       });
+    });
+  }
+
+  function closeInfoTips(except) {
+    document.querySelectorAll('.info-tip-btn').forEach((btn) => {
+      if (btn === except) return;
+      btn.classList.remove('is-open');
+      btn.setAttribute('aria-expanded', 'false');
+      const panel = document.getElementById(btn.getAttribute('aria-controls') || '');
+      if (panel) panel.hidden = true;
+    });
+  }
+
+  function initInfoTips() {
+    document.querySelectorAll('.info-tip-btn').forEach((btn) => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const panel = document.getElementById(btn.getAttribute('aria-controls') || '');
+        if (!panel) return;
+        const section = btn.closest('.dashboard-section');
+        if (section && !section.classList.contains('setup-tab-panel')) {
+          setSectionOpen(section, true);
+        }
+        const willOpen = panel.hidden;
+        closeInfoTips(willOpen ? btn : null);
+        panel.hidden = !willOpen;
+        btn.classList.toggle('is-open', willOpen);
+        btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+      });
+    });
+    document.addEventListener('click', (ev) => {
+      if (ev.target.closest('.info-tip-btn, .info-tip-panel')) return;
+      closeInfoTips();
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') closeInfoTips();
     });
   }
 
@@ -275,6 +313,7 @@
   window.dashboardInitSections = function () {
     initSections();
     initMapFullscreen();
+    initInfoTips();
     initViewNav();
     const loc = parseLocation();
     setDashboardView(loc.view, { skipHash: true, tab: loc.tab });

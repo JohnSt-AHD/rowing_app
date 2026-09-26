@@ -319,8 +319,64 @@
   color: var(--hub-mute);
 }
 
-.capsize-alert-bar {
-  border-radius: 14px;
+.hub-subsection-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.info-tip-btn {
+  appearance: none;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(17, 17, 17, 0.22);
+  background: #fff;
+  color: var(--hub-mute);
+  font: italic 700 13px/22px Georgia, 'Times New Roman', serif;
+  text-align: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.info-tip-btn:hover,
+.info-tip-btn.is-open,
+.info-tip-btn:focus-visible {
+  color: var(--hub-ink);
+  border-color: #111;
+}
+
+.info-tip-btn:focus-visible {
+  outline: 2px solid var(--hub-ink);
+  outline-offset: 2px;
+}
+
+.info-tip-panel {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f4f4f5;
+  color: var(--hub-mute);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.info-tip-panel[hidden] {
+  display: none !important;
+}
+
+.info-tip-panel p {
+  margin: 0 0 0.55em;
+}
+
+.info-tip-panel p:last-child {
+  margin: 0;
+}
+
+.info-tip-panel code {
+  font-size: 0.92em;
 }
 
 .setup-tabs {
@@ -366,6 +422,8 @@
 .setup-tab-panel .dashboard-section__head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin: 0 0 14px;
   padding: 0;
   border: 0;
@@ -393,6 +451,11 @@
 
 .hub-page[data-dashboard-view='setup'] .ahd-app-wrap {
   max-width: 1440px;
+}
+
+.setup-geo-layout {
+  display: grid;
+  gap: 20px;
 }
 
 .setup-geo-forms {
