@@ -31,7 +31,8 @@
 .hub-chrome {
   position: sticky;
   top: 0;
-  z-index: 30;
+  /* Above Leaflet panes (200–800) trapped in map stacking contexts at z-index 0 */
+  z-index: 40;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -230,6 +231,9 @@
 .fleet-map,
 .fleet-map.leaflet-container,
 .history-map {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
   background: #dfe2e5;
   border: 1px solid rgba(17, 17, 17, 0.08);
   border-radius: 12px;
@@ -241,6 +245,8 @@
 
 .map-stage {
   position: relative;
+  z-index: 0;
+  isolation: isolate;
 }
 
 .map-legend--compact {
@@ -458,7 +464,16 @@
   gap: 20px;
 }
 
+.setup-geo-map-col {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+  min-width: 0;
+}
+
 .setup-geo-forms {
+  position: relative;
+  z-index: 1;
   min-width: 0;
 }
 
@@ -473,6 +488,9 @@
 }
 
 .setup-map {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
   height: min(58vh, 560px);
   min-height: 320px;
 }
@@ -494,8 +512,11 @@
   }
 
   .setup-geo-map-col {
+    /* Stick below .hub-chrome; stay under chrome (z-index 40) and form column */
     position: sticky;
     top: 72px;
+    z-index: 0;
+    isolation: isolate;
   }
 
   .setup-map {
