@@ -1209,7 +1209,11 @@
         paceCell =
           stats.avgMps != null ? formatPaceCell(stats.avgMps, deviceId, live.athleteId) : '—';
       } else if (live.stale && live.lastSeenAgoSec != null) {
-        paceCell = `<span class="course-view-stale">Stale ${live.lastSeenAgoSec}s</span>`;
+        const ageLabel =
+          typeof window.fmtDurationSec === 'function'
+            ? window.fmtDurationSec(live.lastSeenAgoSec)
+            : `${live.lastSeenAgoSec}s`;
+        paceCell = `<span class="course-view-stale">Stale ${ageLabel}</span>`;
       } else {
         const spd = live.speedMps;
         paceCell =

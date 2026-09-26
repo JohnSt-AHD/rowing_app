@@ -127,8 +127,8 @@
 }
 
 .ahd-app-wrap {
-  max-width: 1280px;
-  padding: clamp(18px, 3vw, 28px) clamp(16px, 4vw, 40px) 40px;
+  max-width: min(1760px, 98vw);
+  padding: clamp(14px, 2vw, 22px) clamp(12px, 2vw, 28px) 36px;
 }
 
 .hub-page[data-dashboard-view='live'] .dashboard-view--history,
@@ -240,7 +240,7 @@
 }
 
 .hub-panel--map.dashboard-section--open .fleet-map {
-  height: min(62vh, 640px);
+  height: min(72vh, 780px);
 }
 
 .map-stage {
@@ -268,11 +268,55 @@
 .map-legend-item--amber { color: #b45309; }
 .map-legend-item--lost,
 .map-legend-item--capsize { color: var(--ahd-danger); }
-.map-legend-item--stale-flag { color: #92400e; }
+.map-legend-item--stale-flag { color: #92400e; font-weight: 600; }
 
 .map-status {
   color: var(--hub-mute);
   font-size: 12px;
+}
+
+/* Status chips — dark-theme pastel text fails on light AHD cards */
+.badge-pill--stale {
+  background: #fef3c7;
+  border: 1px solid #d97706;
+  color: #92400e;
+}
+
+.badge-pill--amber {
+  background: #fff7ed;
+  border: 1px solid #ea580c;
+  color: #9a3412;
+}
+
+.badge-pill--lost {
+  background: #fef2f2;
+  border: 1px solid #dc2626;
+  color: #991b1b;
+}
+
+.badge-pill--idle,
+.badge-offline {
+  background: #eef0f2;
+  border: 1px solid rgba(17, 17, 17, 0.22);
+  color: #3f3f46;
+}
+
+.map-marker-stale-flag {
+  background: #78350f;
+  border-color: #fbbf24;
+  color: #fffbeb;
+}
+
+.map-popup-stale {
+  color: #92400e;
+}
+
+.course-view-stale {
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #d97706;
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
 }
 
 .fleet-map .leaflet-control-zoom a {
@@ -308,9 +352,14 @@
 }
 
 .ahd-footer {
-  max-width: 1280px;
+  max-width: min(1760px, 98vw);
   color: var(--hub-mute);
   border-top-color: rgba(17, 17, 17, 0.08);
+}
+
+.devices-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: 0.85rem;
 }
 
 .ahd-footer a {
@@ -456,7 +505,7 @@
 }
 
 .hub-page[data-dashboard-view='setup'] .ahd-app-wrap {
-  max-width: 1440px;
+  max-width: min(1760px, 98vw);
 }
 
 .setup-geo-layout {

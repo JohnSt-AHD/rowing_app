@@ -529,12 +529,26 @@ function fmtSpm(v) {
   return `${Math.round(v)} spm`;
 }
 
+/** Human duration from age in seconds (no “ago”). ≥60s→mins, ≥60min→hours, ≥24h→days. */
+function fmtDurationSec(sec) {
+  if (sec == null || !Number.isFinite(sec)) return '—';
+  const s = Math.max(0, Math.round(Number(sec)));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) {
+    const m = Math.max(1, Math.floor(s / 60));
+    return m === 1 ? '1 min' : `${m} mins`;
+  }
+  if (s < 86400) {
+    const h = Math.max(1, Math.floor(s / 3600));
+    return h === 1 ? '1 hour' : `${h} hours`;
+  }
+  const d = Math.max(1, Math.floor(s / 86400));
+  return d === 1 ? '1 day' : `${d} days`;
+}
+
 function fmtAgoSec(sec) {
   if (sec == null || !Number.isFinite(sec)) return '—';
-  if (sec < 60) return `${sec}s ago`;
-  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
-  if (sec < 86400) return `${Math.round(sec / 3600)}h ago`;
-  return `${Math.round(sec / 86400)}d ago`;
+  return `${fmtDurationSec(sec)} ago`;
 }
 
 function fmtBatteryPct(pct) {
@@ -575,12 +589,12 @@ function deviceSummaryLine(d) {
   const parts = [];
   if (isDeviceDataStale(d)) {
     const age = deviceDataReceiveAgeSec(d);
-    parts.push(age != null ? `Stale ${age}s` : 'Stale');
+    parts.push(age != null ? `Stale ${fmtDurationSec(age)}` : 'Stale');
   }
   const gps = d.gps || {};
   if (gps.present) {
     parts.push(`GPS ${fmtHz(gps.rateHz)}`);
-    if (gps.ageSec != null) parts.push(`${gps.ageSec}s ago`);
+    if (gps.ageSec != null) parts.push(fmtAgoSec(gps.ageSec));
   } else {
     parts.push('No GPS');
   }
@@ -1098,7 +1112,7 @@ function popupHtml(p) {
   const stale = isDataStale(p);
   const receiveAge = dataReceiveAgeSec(p);
   const staleNote = stale
-    ? `<br><strong class="map-popup-stale">Stale — no data for ${receiveAge ?? '?'}s</strong>`
+    ? `<br><strong class="map-popup-stale">Stale — no data for ${receiveAge != null ? fmtDurationSec(receiveAge) : '?'}</strong>`
     : '';
   const smoothNote = isMapSmoothed()
     ? '<br><span class="map-popup-note">Smoothed position (display only)</span>'
@@ -1118,7 +1132,7 @@ function popupHtml(p) {
     : '';
   const hb =
     p.heartbeatAgeSec != null
-      ? `<br>Heartbeat: ${p.heartbeatRateHz > 0 ? `${p.heartbeatRateHz} Hz · ` : ''}${p.heartbeatAgeSec}s ago`
+      ? `<br>Heartbeat: ${p.heartbeatRateHz > 0 ? `${p.heartbeatRateHz} Hz · ` : ''}${fmtAgoSec(p.heartbeatAgeSec)}`
       : '';
   const bat =
     p.batteryPct != null
@@ -1129,7 +1143,7 @@ function popupHtml(p) {
     paceMps != null && window.RowingSpeed
       ? `<br>Pace: ${window.RowingSpeed.formatPaceWithPrognostic(paceMps, p.deviceId, p.athleteId, { suffix: true })}`
       : '';
-  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}${staleNote}<br>GPS fix ${dispAge ?? p.fixAgeSec}s ago · seen ${fmtAgoSec(p.lastSeenAgoSec)}${smoothNote}${compareNote}${hb}${bat}${pace}${hr}${spm}${tilt}${cap}</div>`;
+  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}${staleNote}<br>GPS fix ${fmtAgoSec(dispAge ?? p.fixAgeSec)} · seen ${fmtAgoSec(p.lastSeenAgoSec)}${smoothNote}${compareNote}${hb}${bat}${pace}${hr}${spm}${tilt}${cap}</div>`;
 }
 
 function updateMap(positions) {
@@ -1433,7 +1447,7 @@ function renderHealthBar(data) {
     const hbAge = health.avgHeartbeatAgeSec;
     heartbeatEl.textContent =
       hbHz != null || hbAge != null
-        ? `Heartbeat: ${hbHz != null ? `${hbHz} Hz avg` : '—'}${hbAge != null ? ` · ${hbAge}s ago avg` : ''}`
+        ? `Heartbeat: ${hbHz != null ? `${hbHz} Hz avg` : '—'}${hbAge != null ? ` · ${fmtAgoSec(hbAge)} avg` : ''}`
         : 'Heartbeat: —';
   }
 
@@ -1490,7 +1504,7 @@ function renderDevice(d) {
     ? 'Capsize'
     : dataStale
       ? receiveAge != null
-        ? `Stale ${receiveAge}s`
+        ? `Stale ${fmtDurationSec(receiveAge)}`
         : 'Stale'
       : gpsState === 'live'
         ? 'GPS live'
@@ -1546,7 +1560,7 @@ function renderDevice(d) {
         <div class="sensor ${hr.present ? 'present' : 'absent'}">
           <div class="name">Heart rate</div>
           <div class="rate">${hr.present ? fmtHz(hr.rateHz) : '—'}</div>
-          <div class="detail">${hr.last ? `${hr.last.bpm} bpm · ${hr.ageSec}s ago` : 'Not present'}</div>
+          <div class="detail">${hr.last ? `${hr.last.bpm} bpm · ${fmtAgoSec(hr.ageSec)}` : 'Not present'}</div>
         </div>
         <div class="sensor ${motion.present ? 'present' : 'absent'} ${rowing.capsize ? 'sensor--capsize' : ''}">
           <div class="name">${rowing.capsize ? 'Capsize' : 'Tilt'}</div>
@@ -1568,9 +1582,9 @@ function renderDevice(d) {
             : 0;
         const fixNote =
           disp > GPS_LIVE_SEC && lag > 20
-            ? ` (fix timestamp ${gps.ageSec}s on device)`
+            ? ` (fix timestamp ${fmtDurationSec(gps.ageSec)} on device)`
             : '';
-        return ` · GPS ${disp}s ago${fixNote}`;
+        return ` · GPS ${fmtAgoSec(disp)}${fixNote}`;
       })()}</div>` : ''}
       ${
         regattaMsg
