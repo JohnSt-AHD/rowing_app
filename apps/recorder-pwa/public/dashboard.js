@@ -107,6 +107,13 @@ function currentPollMs() {
   return Number($('#pollMs')?.value || localStorage.getItem(LS_POLL) || 2000);
 }
 
+function setStatValue(el, value) {
+  if (!el) return;
+  const slot = el.querySelector('.hub-stat-value');
+  if (slot) slot.textContent = value;
+  else el.textContent = value;
+}
+
 function formatRefreshRateLabel() {
   const ms = currentPollMs();
   const sec = ms / 1000;
@@ -114,8 +121,8 @@ function formatRefreshRateLabel() {
     sec >= 1
       ? `${Number.isInteger(sec) ? sec : sec.toFixed(1)} s`
       : `${ms} ms`;
-  const smooth = isMapSmoothed() ? ' · smoothed' : ' · raw GPS';
-  return `Refresh: ${interval}${smooth}`;
+  const smooth = isMapSmoothed() ? 'smoothed' : 'raw GPS';
+  return `${interval} · ${smooth}`;
 }
 
 function applyMapPositionMode() {
@@ -157,8 +164,7 @@ function applySmoothLiveMap() {
 }
 
 function updateRefreshRateLabel() {
-  const el = $('#refreshRateLabel');
-  if (el) el.textContent = formatRefreshRateLabel();
+  setStatValue($('#refreshRateLabel'), formatRefreshRateLabel());
 }
 
 function haversineM(lat1, lon1, lat2, lon2) {
@@ -874,25 +880,24 @@ function updateRowingSummary(devices) {
     .filter((v) => v != null && v > 0);
 
   if (!spms.length) {
-    strokeEl.textContent = 'Stroke: —';
+    setStatValue(strokeEl, '—');
     strokeEl.classList.remove('hub-stats-item--accent');
   } else if (spms.length === 1) {
-    strokeEl.textContent = `Stroke: ${spms[0]} spm`;
+    setStatValue(strokeEl, `${spms[0]} spm`);
     strokeEl.classList.add('hub-stats-item--accent');
   } else {
     const min = Math.min(...spms);
     const max = Math.max(...spms);
-    strokeEl.textContent =
-      min === max ? `Stroke: ${min} spm` : `Stroke: ${min}–${max} spm`;
+    setStatValue(strokeEl, min === max ? `${min} spm` : `${min}–${max} spm`);
     strokeEl.classList.add('hub-stats-item--accent');
   }
 
   const capsized = list.filter((d) => d.rowing?.capsize);
   if (!capsized.length) {
-    capsizeEl.textContent = 'Capsize: clear';
+    setStatValue(capsizeEl, 'Clear');
     capsizeEl.classList.remove('hub-stats-item--danger');
   } else {
-    capsizeEl.textContent = `Capsize: ${capsized.length} boat(s)`;
+    setStatValue(capsizeEl, `${capsized.length} boat${capsized.length === 1 ? '' : 's'}`);
     capsizeEl.classList.add('hub-stats-item--danger');
   }
 }
@@ -1656,8 +1661,8 @@ async function poll() {
       }
     }
 
-    $('#activeCount').textContent = `Online: ${data.activeCount ?? 0}`;
-    $('#deviceCount').textContent = `Devices: ${data.deviceCount ?? 0}`;
+    setStatValue($('#activeCount'), String(data.activeCount ?? 0));
+    setStatValue($('#deviceCount'), String(data.deviceCount ?? 0));
     updateRefreshRateLabel();
     lastPollDurationMs = Math.round(performance.now() - pollStarted);
     renderHealthBar(data);

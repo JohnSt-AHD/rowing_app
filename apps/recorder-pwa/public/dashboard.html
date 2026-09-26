@@ -6,8 +6,12 @@
     <meta name="theme-color" content="#0a1628" />
     <title>CrewSight Manager</title>
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" />
     <link rel="stylesheet" href="/ahd-hub-theme.css" />
     <link rel="stylesheet" href="/dashboard.css" />
+    <link rel="stylesheet" href="/dashboard-ahd-shell.css" />
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -15,7 +19,7 @@
       crossorigin=""
     />
   </head>
-  <body class="hub-page">
+  <body class="hub-page" data-dashboard-view="live">
     <header class="hub-topbar hub-topbar--crewsight">
       <div class="hub-topbar-inner">
         <div class="hub-topbar-brands">
@@ -30,26 +34,38 @@
       </div>
     </header>
 
+    <div class="hub-chrome">
     <div class="hub-stats-bar" aria-live="polite">
-      <span class="hub-stats-item hub-stats-item--accent" id="activeCount">Online: —</span>
-      <span class="hub-stats-sep" aria-hidden="true">·</span>
-      <span class="hub-stats-item" id="deviceCount">Devices: —</span>
-      <span class="hub-stats-sep" aria-hidden="true">·</span>
-      <span class="hub-stats-item" id="refreshRateLabel">Refresh: —</span>
-      <span class="hub-stats-sep" aria-hidden="true">·</span>
-      <span class="hub-stats-item" id="strokeSummary">Stroke: —</span>
-      <span class="hub-stats-sep" aria-hidden="true">·</span>
-      <span class="hub-stats-item" id="capsizeSummary">Capsize: —</span>
+      <span class="hub-stat" id="activeCount">
+        <span class="hub-stat-value">—</span>
+        <span class="hub-stat-label">Online</span>
+      </span>
+      <span class="hub-stat" id="deviceCount">
+        <span class="hub-stat-value">—</span>
+        <span class="hub-stat-label">Devices</span>
+      </span>
+      <span class="hub-stat" id="refreshRateLabel">
+        <span class="hub-stat-value">—</span>
+        <span class="hub-stat-label">Refresh</span>
+      </span>
+      <span class="hub-stat" id="strokeSummary">
+        <span class="hub-stat-value">—</span>
+        <span class="hub-stat-label">Stroke</span>
+      </span>
+      <span class="hub-stat hub-stat--warn" id="capsizeSummary">
+        <span class="hub-stat-value">Clear</span>
+        <span class="hub-stat-label">Capsize</span>
+      </span>
     </div>
 
-    <nav class="dashboard-quick-nav" aria-label="Dashboard sections">
-      <button type="button" class="dashboard-quick-nav__btn dashboard-quick-nav__btn--active" data-section-jump="map">Fleet map</button>
-      <button type="button" class="dashboard-quick-nav__btn" data-section-jump="devices">Devices</button>
-      <button type="button" class="dashboard-quick-nav__btn" data-section-jump="capsize-emails">Capsize emails</button>
-      <button type="button" class="dashboard-quick-nav__btn" data-section-jump="history">History</button>
-      <button type="button" class="dashboard-quick-nav__btn" data-section-jump="geofences">Geofences</button>
-      <button type="button" class="dashboard-quick-nav__btn" data-section-jump="settings">Settings</button>
+    <nav class="hub-role-nav dashboard-view-nav" aria-label="Manager views">
+      <div class="hub-role-nav-inner" role="group">
+        <button type="button" class="hub-role-btn is-active" data-dashboard-view="live" aria-pressed="true">Live</button>
+        <button type="button" class="hub-role-btn" data-dashboard-view="history" aria-pressed="false">History</button>
+        <button type="button" class="hub-role-btn" data-dashboard-view="setup" aria-pressed="false">Setup</button>
+      </div>
     </nav>
+    </div>
 
     <div class="ahd-app-wrap">
       <div
@@ -74,8 +90,8 @@
         </button>
       </div>
 
-      <div class="dashboard-layout-primary">
-      <section class="hub-panel hub-panel--map dashboard-section dashboard-section--open" data-section-id="map" data-default-open="true">
+      <div class="dashboard-layout-primary dashboard-view dashboard-view--live">
+      <section class="hub-panel hub-panel--map dashboard-section dashboard-section--open dashboard-section--pinned" data-section-id="map" data-default-open="true">
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="true" aria-controls="section-body-map">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
@@ -104,7 +120,7 @@
               <span class="map-legend-item map-legend-item--stale-flag">▲ No data 30s+</span>
               <span class="map-legend-item map-legend-item--capsize">● Capsize</span>
               <span class="map-legend-item map-legend-item--interpolate" id="mapLegendInterpolate" hidden>↝ Smoothed display</span>
-              <span class="map-legend-item map-legend-item--compare">◆ H6 lerp test (poll interval)</span>
+              <span class="map-legend-item map-legend-item--compare" hidden>◆ H6 lerp test</span>
             </p>
             <div id="fleetMap" class="fleet-map" role="application" aria-label="Device locations map"></div>
             <p class="poll-line map-status" id="mapStatus">Loading map…</p>
@@ -113,7 +129,7 @@
         </div>
       </section>
 
-      <section class="hub-panel dashboard-section dashboard-section--open" data-section-id="devices" data-default-open="true">
+      <section class="hub-panel dashboard-section dashboard-section--open dashboard-section--pinned" data-section-id="devices" data-default-open="true">
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="true" aria-controls="section-body-devices">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
@@ -130,6 +146,7 @@
       </section>
       </div>
 
+      <div class="dashboard-view dashboard-view--setup">
       <section class="hub-panel dashboard-section" data-section-id="capsize-emails" data-default-open="false" id="capsizeEmailPanel">
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-capsize-emails">
@@ -442,8 +459,10 @@
           </div>
         </div>
       </section>
+      </div>
 
-      <section class="hub-panel hub-panel--history dashboard-section" data-section-id="history" data-default-open="false" id="historyPanel">
+      <div class="dashboard-view dashboard-view--history">
+      <section class="hub-panel hub-panel--history dashboard-section dashboard-section--open" data-section-id="history" data-default-open="true" id="historyPanel">
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-history">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
@@ -533,7 +552,9 @@
           </div>
         </div>
       </section>
+      </div>
 
+      <div class="dashboard-view dashboard-view--setup dashboard-view--setup-tail">
       <section class="hub-panel ahd-controls-panel hub-panel--settings dashboard-section" data-section-id="settings" data-default-open="false">
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-settings">
@@ -731,6 +752,7 @@
           <button type="button" class="hub-btn hub-btn--ghost" id="dataManageRefreshBtn">Refresh storage summary</button>
         </div>
       </section>
+      </div>
     </div>
 
     <footer class="ahd-footer">

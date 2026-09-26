@@ -116,37 +116,95 @@
     });
   }
 
+  const VIEW_BY_SECTION = {
+    map: 'live',
+    devices: 'live',
+    history: 'history',
+    'capsize-emails': 'setup',
+    regatta: 'setup',
+    geofences: 'setup',
+    'monitor-stats': 'setup',
+    settings: 'setup',
+    'data-manage': 'setup',
+  };
+
+  function currentView() {
+    return document.body.getAttribute('data-dashboard-view') || 'live';
+  }
+
+  function setDashboardView(view, opts = {}) {
+    const next = view === 'history' || view === 'setup' ? view : 'live';
+    document.body.setAttribute('data-dashboard-view', next);
+    document.querySelectorAll('.dashboard-view').forEach((el) => {
+      const show =
+        el.classList.contains(`dashboard-view--${next}`) ||
+        (next === 'setup' && el.classList.contains('dashboard-view--setup'));
+      el.hidden = !show;
+    });
+    document.querySelectorAll('.dashboard-view-nav [data-dashboard-view]').forEach((btn) => {
+      if (btn === document.body) return;
+      const on = btn.getAttribute('data-dashboard-view') === next;
+      btn.classList.toggle('is-active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    if (next === 'live') {
+      const mapSection = document.querySelector('.dashboard-section[data-section-id="map"]');
+      const devicesSection = document.querySelector('.dashboard-section[data-section-id="devices"]');
+      if (mapSection) setSectionOpen(mapSection, true, false);
+      if (devicesSection) setSectionOpen(devicesSection, true, false);
+      invalidateMap();
+      setTimeout(invalidateMap, 200);
+    }
+    if (next === 'history') {
+      const historySection = document.querySelector('.dashboard-section[data-section-id="history"]');
+      if (historySection) setSectionOpen(historySection, true, false);
+    }
+    if (!opts.skipHash) {
+      const hash = next === 'live' ? '' : `#${next}`;
+      if (hash !== location.hash) {
+        window.history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
+      }
+    }
+  }
+
   window.dashboardInitSections = function () {
     initSections();
     initMapFullscreen();
-    initQuickNav();
+    initViewNav();
+    const fromHash = (location.hash || '').replace('#', '');
+    setDashboardView(fromHash === 'history' || fromHash === 'setup' ? fromHash : 'live', {
+      skipHash: true,
+    });
   };
 
   function openSectionById(id, scroll = true) {
+    const view = VIEW_BY_SECTION[id] || 'setup';
+    setDashboardView(view);
     const section = document.querySelector(`.dashboard-section[data-section-id="${id}"]`);
     if (!section) return;
     setSectionOpen(section, true);
-    document.querySelectorAll('.dashboard-quick-nav__btn').forEach((btn) => {
-      btn.classList.toggle(
-        'dashboard-quick-nav__btn--active',
-        btn.getAttribute('data-section-jump') === id,
-      );
-    });
-    if (scroll) {
+    if (scroll && view !== 'live') {
       section.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }
 
-  function initQuickNav() {
-    document.querySelectorAll('[data-section-jump]').forEach((btn) => {
+  function initViewNav() {
+    document.querySelectorAll('.dashboard-view-nav [data-dashboard-view]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-section-jump');
-        if (id) openSectionById(id);
+        setDashboardView(btn.getAttribute('data-dashboard-view'));
       });
+    });
+    window.addEventListener('hashchange', () => {
+      const fromHash = (location.hash || '').replace('#', '');
+      if (fromHash === 'history' || fromHash === 'setup' || fromHash === 'live' || !fromHash) {
+        setDashboardView(fromHash || 'live', { skipHash: true });
+      }
     });
   }
 
   window.dashboardOpenSection = openSectionById;
+  window.dashboardSetView = setDashboardView;
+  window.dashboardCurrentView = currentView;
 
   window.dashboardInvalidateMap = invalidateMap;
 })();
