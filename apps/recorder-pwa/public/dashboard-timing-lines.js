@@ -4,16 +4,14 @@
 (function () {
   const $ = (sel) => document.querySelector(sel);
 
-  let timingLayer = null;
-  let timingDraftLayer = null;
-  let timingEditLayer = null;
   let lines = [];
   let drawMode = null;
   let editLinesMode = false;
   let startDraft = [];
   let finishDraft = [];
-  let previewLayer = null;
   let monitorCourseGroup = localStorage.getItem('rnz_timing_monitor_course') || '';
+  const layersByMap = new WeakMap();
+  const clickBound = new WeakSet();
 
   const EARTH_R = 6371000;
 
@@ -46,8 +44,43 @@
       .replace(/"/g, '&quot;');
   }
 
+  function workMaps() {
+    if (typeof window.dashboardWorkMaps === 'function') return window.dashboardWorkMaps();
+    return [window.dashboardSetupMap, window.dashboardFleetMap].filter(Boolean);
+  }
+
   function getMap() {
-    return window.dashboardFleetMap || null;
+    if (typeof window.dashboardEditMap === 'function') return window.dashboardEditMap();
+    return window.dashboardSetupMap || window.dashboardFleetMap || null;
+  }
+
+  function layersFor(map) {
+    if (!map || typeof L === 'undefined') return null;
+    let layers = layersByMap.get(map);
+    if (!layers) {
+      layers = {
+        timing: L.layerGroup().addTo(map),
+        draft: L.layerGroup().addTo(map),
+        edit: L.layerGroup().addTo(map),
+        preview: L.layerGroup().addTo(map),
+      };
+      layersByMap.set(map, layers);
+    }
+    return layers;
+  }
+
+  function setMapsCursor(cursor) {
+    for (const map of workMaps()) {
+      map.getContainer().style.cursor = cursor || '';
+    }
+  }
+
+  function bindMapClicks() {
+    for (const map of workMaps()) {
+      if (clickBound.has(map)) continue;
+      clickBound.add(map);
+      map.on('click', onMapClick);
+    }
   }
 
   function toRad(d) {
@@ -251,63 +284,63 @@
   }
 
   function updateCoursePreviewLayer() {
-    const map = getMap();
     const start = resolveStartLine();
-    if (!map || typeof L === 'undefined' || !start) {
-      previewLayer?.clearLayers();
-      return;
-    }
-    if (!previewLayer) previewLayer = L.layerGroup().addTo(map);
-    previewLayer.clearLayers();
+    if (typeof L === 'undefined') return;
+    for (const map of workMaps()) {
+      const layers = layersFor(map);
+      if (!layers) continue;
+      layers.preview.clearLayers();
+      if (!start) continue;
 
-    const { lat1, lon1, lat2, lon2 } = start;
-    const dir = $('#timingCourseDirection')?.value || 'right';
-    const brg = courseBearingFromLine(lat1, lon1, lat2, lon2, dir);
-    const adjust = $('#timingAdjustDistance')?.checked !== false;
-    const parallel = $('#timingParallelLines')?.checked !== false;
-    const target = Number($('#timingTotalDistance')?.value) || 2000;
-    const splitCount = Number($('#timingSplitCount')?.value) || 0;
+      const { lat1, lon1, lat2, lon2 } = start;
+      const dir = $('#timingCourseDirection')?.value || 'right';
+      const brg = courseBearingFromLine(lat1, lon1, lat2, lon2, dir);
+      const adjust = $('#timingAdjustDistance')?.checked !== false;
+      const parallel = $('#timingParallelLines')?.checked !== false;
+      const target = Number($('#timingTotalDistance')?.value) || 2000;
+      const splitCount = Number($('#timingSplitCount')?.value) || 0;
 
-    const finish = resolveFinishLine();
-    let total = target;
-    if (finish) {
-      const measured = measureCourseDistanceM(start, finish, dir);
-      if (measured != null) total = adjust ? target : measured;
-    }
+      const finish = resolveFinishLine();
+      let total = target;
+      if (finish) {
+        const measured = measureCourseDistanceM(start, finish, dir);
+        if (measured != null) total = adjust ? target : measured;
+      }
 
-    const splits = computeSplitDistances(total, splitCount);
+      const splits = computeSplitDistances(total, splitCount);
 
-    const drawLine = (pts, style) => {
-      L.polyline(
-        [
-          [pts.lat1, pts.lon1],
-          [pts.lat2, pts.lon2],
-        ],
-        style,
-      ).addTo(previewLayer);
-    };
+      const drawLine = (pts, style) => {
+        L.polyline(
+          [
+            [pts.lat1, pts.lon1],
+            [pts.lat2, pts.lon2],
+          ],
+          style,
+        ).addTo(layers.preview);
+      };
 
-    drawLine({ lat1, lon1, lat2, lon2 }, { color: '#22c55e', weight: 2, dashArray: '6 4', opacity: 0.85 });
+      drawLine({ lat1, lon1, lat2, lon2 }, { color: '#22c55e', weight: 2, dashArray: '6 4', opacity: 0.85 });
 
-    for (const d of splits) {
-      drawLine(parallelLineAtDistance(lat1, lon1, lat2, lon2, brg, d), {
-        color: '#3b82f6',
+      for (const d of splits) {
+        drawLine(parallelLineAtDistance(lat1, lon1, lat2, lon2, brg, d), {
+          color: '#3b82f6',
+          weight: 2,
+          dashArray: '8 6',
+          opacity: 0.7,
+        });
+      }
+
+      const finishPts =
+        finish && !parallel
+          ? finish
+          : parallelLineAtDistance(lat1, lon1, lat2, lon2, brg, total);
+      drawLine(finishPts, {
+        color: '#ef4444',
         weight: 2,
-        dashArray: '8 6',
-        opacity: 0.7,
+        dashArray: '6 4',
+        opacity: 0.85,
       });
     }
-
-    const finishPts =
-      finish && !parallel
-        ? finish
-        : parallelLineAtDistance(lat1, lon1, lat2, lon2, brg, total);
-    drawLine(finishPts, {
-      color: '#ef4444',
-      weight: 2,
-      dashArray: '6 4',
-      opacity: 0.85,
-    });
   }
 
   function setStatus(msg, isError) {
@@ -332,34 +365,34 @@
   }
 
   function drawTimingLines() {
-    const map = getMap();
-    if (!map || typeof L === 'undefined') return;
-    if (!timingLayer) timingLayer = L.layerGroup().addTo(map);
-    timingLayer.clearLayers();
-    timingEditLayer?.clearLayers();
+    if (typeof L === 'undefined') return;
+    for (const map of workMaps()) {
+      const layers = layersFor(map);
+      if (!layers) continue;
+      layers.timing.clearLayers();
+      layers.edit.clearLayers();
 
-    for (const line of sortedLines()) {
-      if (line.enabled === false) continue;
-      const latLngs = [
-        [line.lat1, line.lon1],
-        [line.lat2, line.lon2],
-      ];
-      const layer = L.polyline(latLngs, lineStyle(line));
-      const label =
-        line.distanceM != null ? `${esc(line.name)} · ${Math.round(line.distanceM)} m` : esc(line.name);
-      layer.bindPopup(`<strong>${label}</strong><br>${esc(line.lineType)} line`);
-      timingLayer.addLayer(layer);
+      for (const line of sortedLines()) {
+        if (line.enabled === false) continue;
+        const latLngs = [
+          [line.lat1, line.lon1],
+          [line.lat2, line.lon2],
+        ];
+        const layer = L.polyline(latLngs, lineStyle(line));
+        const label =
+          line.distanceM != null ? `${esc(line.name)} · ${Math.round(line.distanceM)} m` : esc(line.name);
+        layer.bindPopup(`<strong>${label}</strong><br>${esc(line.lineType)} line`);
+        layers.timing.addLayer(layer);
 
-      if (editLinesMode) {
-        attachLineEditHandles(line);
+        if (editLinesMode) {
+          attachLineEditHandles(line, layers.edit);
+        }
       }
     }
   }
 
-  function attachLineEditHandles(line) {
-    const map = getMap();
-    if (!map) return;
-    if (!timingEditLayer) timingEditLayer = L.layerGroup().addTo(map);
+  function attachLineEditHandles(line, editLayer) {
+    if (!editLayer) return;
 
     const saveEndpoint = async (which, lat, lon) => {
       const payload =
@@ -393,39 +426,41 @@
           const { lat: la, lng: lo } = e.target.getLatLng();
           void saveEndpoint(which, la, lo);
         })
-        .addTo(timingEditLayer);
+        .addTo(editLayer);
 
     mk(line.lat1, line.lon1, 1);
     mk(line.lat2, line.lon2, 2);
   }
 
   function updateDraftLayer() {
-    const map = getMap();
-    if (!map || typeof L === 'undefined') return;
-    if (!timingDraftLayer) timingDraftLayer = L.layerGroup().addTo(map);
-    timingDraftLayer.clearLayers();
+    if (typeof L === 'undefined') return;
+    for (const map of workMaps()) {
+      const layers = layersFor(map);
+      if (!layers) continue;
+      layers.draft.clearLayers();
 
-    const drawDraft = (draft, color) => {
-      if (!draft.length) return;
-      for (const p of draft) {
-        L.circleMarker([p.lat, p.lon], {
-          radius: 6,
-          color,
-          fillColor: '#fff',
-          fillOpacity: 1,
-          weight: 2,
-        }).addTo(timingDraftLayer);
-      }
-      if (draft.length >= 2) {
-        L.polyline(
-          draft.map((p) => [p.lat, p.lon]),
-          { color, weight: 3 },
-        ).addTo(timingDraftLayer);
-      }
-    };
+      const drawDraft = (draft, color) => {
+        if (!draft.length) return;
+        for (const p of draft) {
+          L.circleMarker([p.lat, p.lon], {
+            radius: 6,
+            color,
+            fillColor: '#fff',
+            fillOpacity: 1,
+            weight: 2,
+          }).addTo(layers.draft);
+        }
+        if (draft.length >= 2) {
+          L.polyline(
+            draft.map((p) => [p.lat, p.lon]),
+            { color, weight: 3 },
+          ).addTo(layers.draft);
+        }
+      };
 
-    drawDraft(startDraft, '#22c55e');
-    drawDraft(finishDraft, '#ef4444');
+      drawDraft(startDraft, '#22c55e');
+      drawDraft(finishDraft, '#ef4444');
+    }
   }
 
   function updateDrawStatus() {
@@ -457,8 +492,7 @@
       finishBtn.textContent = drawMode === 'finish' ? 'Click map: finish line…' : 'Draw finish line';
       finishBtn.classList.toggle('hub-btn--primary', drawMode === 'finish');
     }
-    const map = getMap();
-    if (map) map.getContainer().style.cursor = drawMode ? 'crosshair' : '';
+    setMapsCursor(drawMode ? 'crosshair' : '');
     updateDrawStatus();
   }
 
@@ -502,7 +536,9 @@
       btn.textContent = on ? 'Editing course (drag endpoints)' : 'Edit course on map';
       btn.classList.toggle('hub-btn--primary', on);
     }
-    if (!on) timingEditLayer?.clearLayers();
+    if (!on) {
+      for (const map of workMaps()) layersFor(map)?.edit.clearLayers();
+    }
     drawTimingLines();
   }
 
@@ -699,7 +735,6 @@
     $('#timingSelectStart') && ($('#timingSelectStart').value = '');
     $('#timingSelectFinish') && ($('#timingSelectFinish').value = '');
     updateDrawButtons();
-    previewLayer?.clearLayers();
     updateDraftLayer();
     monitorCourseGroup = courseGroup;
     localStorage.setItem('rnz_timing_monitor_course', courseGroup);
@@ -912,8 +947,7 @@
       $(sel)?.addEventListener('change', updateSplitPreview);
     });
 
-    const map = getMap();
-    if (map) map.on('click', onMapClick);
+    bindMapClicks();
     updateSplitPreview();
     updateDrawButtons();
   }

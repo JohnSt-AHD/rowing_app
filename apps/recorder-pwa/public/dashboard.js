@@ -997,6 +997,17 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
+function initSetupMap() {
+  const el = $('#setupMap');
+  if (!el || window.dashboardSetupMap || typeof L === 'undefined') return;
+  const setup = L.map(el, { zoomControl: true }).setView(MAP_CENTER, MAP_ZOOM);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap',
+  }).addTo(setup);
+  window.dashboardSetupMap = setup;
+}
+
 function initMap() {
   const el = $('#fleetMap');
   if (!el || map || typeof L === 'undefined') return;
@@ -1019,6 +1030,7 @@ function initMap() {
   map.on('dragstart', onUserMapMove);
 
   window.dashboardFleetMap = map;
+  initSetupMap();
   if (typeof window.dashboardInitGeofences === 'function') {
     window.dashboardInitGeofences();
   }

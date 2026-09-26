@@ -4,15 +4,14 @@
 (function () {
   const $ = (sel) => document.querySelector(sel);
 
-  let geofenceLayer = null;
-  let draftLayer = null;
   let pickMode = false;
   let drawPolygonMode = false;
   let polygonDraft = [];
   let polygonReady = false;
   let geofences = [];
   let editGeofenceMode = false;
-  let geofenceEditLayer = null;
+  const layersByMap = new WeakMap();
+  const clickBound = new WeakSet();
 
   const GEOFENCE_STYLE = {
     color: '#f59e0b',
@@ -46,8 +45,42 @@
     el.classList.toggle('poll-line--warn', !!isError);
   }
 
+  function workMaps() {
+    if (typeof window.dashboardWorkMaps === 'function') return window.dashboardWorkMaps();
+    return [window.dashboardSetupMap, window.dashboardFleetMap].filter(Boolean);
+  }
+
   function getMap() {
-    return window.dashboardFleetMap || null;
+    if (typeof window.dashboardEditMap === 'function') return window.dashboardEditMap();
+    return window.dashboardSetupMap || window.dashboardFleetMap || null;
+  }
+
+  function layersFor(map) {
+    if (!map || typeof L === 'undefined') return null;
+    let layers = layersByMap.get(map);
+    if (!layers) {
+      layers = {
+        geofence: L.layerGroup().addTo(map),
+        draft: L.layerGroup().addTo(map),
+        edit: L.layerGroup().addTo(map),
+      };
+      layersByMap.set(map, layers);
+    }
+    return layers;
+  }
+
+  function setMapsCursor(cursor) {
+    for (const map of workMaps()) {
+      map.getContainer().style.cursor = cursor || '';
+    }
+  }
+
+  function bindMapClicks() {
+    for (const map of workMaps()) {
+      if (clickBound.has(map)) continue;
+      clickBound.add(map);
+      map.on('click', onMapClick);
+    }
   }
 
   function currentShapeType() {
@@ -70,30 +103,30 @@
   }
 
   function drawGeofences() {
-    const map = getMap();
-    if (!map || typeof L === 'undefined') return;
-    if (!geofenceLayer) {
-      geofenceLayer = L.layerGroup().addTo(map);
-    }
-    geofenceLayer.clearLayers();
-    geofenceEditLayer?.clearLayers();
-    for (const g of geofences) {
-      if (!g.enabled) continue;
-      let layer;
-      if (g.shapeType === 'polygon' && Array.isArray(g.polygonCoords) && g.polygonCoords.length >= 3) {
-        layer = L.polygon(
-          g.polygonCoords.map((pt) => [pt[0], pt[1]]),
-          GEOFENCE_STYLE,
-        );
-      } else {
-        layer = L.circle([g.centerLat, g.centerLon], {
-          radius: g.radiusM,
-          ...GEOFENCE_STYLE,
-        });
+    if (typeof L === 'undefined') return;
+    for (const map of workMaps()) {
+      const layers = layersFor(map);
+      if (!layers) continue;
+      layers.geofence.clearLayers();
+      layers.edit.clearLayers();
+      for (const g of geofences) {
+        if (!g.enabled) continue;
+        let layer;
+        if (g.shapeType === 'polygon' && Array.isArray(g.polygonCoords) && g.polygonCoords.length >= 3) {
+          layer = L.polygon(
+            g.polygonCoords.map((pt) => [pt[0], pt[1]]),
+            GEOFENCE_STYLE,
+          );
+        } else {
+          layer = L.circle([g.centerLat, g.centerLon], {
+            radius: g.radiusM,
+            ...GEOFENCE_STYLE,
+          });
+        }
+        layer.bindPopup(popupHtml(g));
+        layers.geofence.addLayer(layer);
+        if (editGeofenceMode) attachGeofenceEditHandles(g, layers.edit);
       }
-      layer.bindPopup(popupHtml(g));
-      geofenceLayer.addLayer(layer);
-      if (editGeofenceMode) attachGeofenceEditHandles(g);
     }
   }
 
@@ -112,10 +145,8 @@
     await loadGeofences();
   }
 
-  function attachGeofenceEditHandles(g) {
-    const map = getMap();
-    if (!map) return;
-    if (!geofenceEditLayer) geofenceEditLayer = L.layerGroup().addTo(map);
+  function attachGeofenceEditHandles(g, editLayer) {
+    if (!editLayer) return;
 
     const handleIcon = L.divIcon({
       className: 'geofence-edit-handle',
@@ -133,7 +164,7 @@
             );
             void saveGeofenceGeometry(g.id, { polygonCoords: next });
           })
-          .addTo(geofenceEditLayer);
+          .addTo(editLayer);
       });
       return;
     }
@@ -143,7 +174,7 @@
         const { lat, lng } = e.target.getLatLng();
         void saveGeofenceGeometry(g.id, { centerLat: lat, centerLon: lng });
       })
-      .addTo(geofenceEditLayer);
+      .addTo(editLayer);
 
     const edge = destinationPoint(g.centerLat, g.centerLon, g.radiusM, 90);
     L.marker(edge, { draggable: true, icon: handleIcon })
@@ -156,7 +187,7 @@
           radiusM: Math.max(20, Math.round(r)),
         });
       })
-      .addTo(geofenceEditLayer);
+      .addTo(editLayer);
   }
 
   function haversineM(lat1, lon1, lat2, lon2) {
@@ -197,17 +228,10 @@
       btn.textContent = on ? 'Editing zones (drag points)' : 'Edit zones on map';
       btn.classList.toggle('hub-btn--primary', on);
     }
-    if (!on) geofenceEditLayer?.clearLayers();
-    drawGeofences();
-  }
-
-  function ensureDraftLayer() {
-    const map = getMap();
-    if (!map || typeof L === 'undefined') return null;
-    if (!draftLayer) {
-      draftLayer = L.layerGroup().addTo(map);
+    if (!on) {
+      for (const map of workMaps()) layersFor(map)?.edit.clearLayers();
     }
-    return draftLayer;
+    drawGeofences();
   }
 
   function updateDrawStatus() {
@@ -227,35 +251,38 @@
   }
 
   function updateDraftLayer() {
-    const layer = ensureDraftLayer();
-    if (!layer) return;
-    layer.clearLayers();
-    if (!polygonDraft.length) return;
+    if (typeof L === 'undefined') return;
+    for (const map of workMaps()) {
+      const layers = layersFor(map);
+      if (!layers) continue;
+      layers.draft.clearLayers();
+      if (!polygonDraft.length) continue;
 
-    const latLngs = polygonDraft.map((p) => [p.lat, p.lon]);
-    if (polygonDraft.length >= 2) {
-      L.polyline(latLngs, {
-        color: '#f59e0b',
-        weight: 2,
-        dashArray: '4 6',
-      }).addTo(layer);
-    }
-    if (polygonDraft.length >= 3) {
-      L.polygon(latLngs, {
-        color: '#f59e0b',
-        fillColor: '#f59e0b',
-        fillOpacity: 0.08,
-        weight: 2,
-      }).addTo(layer);
-    }
-    for (const p of polygonDraft) {
-      L.circleMarker([p.lat, p.lon], {
-        radius: 5,
-        color: '#f59e0b',
-        fillColor: '#fff',
-        fillOpacity: 1,
-        weight: 2,
-      }).addTo(layer);
+      const latLngs = polygonDraft.map((p) => [p.lat, p.lon]);
+      if (polygonDraft.length >= 2) {
+        L.polyline(latLngs, {
+          color: '#f59e0b',
+          weight: 2,
+          dashArray: '4 6',
+        }).addTo(layers.draft);
+      }
+      if (polygonDraft.length >= 3) {
+        L.polygon(latLngs, {
+          color: '#f59e0b',
+          fillColor: '#f59e0b',
+          fillOpacity: 0.08,
+          weight: 2,
+        }).addTo(layers.draft);
+      }
+      for (const p of polygonDraft) {
+        L.circleMarker([p.lat, p.lon], {
+          radius: 5,
+          color: '#f59e0b',
+          fillColor: '#fff',
+          fillOpacity: 1,
+          weight: 2,
+        }).addTo(layers.draft);
+      }
     }
   }
 
@@ -277,7 +304,7 @@
   function clearPolygonDraft() {
     polygonDraft = [];
     polygonReady = false;
-    draftLayer?.clearLayers();
+    updateDraftLayer();
     updateDrawButtons();
   }
 
@@ -290,15 +317,14 @@
       btn.classList.toggle('hub-btn--primary', on);
     }
     const map = getMap();
-    if (map && !drawPolygonMode) map.getContainer().style.cursor = on ? 'crosshair' : '';
+    if (map && !drawPolygonMode) setMapsCursor(on ? 'crosshair' : '');
   }
 
   function setDrawPolygonMode(on) {
     if (on) setPickMode(false);
     drawPolygonMode = on;
     if (!on && polygonDraft.length >= 3) polygonReady = true;
-    const map = getMap();
-    if (map) map.getContainer().style.cursor = on ? 'crosshair' : '';
+    setMapsCursor(on ? 'crosshair' : '');
     updateDrawButtons();
     updateDraftLayer();
   }
@@ -337,7 +363,7 @@
     if (!el) return;
     if (!geofences.length) {
       el.innerHTML =
-        '<p class="poll-line">No geofence zones yet. Add a circle below or draw a polygon on the fleet map.</p>';
+        '<p class="poll-line">No geofence zones yet. Add a circle below or draw a polygon on the map.</p>';
       return;
     }
     el.innerHTML = geofences
@@ -518,8 +544,7 @@
     );
     $('#geofenceEditToggle')?.addEventListener('click', () => setEditGeofenceMode(!editGeofenceMode));
 
-    const map = getMap();
-    if (map) map.on('click', onMapClick);
+    bindMapClicks();
     updateShapeFields();
     updateDrawButtons();
   }

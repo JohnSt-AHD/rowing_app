@@ -323,6 +323,124 @@
   border-radius: 14px;
 }
 
+.setup-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 22px;
+  margin: 0 0 16px;
+  padding: 0 2px 12px;
+  border-bottom: 1px solid rgba(17, 17, 17, 0.08);
+}
+
+.setup-tab {
+  appearance: none;
+  padding: 8px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--hub-mute);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.setup-tab:hover {
+  color: var(--hub-ink);
+}
+
+.setup-tab.is-active {
+  color: var(--hub-ink);
+  font-weight: 600;
+}
+
+.setup-tab:focus-visible {
+  outline: 2px solid var(--hub-ink);
+  outline-offset: 4px;
+}
+
+.setup-tab-panel[hidden] {
+  display: none !important;
+}
+
+.setup-tab-panel .dashboard-section__head {
+  display: flex;
+  align-items: center;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+}
+
+.setup-tab-panel .dashboard-section__toggle {
+  pointer-events: none;
+  cursor: default;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.setup-tab-panel .dashboard-section__chevron {
+  display: none;
+}
+
+.setup-tab-panel .dashboard-section__body {
+  display: block !important;
+}
+
+.setup-tab-panel.hub-panel {
+  padding: 18px 20px 22px;
+}
+
+.hub-page[data-dashboard-view='setup'] .ahd-app-wrap {
+  max-width: 1440px;
+}
+
+.setup-geo-forms {
+  min-width: 0;
+}
+
+.geofence-edit-handle,
+.timing-line-handle {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #111;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+
+.setup-map {
+  height: min(58vh, 560px);
+  min-height: 320px;
+}
+
+.setup-map-legend {
+  position: relative;
+  z-index: 1;
+  top: auto;
+  bottom: auto;
+  left: auto;
+  right: auto;
+  margin: 0 0 10px;
+}
+
+@media (min-width: 1100px) {
+  .setup-geo-layout {
+    grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.9fr);
+    align-items: start;
+  }
+
+  .setup-geo-map-col {
+    position: sticky;
+    top: 72px;
+  }
+
+  .setup-map {
+    height: min(70vh, 720px);
+    min-height: 420px;
+  }
+}
+
 @media (max-width: 1099px) {
   .dashboard-view-nav .hub-role-nav-inner {
     justify-content: center;

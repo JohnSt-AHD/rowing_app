@@ -147,7 +147,15 @@
       </div>
 
       <div class="dashboard-view dashboard-view--setup">
-      <section class="hub-panel dashboard-section" data-section-id="capsize-emails" data-default-open="false" id="capsizeEmailPanel">
+      <nav class="setup-tabs" aria-label="Setup sections" role="tablist">
+        <button type="button" class="setup-tab is-active" role="tab" id="setupTabGeofences" aria-selected="true" aria-controls="geofencePanel" data-setup-tab="geofences">Geofences</button>
+        <button type="button" class="setup-tab" role="tab" id="setupTabAlerts" aria-selected="false" aria-controls="capsizeEmailPanel" data-setup-tab="alerts">Alerts</button>
+        <button type="button" class="setup-tab" role="tab" id="setupTabMessages" aria-selected="false" aria-controls="regattaPanel" data-setup-tab="messages">Messages</button>
+        <button type="button" class="setup-tab" role="tab" id="setupTabSettings" aria-selected="false" aria-controls="settingsPanel" data-setup-tab="settings">Settings</button>
+        <button type="button" class="setup-tab" role="tab" id="setupTabData" aria-selected="false" aria-controls="dataManagePanel" data-setup-tab="data">Data</button>
+        <button type="button" class="setup-tab" role="tab" id="setupTabDebug" aria-selected="false" aria-controls="monitorStatsPanel" data-setup-tab="debug">Debug</button>
+      </nav>
+      <section class="hub-panel dashboard-section setup-tab-panel" data-section-id="capsize-emails" data-setup-panel="alerts" data-default-open="true" id="capsizeEmailPanel" hidden>
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-capsize-emails">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
@@ -188,7 +196,7 @@
         </div>
       </section>
 
-      <section class="hub-panel hub-panel--regatta dashboard-section" data-section-id="regatta" data-default-open="false" id="regattaPanel">
+      <section class="hub-panel hub-panel--regatta dashboard-section setup-tab-panel" data-section-id="regatta" data-setup-panel="messages" data-default-open="true" id="regattaPanel" hidden>
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-regatta">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
@@ -223,14 +231,28 @@
         </div>
       </section>
 
-      <section class="hub-panel hub-panel--geofences dashboard-section" data-section-id="geofences" data-default-open="false" id="geofencePanel">
+      <section class="hub-panel hub-panel--geofences dashboard-section setup-tab-panel" data-section-id="geofences" data-setup-panel="geofences" data-default-open="true" id="geofencePanel">
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-geofences">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
             <h2 class="hub-section-title">Geofence zones</h2>
           </button>
         </div>
-        <div class="dashboard-section__body" id="section-body-geofences" hidden>
+        <div class="dashboard-section__body" id="section-body-geofences">
+          <div class="setup-geo-layout">
+            <div class="setup-geo-map-col">
+              <p class="map-legend map-legend--compact setup-map-legend">
+                <span class="map-legend-item map-legend-item--amber">● Geofence</span>
+                <span class="map-legend-item map-legend-item--live">● Start</span>
+                <span class="map-legend-item map-legend-item--lost">● Finish</span>
+                <span class="map-legend-item" style="color:#2563eb">● Split</span>
+              </p>
+              <div id="setupMap" class="fleet-map setup-map" role="application" aria-label="Geofence and race course map"></div>
+              <p class="poll-line map-status">
+                Click this map to pick a zone centre, draw a polygon, or place start and finish lines. Drag handles when edit is on.
+              </p>
+            </div>
+            <div class="setup-geo-forms">
           <p class="geofence-intro">
             Define boat-park zones for phones: <strong>economy mode</strong> (slower GPS),
             optional <strong>capsize off</strong>, and session control —
@@ -281,7 +303,7 @@
             </div>
             <div id="geofencePolygonFields" class="geofence-shape-fields" hidden>
               <p class="geofence-draw-help">
-                Click <strong>Draw on map</strong>, then click the fleet map to place corners. Use at least three points, then finish the shape.
+                Click <strong>Draw on map</strong>, then click the map to place corners. Use at least three points, then finish the shape.
               </p>
               <p class="geofence-draw-status poll-line" id="geofenceDrawStatus">No polygon drawn yet.</p>
               <div class="geofence-form__actions">
@@ -342,7 +364,7 @@
           <h3 class="hub-subsection-title">Timing courses</h3>
           <p class="geofence-intro">
             Create a <strong>course</strong> by drawing or selecting a <strong>start</strong> and
-            <strong>finish</strong> line on the map. Split lines are placed at equal distances in between.
+            <strong>finish</strong> line on this map. Split lines are placed at equal distances in between.
             Use <em>Adjust to target distance</em> to snap the finish line (and splits) to an exact length
             while keeping lines parallel.
           </p>
@@ -426,10 +448,12 @@
           </div>
           <div id="timingLiveTable" class="timing-live-table-wrap" aria-live="polite"></div>
           <p class="poll-line" id="timingLineStatus">Loading timing lines…</p>
+            </div>
+          </div>
         </div>
       </section>
 
-      <section class="hub-panel hub-panel--monitor-stats dashboard-section" data-section-id="monitor-stats" data-default-open="false" id="monitorStatsPanel">
+      <section class="hub-panel hub-panel--monitor-stats dashboard-section setup-tab-panel" data-section-id="monitor-stats" data-setup-panel="debug" data-default-open="true" id="monitorStatsPanel" hidden>
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-monitor-stats">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
@@ -555,7 +579,7 @@
       </div>
 
       <div class="dashboard-view dashboard-view--setup dashboard-view--setup-tail">
-      <section class="hub-panel ahd-controls-panel hub-panel--settings dashboard-section" data-section-id="settings" data-default-open="false">
+      <section class="hub-panel ahd-controls-panel hub-panel--settings dashboard-section setup-tab-panel" data-section-id="settings" data-setup-panel="settings" data-default-open="true" id="settingsPanel" hidden>
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-settings">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
@@ -626,7 +650,7 @@
         </div>
       </section>
 
-      <section class="hub-panel hub-panel--data-manage dashboard-section" data-section-id="data-manage" data-default-open="false" id="dataManagePanel">
+      <section class="hub-panel hub-panel--data-manage dashboard-section setup-tab-panel" data-section-id="data-manage" data-setup-panel="data" data-default-open="true" id="dataManagePanel" hidden>
         <div class="dashboard-section__head">
           <button type="button" class="dashboard-section__toggle" aria-expanded="false" aria-controls="section-body-data-manage">
             <span class="dashboard-section__chevron" aria-hidden="true"></span>
