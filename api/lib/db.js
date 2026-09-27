@@ -189,11 +189,15 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_cleared_at TIMESTAMPTZ`;
   await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'recorder'`;
   await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS rower_name TEXT`;
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_rnz_sessions_open_walkup
-      ON rnz_sessions (org_id, unique_id)
-      WHERE ended_at IS NULL AND source = 'walkup'
-  `;
+  try {
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_rnz_sessions_open_walkup
+        ON rnz_sessions (org_id, unique_id)
+        WHERE ended_at IS NULL AND source = 'walkup'
+    `;
+  } catch (err) {
+    console.warn('[db] walkup index skipped:', err && err.message ? err.message : err);
+  }
   await sql`
     CREATE INDEX IF NOT EXISTS idx_rnz_samples_unique_time
       ON rnz_samples (unique_id, t_ms DESC)
@@ -959,24 +963,29 @@ async function endWalkupSession(orgId, sessionId) {
  */
 async function listOpenWalkupSessions(orgId) {
   if (!hasDb()) return [];
-  await ensureOrgsBootstrapped();
-  const sql = await getSql();
-  const rows = await sql`
-    SELECT session_id, unique_id, rower_name, athlete_id, started_at, updated_at
-    FROM rnz_sessions
-    WHERE org_id = ${orgId}
-      AND source = 'walkup'
-      AND ended_at IS NULL
-    ORDER BY started_at DESC
-    LIMIT 200
-  `;
-  return rows.rows.map((row) => ({
-    sessionId: String(row.session_id),
-    deviceId: String(row.unique_id),
-    rowerName: String(row.rower_name || row.athlete_id || '').trim() || null,
-    startedAtMs: new Date(row.started_at).getTime(),
-    updatedAtMs: new Date(row.updated_at || row.started_at).getTime(),
-  }));
+  try {
+    await ensureOrgsBootstrapped();
+    const sql = await getSql();
+    const rows = await sql`
+      SELECT session_id, unique_id, rower_name, athlete_id, started_at, updated_at
+      FROM rnz_sessions
+      WHERE org_id = ${orgId}
+        AND source = 'walkup'
+        AND ended_at IS NULL
+      ORDER BY started_at DESC
+      LIMIT 200
+    `;
+    return rows.rows.map((row) => ({
+      sessionId: String(row.session_id),
+      deviceId: String(row.unique_id),
+      rowerName: String(row.rower_name || row.athlete_id || '').trim() || null,
+      startedAtMs: new Date(row.started_at).getTime(),
+      updatedAtMs: new Date(row.updated_at || row.started_at).getTime(),
+    }));
+  } catch (err) {
+    console.error('[db] listOpenWalkupSessions failed:', err);
+    return [];
+  }
 }
 
 /**
