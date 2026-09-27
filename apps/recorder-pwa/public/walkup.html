@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a1628" />
-    <title>CrewSight · Start session</title>
+    <title>CrewSight · Check in</title>
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
     <link rel="stylesheet" href="/ahd-hub-theme.css" />
     <style>
@@ -17,78 +17,102 @@
         color: #e8f4fc;
       }
       .wrap {
-        max-width: 28rem;
+        max-width: 26rem;
         margin: 0 auto;
-        padding: 1.25rem 1.1rem 2rem;
+        padding: 1.1rem 1rem 2rem;
       }
       .brand {
-        display: flex;
-        align-items: center;
-        gap: 0.65rem;
-        margin-bottom: 1.25rem;
+        text-align: center;
+        margin-bottom: 1rem;
       }
-      .brand img { height: 36px; width: auto; }
+      .brand img {
+        height: 42px;
+        width: auto;
+        display: block;
+        margin: 0 auto 0.45rem;
+      }
       .brand h1 {
         margin: 0;
-        font-size: 1.15rem;
-        font-weight: 700;
+        font-size: 1.25rem;
+        font-weight: 800;
         letter-spacing: -0.02em;
       }
       .brand p {
-        margin: 0.1rem 0 0;
-        font-size: 0.78rem;
+        margin: 0.2rem 0 0;
+        font-size: 0.85rem;
         color: #94a3b8;
       }
       .card {
         background: linear-gradient(180deg, rgba(15, 35, 58, 0.98), rgba(10, 22, 40, 0.96));
         border: 1px solid rgba(56, 189, 248, 0.28);
-        border-radius: 14px;
-        padding: 1.1rem 1rem 1.2rem;
+        border-radius: 16px;
+        padding: 1.15rem 1rem 1.25rem;
         box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
       }
-      .lead {
+      .live {
+        display: none;
         margin: 0 0 1rem;
-        font-size: 0.9rem;
+        padding: 0.75rem 0.85rem;
+        border-radius: 12px;
+        background: rgba(13, 148, 136, 0.22);
+        border: 1px solid rgba(45, 212, 191, 0.45);
+        text-align: center;
+      }
+      .live.is-on { display: block; }
+      .live strong {
+        display: block;
+        font-size: 1.05rem;
+        font-weight: 800;
+        color: #5eead4;
+      }
+      .live span {
+        display: block;
+        margin-top: 0.2rem;
+        font-size: 0.88rem;
         color: #cbd5e1;
-        line-height: 1.45;
       }
       label {
         display: block;
-        font-size: 0.72rem;
+        font-size: 0.78rem;
         font-weight: 700;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
+        letter-spacing: 0.03em;
         color: #94a3b8;
         margin: 0 0 0.35rem;
       }
-      .field { margin-bottom: 0.9rem; }
+      .field { margin-bottom: 0.95rem; }
       input, select {
         width: 100%;
-        padding: 0.7rem 0.75rem;
-        border-radius: 10px;
+        padding: 0.85rem 0.85rem;
+        border-radius: 12px;
         border: 1px solid rgba(148, 163, 184, 0.35);
         background: #0c1c34;
         color: #e8f4fc;
         font: inherit;
-        font-size: 1rem;
+        font-size: 1.05rem;
         font-weight: 600;
       }
       input:focus, select:focus {
         outline: 2px solid rgba(0, 229, 255, 0.45);
         border-color: rgba(0, 229, 255, 0.55);
       }
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.65rem;
+        margin-top: 0.35rem;
+      }
       .btn {
         appearance: none;
-        width: 100%;
         border: none;
-        border-radius: 10px;
-        padding: 0.85rem 1rem;
+        border-radius: 12px;
+        padding: 1rem 0.75rem;
         font: inherit;
-        font-size: 1.05rem;
-        font-weight: 700;
+        font-size: 1.1rem;
+        font-weight: 800;
         cursor: pointer;
+        min-height: 3.25rem;
       }
-      .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+      .btn:disabled { opacity: 0.45; cursor: not-allowed; }
       .btn--start {
         background: #00e5ff;
         color: #0a1628;
@@ -98,40 +122,21 @@
         color: #fff;
       }
       .status {
-        margin: 0.85rem 0 0;
-        font-size: 0.88rem;
+        margin: 0.9rem 0 0;
+        font-size: 0.9rem;
         color: #94a3b8;
-        min-height: 1.25rem;
+        min-height: 1.3rem;
+        text-align: center;
+        line-height: 1.35;
       }
       .status--err { color: #fca5a5; }
       .status--ok { color: #5eead4; }
-      .active-box {
-        display: none;
-        text-align: center;
-      }
-      .active-box.is-on { display: block; }
-      .form-box.is-off { display: none; }
-      .active-name {
-        margin: 0 0 0.25rem;
-        font-size: 1.35rem;
-        font-weight: 800;
-      }
-      .active-boat {
-        margin: 0 0 0.35rem;
-        font-size: 1rem;
-        font-weight: 700;
-        color: #00e5ff;
-      }
-      .active-note {
-        margin: 0 0 1rem;
-        font-size: 0.82rem;
-        color: #94a3b8;
-      }
       .token-hint {
-        margin-top: 1rem;
-        font-size: 0.75rem;
+        margin-top: 0.85rem;
+        font-size: 0.78rem;
         color: #64748b;
         line-height: 1.4;
+        text-align: center;
       }
     </style>
   </head>
@@ -139,38 +144,35 @@
     <main class="wrap">
       <div class="brand">
         <img src="/icons/icon.svg" alt="" />
-        <div>
-          <h1>CrewSight check-in</h1>
-          <p>Logbook only · no GPS</p>
-        </div>
+        <h1>Check in</h1>
+        <p>Name · boat · start or stop</p>
       </div>
 
       <section class="card">
-        <div class="form-box" id="formBox">
-          <p class="lead">Enter your name, pick the boat you are taking out, then start a session for the club logbook.</p>
-          <div class="field">
-            <label for="name">Name</label>
-            <input id="name" type="text" autocomplete="name" maxlength="80" placeholder="Your name" />
-          </div>
-          <div class="field">
-            <label for="boat">Boat</label>
-            <select id="boat">
-              <option value="">Loading boats…</option>
-            </select>
-          </div>
-          <button type="button" class="btn btn--start" id="startBtn">Start session</button>
+        <div class="live" id="liveBox" aria-live="polite">
+          <strong id="liveTitle">On water</strong>
+          <span id="liveDetail">—</span>
         </div>
 
-        <div class="active-box" id="activeBox">
-          <p class="active-name" id="activeName">—</p>
-          <p class="active-boat" id="activeBoat">—</p>
-          <p class="active-note">On water · no GPS tracking. Tap stop when you finish.</p>
-          <button type="button" class="btn btn--stop" id="stopBtn">Stop session</button>
+        <div class="field">
+          <label for="name">Name</label>
+          <input id="name" type="text" autocomplete="name" maxlength="80" placeholder="Your name" />
+        </div>
+        <div class="field">
+          <label for="boat">Boat</label>
+          <select id="boat">
+            <option value="">Loading boats…</option>
+          </select>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn btn--start" id="startBtn">Start</button>
+          <button type="button" class="btn btn--stop" id="stopBtn" disabled>Stop</button>
         </div>
 
         <p class="status" id="status"></p>
         <p class="token-hint" id="tokenHint" hidden>
-          This check-in link needs a club token. Ask your coach for the QR / link from RowSafe.
+          This link needs a club token. Ask your coach for the QR from RowSafe.
         </p>
       </section>
     </main>
@@ -186,20 +188,20 @@
         const STORAGE_KEY = 'crewsight_walkup_session';
 
         const el = {
-          formBox: document.getElementById('formBox'),
-          activeBox: document.getElementById('activeBox'),
+          liveBox: document.getElementById('liveBox'),
+          liveTitle: document.getElementById('liveTitle'),
+          liveDetail: document.getElementById('liveDetail'),
           name: document.getElementById('name'),
           boat: document.getElementById('boat'),
           startBtn: document.getElementById('startBtn'),
           stopBtn: document.getElementById('stopBtn'),
           status: document.getElementById('status'),
-          activeName: document.getElementById('activeName'),
-          activeBoat: document.getElementById('activeBoat'),
           tokenHint: document.getElementById('tokenHint'),
         };
 
         let boats = [];
         let heartbeatTimer = null;
+        let active = null;
 
         function setStatus(msg, kind) {
           el.status.textContent = msg || '';
@@ -230,18 +232,26 @@
           else localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
         }
 
-        function showActive(session) {
-          el.formBox.classList.add('is-off');
-          el.activeBox.classList.add('is-on');
-          el.activeName.textContent = session.rowerName || session.name || 'Rower';
-          el.activeBoat.textContent = session.boatName || session.deviceId || 'Boat';
-          startHeartbeat(session.sessionId);
-        }
-
-        function showForm() {
-          el.formBox.classList.remove('is-off');
-          el.activeBox.classList.remove('is-on');
-          stopHeartbeat();
+        function renderActive(session) {
+          active = session || null;
+          if (session?.sessionId) {
+            el.liveBox.classList.add('is-on');
+            el.liveTitle.textContent = 'On water';
+            el.liveDetail.textContent =
+              (session.rowerName || session.name || 'Rower') +
+              ' · ' +
+              (session.boatName || session.deviceId || 'Boat');
+            el.name.value = session.rowerName || session.name || el.name.value;
+            if (session.deviceId) el.boat.value = session.deviceId;
+            el.startBtn.disabled = true;
+            el.stopBtn.disabled = false;
+            startHeartbeat(session.sessionId);
+          } else {
+            el.liveBox.classList.remove('is-on');
+            el.startBtn.disabled = !boats.length || !token;
+            el.stopBtn.disabled = true;
+            stopHeartbeat();
+          }
         }
 
         function startHeartbeat(sessionId) {
@@ -271,6 +281,7 @@
             el.tokenHint.hidden = false;
             el.boat.innerHTML = '<option value="">Club token required</option>';
             el.startBtn.disabled = true;
+            el.stopBtn.disabled = true;
             setStatus('Missing club token in link.', 'err');
             return;
           }
@@ -285,24 +296,32 @@
           }
           boats = Array.isArray(data.boats) ? data.boats : [];
           if (!boats.length) {
-            el.boat.innerHTML = '<option value="">No boats registered yet</option>';
+            el.boat.innerHTML = '<option value="">No boats yet</option>';
             el.startBtn.disabled = true;
-            setStatus('No boats in the club fleet yet. Record once with the app first.', 'err');
+            setStatus('No boats registered yet.', 'err');
             return;
           }
+          const selected = active?.deviceId || '';
           el.boat.innerHTML =
-            '<option value="">Select a boat…</option>' +
+            '<option value="">Select boat…</option>' +
             boats
-              .map(
-                (b) =>
+              .map((b) => {
+                const id = String(b.deviceId);
+                const label = String(b.name || b.deviceId);
+                const sel = id === selected ? ' selected' : '';
+                return (
                   '<option value="' +
-                  String(b.deviceId).replace(/"/g, '&quot;') +
-                  '">' +
-                  String(b.name || b.deviceId).replace(/</g, '&lt;') +
-                  '</option>',
-              )
+                  id.replace(/"/g, '&quot;') +
+                  '"' +
+                  sel +
+                  '>' +
+                  label.replace(/</g, '&lt;') +
+                  '</option>'
+                );
+              })
               .join('');
-          setStatus('');
+          renderActive(active);
+          if (!active) setStatus('');
         }
 
         el.startBtn.addEventListener('click', async () => {
@@ -311,10 +330,12 @@
           const boat = boats.find((b) => b.deviceId === deviceId);
           if (!name) {
             setStatus('Enter your name.', 'err');
+            el.name.focus();
             return;
           }
           if (!deviceId) {
             setStatus('Select a boat.', 'err');
+            el.boat.focus();
             return;
           }
           el.startBtn.disabled = true;
@@ -335,11 +356,10 @@
               startedAt: data.startedAt,
             };
             saveStored(session);
-            showActive(session);
-            setStatus('Session started — you are on water (no GPS).', 'ok');
+            renderActive(session);
+            setStatus('Started — tap Stop when you finish.', 'ok');
           } catch (err) {
             setStatus(err.message || 'Start failed', 'err');
-          } finally {
             el.startBtn.disabled = false;
           }
         });
@@ -347,7 +367,8 @@
         el.stopBtn.addEventListener('click', async () => {
           const session = loadStored();
           if (!session?.sessionId) {
-            showForm();
+            renderActive(null);
+            setStatus('No active session.', 'err');
             return;
           }
           el.stopBtn.disabled = true;
@@ -361,17 +382,16 @@
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.ok) throw new Error(data.error || 'Stop failed');
             saveStored(null);
-            showForm();
-            setStatus('Session stopped. Thanks — safe return.', 'ok');
+            renderActive(null);
+            setStatus('Stopped. Thanks — safe return.', 'ok');
           } catch (err) {
             setStatus(err.message || 'Stop failed', 'err');
-          } finally {
             el.stopBtn.disabled = false;
           }
         });
 
-        const existing = loadStored();
-        if (existing?.sessionId) showActive(existing);
+        active = loadStored();
+        if (active?.sessionId) renderActive(active);
         loadBoats().catch((err) => setStatus(err.message || 'Load failed', 'err'));
       })();
     </script>
