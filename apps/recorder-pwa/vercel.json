@@ -40,10 +40,11 @@
   "rewrites": [
     { "source": "/dashboard", "destination": "/dashboard.html" },
     { "source": "/install-native", "destination": "/install-native.html" },
+    { "source": "/walkup", "destination": "/walkup.html" },
     { "source": "/manager", "destination": "/manager/index.html" },
     { "source": "/manager/", "destination": "/manager/index.html" },
     {
-      "source": "/((?!downloads/|api/|manager/).*)",
+      "source": "/((?!downloads/|api/|manager/|walkup).*)",
       "destination": "/index.html"
     }
   ]
