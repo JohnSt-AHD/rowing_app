@@ -522,8 +522,87 @@ async function ensureOrgsBootstrapped() {
 
   await ensureCapsizeNotifyEmailsTable();
   await ensureFleetConfigTables();
+  // Production DBs skip full initSchema DDL; keep walk-up / hazard columns applied.
+  await ensureWalkupSessionColumns();
+  await ensureHazardRegisterSchema();
 
   orgBootstrapDone = true;
+}
+
+/** Walk-up logbook columns — must run even when initSchema early-returns. */
+async function ensureWalkupSessionColumns() {
+  if (!hasDb()) return;
+  const sql = await getSql();
+  if (!sql) return;
+  await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'recorder'`;
+  await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS rower_name TEXT`;
+  try {
+    await sql`
+      CREATE INDEX IF NOT EXISTS idx_rnz_sessions_open_walkup
+        ON rnz_sessions (org_id, unique_id)
+        WHERE ended_at IS NULL AND source = 'walkup'
+    `;
+  } catch (err) {
+    console.warn('[db] walkup index skipped:', err && err.message ? err.message : err);
+  }
+}
+
+/** Hazard register table + kind promotion — runs on existing production DBs. */
+async function ensureHazardRegisterSchema() {
+  if (!hasDb()) return;
+  const sql = await getSql();
+  if (!sql) return;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_schema_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_hazard_entries (
+      id BIGSERIAL PRIMARY KEY,
+      org_id INTEGER NOT NULL REFERENCES rnz_orgs(id) ON DELETE CASCADE,
+      geofence_id INTEGER NOT NULL REFERENCES rnz_geofences(id) ON DELETE CASCADE,
+      unique_id TEXT NOT NULL,
+      session_id TEXT,
+      hazard_name TEXT NOT NULL,
+      entered_at TIMESTAMPTZ NOT NULL,
+      exited_at TIMESTAMPTZ,
+      enter_lat DOUBLE PRECISION,
+      enter_lon DOUBLE PRECISION,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_hazard_entries_org_entered
+      ON rnz_hazard_entries (org_id, entered_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_hazard_entries_open
+      ON rnz_hazard_entries (org_id, unique_id, geofence_id)
+      WHERE exited_at IS NULL
+  `;
+  const hazardKindMig = await sql`
+    SELECT 1 AS ok FROM rnz_schema_migrations WHERE id = 'geofence_hazard_kind_rnz_v1' LIMIT 1
+  `;
+  if (!hazardKindMig.rows.length) {
+    await sql`
+      UPDATE rnz_geofences
+      SET kind = 'hazard',
+          updated_at = NOW()
+      WHERE kind IS DISTINCT FROM 'hazard'
+        AND (
+          name ILIKE '%pylon%'
+          OR (notify_on_enter = true AND name ILIKE '%hazard%')
+        )
+    `.catch((err) => {
+      console.warn('[db] hazard kind promote skipped:', err && err.message ? err.message : err);
+    });
+    await sql`
+      INSERT INTO rnz_schema_migrations (id) VALUES ('geofence_hazard_kind_rnz_v1')
+      ON CONFLICT (id) DO NOTHING
+    `;
+  }
 }
 
 async function ensureCapsizeNotifyEmailsTable() {
