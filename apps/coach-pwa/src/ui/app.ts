@@ -668,6 +668,7 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function isDeviceOnWater(d: FleetDevice, p?: MapPosition): boolean {
+    if (d.noGps && d.online) return true;
     if (!d.online || !p) return false;
     if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) return false;
     const ago = d.lastSeenAgoSec ?? p.lastSeenAgoSec ?? p.fixAgeSec ?? 999;
@@ -732,9 +733,11 @@ export function mountApp(root: HTMLElement): void {
       .filter(Boolean)
       .join(' ');
     const meta = d.onWater
-      ? d.telemetryStale
-        ? `Stale · seen ${d.lastSeenAgoSec ?? '?'}s ago`
-        : gpsStatusLabel(d.gpsAgeSec ?? resolveGpsDisplayAge(d, d.mapPosition))
+      ? d.noGps
+        ? 'No GPS · logbook check-in'
+        : d.telemetryStale
+          ? `Stale · seen ${d.lastSeenAgoSec ?? '?'}s ago`
+          : gpsStatusLabel(d.gpsAgeSec ?? resolveGpsDisplayAge(d, d.mapPosition))
       : d.lastSeenAgoSec != null
         ? `Last seen ${d.lastSeenAgoSec}s ago`
         : 'Offline';
@@ -750,9 +753,11 @@ export function mountApp(root: HTMLElement): void {
       `</div>` +
       `<div class="crew-ticket__status">` +
       `<span class="crew-ticket__badge ${statusClass}">${statusLabel}</span>` +
-      (d.onWater && (speed || spm)
+      (d.onWater && !d.noGps && (speed || spm)
         ? `<div class="crew-ticket__stats">${[speed, spm].filter(Boolean).map((x) => esc(x!)).join(' · ')}</div>`
-        : '') +
+        : d.onWater && d.noGps
+          ? `<div class="crew-ticket__stats">No GPS</div>`
+          : '') +
       `</div>` +
       `</li>`
     );

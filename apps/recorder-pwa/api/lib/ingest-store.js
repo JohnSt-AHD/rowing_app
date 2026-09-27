@@ -1532,7 +1532,7 @@ function sensorStats(samples, windowMs, deviceId) {
  * @param {Sample[]} samples
  * @param {string} [idempotencyKey]
  */
-async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idempotencyKey) {
+async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idempotencyKey, boatMeta = {}) {
   metrics.requests++;
   const dedupeKey = idempotencyKey ? String(idempotencyKey) : '';
   const now = Date.now();
@@ -1647,6 +1647,8 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   row.orgId = orgId;
   row.deviceId = String(deviceId);
   if (athleteId) row.athleteId = String(athleteId);
+  if (boatMeta?.boatId) row.boatId = String(boatMeta.boatId);
+  if (boatMeta?.boatClass) row.boatClass = String(boatMeta.boatClass);
   row.samples.push(...clean.samples);
   row.updatedAt = now;
   noteDeviceTelemetry(scopedDevice, clean.samples);
@@ -1665,6 +1667,7 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
         deviceId,
         athleteId,
         clean.samples,
+        boatMeta,
       );
       persisted = persistResult?.ok === true;
       capsizeCleared = persistResult?.cleared || [];
@@ -2094,6 +2097,46 @@ async function listDevices(orgId, opts = {}) {
     onlineMs,
     now,
   );
+
+  // Merge open walk-up (no GPS) sessions into the live fleet as on-water tickets.
+  if (hasPostgres) {
+    try {
+      const walkups = await db.listOpenWalkupSessions(orgId);
+      for (const w of walkups) {
+        const lastSeenMs = Math.max(w.updatedAtMs || 0, w.startedAtMs || 0, now);
+        const existing = byDevice.get(w.deviceId);
+        if (existing) {
+          existing.online = true;
+          existing.noGps = true;
+          existing.source = 'walkup';
+          existing.walkupSessionId = w.sessionId;
+          if (w.rowerName) existing.athleteId = w.rowerName;
+          existing.lastSeenMs = Math.max(existing.lastSeenMs || 0, lastSeenMs);
+          existing.lastSeenAgoSec = Math.max(
+            0,
+            Math.round((now - existing.lastSeenMs) / 1000),
+          );
+          continue;
+        }
+        byDevice.set(w.deviceId, {
+          deviceId: w.deviceId,
+          athleteId: w.rowerName,
+          sessionId: w.sessionId,
+          walkupSessionId: w.sessionId,
+          source: 'walkup',
+          noGps: true,
+          online: true,
+          lastSeenMs,
+          lastSeenAgoSec: Math.max(0, Math.round((now - lastSeenMs) / 1000)),
+          firstSeenMs: w.startedAtMs || lastSeenMs,
+          gps: { present: false, ageSec: null },
+          rowing: { strokeRate: null, strokeRateValid: false, capsize: false },
+        });
+      }
+    } catch (err) {
+      console.error('[ingest-store] listOpenWalkupSessions failed:', err);
+    }
+  }
 
   const devices = [...byDevice.values()].sort(
     (a, b) => b.lastSeenMs - a.lastSeenMs,
@@ -3255,4 +3298,5 @@ module.exports = {
   clearRegattaMessage: (orgId, deviceId) => db.clearRegattaMessage(orgId, deviceId),
   createOrg: (slug, name, token) => db.createOrg(slug, name, token),
   listOrgs: () => db.listOrgs(),
+  getFleetConfig: (orgId) => db.getFleetConfig(orgId),
 };

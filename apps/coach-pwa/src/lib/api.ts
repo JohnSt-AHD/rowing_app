@@ -5,6 +5,10 @@ export type FleetDevice = {
   athleteId?: string | null;
   online?: boolean;
   lastSeenAgoSec?: number;
+  /** Walk-up / logbook-only session (no GPS). */
+  noGps?: boolean;
+  source?: string | null;
+  walkupSessionId?: string | null;
   gps?: { ageSec?: number | null; present?: boolean; displayAgeSec?: number | null; ingestAgoSec?: number | null };
   /** Resolved GPS fix age (map + API). */
   gpsAgeSec?: number;
@@ -223,6 +227,9 @@ export type LogbookSession = {
   uniqueId: string;
   crew: string;
   athleteId?: string | null;
+  rowerName?: string | null;
+  source?: string | null;
+  noGps?: boolean;
   startedAt: string;
   endedAt: string;
   capsize: boolean;

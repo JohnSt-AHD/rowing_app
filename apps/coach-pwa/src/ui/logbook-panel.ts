@@ -62,13 +62,19 @@ function renderSessions(day: LogbookDay): string {
       const capsize = s.capsize
         ? '<span class="coach-logbook-capsize-yes">Yes</span>'
         : '<span class="coach-logbook-capsize-no">No</span>';
+      const crewLabel = s.athleteId
+        ? `${s.athleteId} · ${s.crew || s.uniqueId}`
+        : s.crew || s.uniqueId;
+      const dist = s.noGps || s.source === 'walkup'
+        ? 'No GPS'
+        : formatDistance(s.distanceM);
       return (
         `<tr>` +
-        `<td class="coach-logbook-crew">${esc(s.crew || s.uniqueId)}</td>` +
+        `<td class="coach-logbook-crew">${esc(crewLabel)}</td>` +
         `<td>${esc(formatTime(s.startedAt))}</td>` +
         `<td>${esc(formatTime(s.endedAt))}</td>` +
         `<td>${capsize}</td>` +
-        `<td>${esc(formatDistance(s.distanceM))}</td>` +
+        `<td>${esc(dist)}</td>` +
         `</tr>`
       );
     })

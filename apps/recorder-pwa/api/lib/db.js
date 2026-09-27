@@ -187,6 +187,13 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_active BOOLEAN NOT NULL DEFAULT false`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_at TIMESTAMPTZ`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_cleared_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'recorder'`;
+  await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS rower_name TEXT`;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_sessions_open_walkup
+      ON rnz_sessions (org_id, unique_id)
+      WHERE ended_at IS NULL AND source = 'walkup'
+  `;
   await sql`
     CREATE INDEX IF NOT EXISTS idx_rnz_samples_unique_time
       ON rnz_samples (unique_id, t_ms DESC)
@@ -464,6 +471,7 @@ async function ensureOrgsBootstrapped() {
   }
 
   await ensureCapsizeNotifyEmailsTable();
+  await ensureFleetConfigTables();
 
   orgBootstrapDone = true;
 }
@@ -484,6 +492,214 @@ async function ensureCapsizeNotifyEmailsTable() {
     CREATE INDEX IF NOT EXISTS idx_rnz_capsize_notify_emails_org
       ON rnz_capsize_notify_emails (org_id)
   `;
+}
+
+async function ensureFleetConfigTables() {
+  if (!hasDb()) return;
+  const sql = await getSql();
+  if (!sql) return;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_coaches (
+      id SERIAL PRIMARY KEY,
+      org_id INTEGER NOT NULL REFERENCES rnz_orgs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (org_id, name)
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_boats (
+      id SERIAL PRIMARY KEY,
+      org_id INTEGER NOT NULL REFERENCES rnz_orgs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      boat_class TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (org_id, name, boat_class)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_coaches_org
+      ON rnz_coaches (org_id, sort_order, name)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_boats_org
+      ON rnz_boats (org_id, sort_order, name)
+  `;
+  await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS boat_id INTEGER REFERENCES rnz_boats(id)`;
+  await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS boat_class TEXT`;
+}
+
+const {
+  DEFAULT_COACHES,
+  DEFAULT_BOATS,
+  normalizeCoach,
+  normalizeBoat,
+  memoryDefaults,
+} = require('./fleet-config-defaults');
+
+async function ensureFleetConfigSeed(orgId) {
+  if (!hasDb()) return;
+  await ensureFleetConfigTables();
+  const sql = await getSql();
+  const coachCount = await sql`
+    SELECT COUNT(*)::int AS n FROM rnz_coaches WHERE org_id = ${orgId}
+  `;
+  if (Number(coachCount.rows[0]?.n) === 0) {
+    for (let i = 0; i < DEFAULT_COACHES.length; i++) {
+      const name = DEFAULT_COACHES[i];
+      await sql`
+        INSERT INTO rnz_coaches (org_id, name, sort_order)
+        VALUES (${orgId}, ${name}, ${i})
+        ON CONFLICT (org_id, name) DO NOTHING
+      `;
+    }
+  }
+  const boatCount = await sql`
+    SELECT COUNT(*)::int AS n FROM rnz_boats WHERE org_id = ${orgId}
+  `;
+  if (Number(boatCount.rows[0]?.n) === 0) {
+    for (let i = 0; i < DEFAULT_BOATS.length; i++) {
+      const b = DEFAULT_BOATS[i];
+      await sql`
+        INSERT INTO rnz_boats (org_id, name, boat_class, sort_order, enabled)
+        VALUES (${orgId}, ${b.name}, ${b.boatClass}, ${i}, true)
+        ON CONFLICT (org_id, name, boat_class) DO NOTHING
+      `;
+    }
+  }
+}
+
+async function listCoaches(orgId) {
+  if (!hasDb()) return memoryDefaults().coaches;
+  await ensureOrgsBootstrapped();
+  await ensureFleetConfigSeed(orgId);
+  const sql = await getSql();
+  const rows = await sql`
+    SELECT id, name, sort_order
+    FROM rnz_coaches
+    WHERE org_id = ${orgId}
+    ORDER BY sort_order ASC, name ASC
+  `;
+  return rows.rows.map(normalizeCoach);
+}
+
+async function createCoach(orgId, body) {
+  if (!hasDb()) return null;
+  await ensureOrgsBootstrapped();
+  const name = String(body.name ?? '').trim();
+  if (!name) throw new Error('name is required');
+  const sql = await getSql();
+  const maxSort = await sql`
+    SELECT COALESCE(MAX(sort_order), -1)::int AS n FROM rnz_coaches WHERE org_id = ${orgId}
+  `;
+  const sortOrder = Number(maxSort.rows[0]?.n ?? -1) + 1;
+  const rows = await sql`
+    INSERT INTO rnz_coaches (org_id, name, sort_order)
+    VALUES (${orgId}, ${name}, ${sortOrder})
+    ON CONFLICT (org_id, name) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id, name, sort_order
+  `;
+  return normalizeCoach(rows.rows[0]);
+}
+
+async function deleteCoach(orgId, id) {
+  if (!hasDb()) return false;
+  const sql = await getSql();
+  const n = Number(id);
+  if (!Number.isFinite(n)) return false;
+  const del = await sql`DELETE FROM rnz_coaches WHERE org_id = ${orgId} AND id = ${n}`;
+  return (del.rowCount ?? 0) > 0;
+}
+
+async function listBoats(orgId, { includeDisabled = false } = {}) {
+  if (!hasDb()) return memoryDefaults().boats;
+  await ensureOrgsBootstrapped();
+  await ensureFleetConfigSeed(orgId);
+  const sql = await getSql();
+  const rows = includeDisabled
+    ? await sql`
+        SELECT id, name, boat_class, sort_order, enabled
+        FROM rnz_boats
+        WHERE org_id = ${orgId}
+        ORDER BY sort_order ASC, name ASC
+      `
+    : await sql`
+        SELECT id, name, boat_class, sort_order, enabled
+        FROM rnz_boats
+        WHERE org_id = ${orgId} AND enabled = true
+        ORDER BY sort_order ASC, name ASC
+      `;
+  return rows.rows.map(normalizeBoat);
+}
+
+async function createBoat(orgId, body) {
+  if (!hasDb()) return null;
+  await ensureOrgsBootstrapped();
+  const name = String(body.name ?? '').trim();
+  const boatClass = String(body.boatClass ?? body.boat_class ?? '').trim();
+  if (!name) throw new Error('name is required');
+  if (!boatClass) throw new Error('boatClass is required');
+  const sql = await getSql();
+  const maxSort = await sql`
+    SELECT COALESCE(MAX(sort_order), -1)::int AS n FROM rnz_boats WHERE org_id = ${orgId}
+  `;
+  const sortOrder = Number(maxSort.rows[0]?.n ?? -1) + 1;
+  const rows = await sql`
+    INSERT INTO rnz_boats (org_id, name, boat_class, sort_order, enabled)
+    VALUES (${orgId}, ${name}, ${boatClass}, ${sortOrder}, true)
+    RETURNING id, name, boat_class, sort_order, enabled
+  `;
+  return normalizeBoat(rows.rows[0]);
+}
+
+async function updateBoat(orgId, id, body) {
+  if (!hasDb()) return null;
+  const n = Number(id);
+  if (!Number.isFinite(n)) return null;
+  const sql = await getSql();
+  const existing = await sql`
+    SELECT id, name, boat_class, sort_order, enabled
+    FROM rnz_boats WHERE org_id = ${orgId} AND id = ${n} LIMIT 1
+  `;
+  if (!existing.rows.length) return null;
+  const row = existing.rows[0];
+  const name = body.name != null ? String(body.name).trim() : row.name;
+  const boatClass =
+    body.boatClass != null
+      ? String(body.boatClass).trim()
+      : body.boat_class != null
+        ? String(body.boat_class).trim()
+        : row.boat_class;
+  const enabled = body.enabled != null ? body.enabled !== false : row.enabled;
+  const sortOrder =
+    body.sortOrder != null && Number.isFinite(Number(body.sortOrder))
+      ? Number(body.sortOrder)
+      : row.sort_order;
+  const updated = await sql`
+    UPDATE rnz_boats
+    SET name = ${name}, boat_class = ${boatClass}, enabled = ${enabled}, sort_order = ${sortOrder}
+    WHERE org_id = ${orgId} AND id = ${n}
+    RETURNING id, name, boat_class, sort_order, enabled
+  `;
+  return normalizeBoat(updated.rows[0]);
+}
+
+async function deleteBoat(orgId, id) {
+  if (!hasDb()) return false;
+  const n = Number(id);
+  if (!Number.isFinite(n)) return false;
+  const sql = await getSql();
+  const del = await sql`DELETE FROM rnz_boats WHERE org_id = ${orgId} AND id = ${n}`;
+  return (del.rowCount ?? 0) > 0;
+}
+
+async function getFleetConfig(orgId) {
+  const coaches = await listCoaches(orgId);
+  const boats = await listBoats(orgId);
+  return { coaches, boats };
 }
 
 async function listCapsizeNotifyEmails(orgId) {
@@ -621,14 +837,24 @@ async function ensureDevice(orgId, uniqueId, athleteId) {
   return rows.rows[0];
 }
 
-async function upsertSession(orgId, sessionId, deviceRef, uniqueId, athleteId) {
+async function upsertSession(orgId, sessionId, deviceRef, uniqueId, athleteId, boatMeta = {}) {
   const sql = await getSql();
+  const boatId =
+    boatMeta.boatId != null && Number.isFinite(Number(boatMeta.boatId))
+      ? Number(boatMeta.boatId)
+      : null;
+  const boatClass =
+    typeof boatMeta.boatClass === 'string' && boatMeta.boatClass.trim()
+      ? boatMeta.boatClass.trim().slice(0, 16)
+      : null;
   await sql`
-    INSERT INTO rnz_sessions (org_id, session_id, device_ref, unique_id, athlete_id, started_at, updated_at)
-    VALUES (${orgId}, ${sessionId}, ${deviceRef}, ${uniqueId}, ${athleteId || null}, NOW(), NOW())
+    INSERT INTO rnz_sessions (org_id, session_id, device_ref, unique_id, athlete_id, boat_id, boat_class, started_at, updated_at)
+    VALUES (${orgId}, ${sessionId}, ${deviceRef}, ${uniqueId}, ${athleteId || null}, ${boatId}, ${boatClass}, NOW(), NOW())
     ON CONFLICT (session_id) DO UPDATE SET
       updated_at = NOW(),
-      athlete_id = COALESCE(EXCLUDED.athlete_id, rnz_sessions.athlete_id)
+      athlete_id = COALESCE(EXCLUDED.athlete_id, rnz_sessions.athlete_id),
+      boat_id = COALESCE(EXCLUDED.boat_id, rnz_sessions.boat_id),
+      boat_class = COALESCE(EXCLUDED.boat_class, rnz_sessions.boat_class)
   `;
 }
 
@@ -648,6 +874,137 @@ async function endSession(orgId, sessionId, endedAtMs) {
     WHERE org_id = ${orgId} AND session_id = ${sessionId}
   `;
   return (upd.rowCount ?? 0) > 0;
+}
+
+/**
+ * Public walk-up check-in: start a no-GPS logbook session for a named rower + boat.
+ * @returns {Promise<{ sessionId: string, deviceId: string, rowerName: string, startedAt: string }>}
+ */
+async function startWalkupSession(orgId, opts = {}) {
+  if (!hasDb()) throw new Error('Database required for walk-up sessions');
+  await ensureOrgsBootstrapped();
+  const deviceId = String(opts.deviceId || '').trim();
+  const rowerName = String(opts.rowerName || '').trim().slice(0, 80);
+  if (!deviceId) throw new Error('Boat is required');
+  if (!rowerName) throw new Error('Name is required');
+
+  const sql = await getSql();
+  // One open walk-up per boat — close any prior open walk-up on this device.
+  await sql`
+    UPDATE rnz_sessions
+    SET ended_at = COALESCE(ended_at, NOW()),
+        updated_at = NOW()
+    WHERE org_id = ${orgId}
+      AND unique_id = ${deviceId}
+      AND source = 'walkup'
+      AND ended_at IS NULL
+  `;
+
+  const dev = await ensureDevice(orgId, deviceId, rowerName);
+  const sessionId = `walkup-${orgId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  await sql`
+    INSERT INTO rnz_sessions (
+      org_id, session_id, device_ref, unique_id, athlete_id, rower_name, source, started_at, updated_at
+    )
+    VALUES (
+      ${orgId}, ${sessionId}, ${dev.id}, ${deviceId}, ${rowerName}, ${rowerName}, 'walkup', NOW(), NOW()
+    )
+  `;
+  await sql`
+    UPDATE rnz_devices
+    SET last_seen_at = NOW(),
+        athlete_id = COALESCE(${rowerName}, athlete_id)
+    WHERE org_id = ${orgId} AND unique_id = ${deviceId}
+  `;
+  return {
+    sessionId,
+    deviceId,
+    rowerName,
+    startedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * @returns {Promise<{ sessionId: string, deviceId: string, rowerName: string, startedAt: string, endedAt: string } | null>}
+ */
+async function endWalkupSession(orgId, sessionId) {
+  if (!hasDb()) return null;
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const sid = String(sessionId || '').trim();
+  if (!sid) return null;
+  const rows = await sql`
+    UPDATE rnz_sessions
+    SET ended_at = COALESCE(ended_at, NOW()),
+        updated_at = NOW()
+    WHERE org_id = ${orgId}
+      AND session_id = ${sid}
+      AND source = 'walkup'
+    RETURNING session_id, unique_id, rower_name, athlete_id, started_at, ended_at
+  `;
+  const row = rows.rows[0];
+  if (!row) return null;
+  return {
+    sessionId: String(row.session_id),
+    deviceId: String(row.unique_id),
+    rowerName: String(row.rower_name || row.athlete_id || ''),
+    startedAt: new Date(row.started_at).toISOString(),
+    endedAt: new Date(row.ended_at).toISOString(),
+  };
+}
+
+/**
+ * Open walk-up sessions (no GPS) for Manager on-water tickets.
+ * @returns {Promise<Array<{ sessionId: string, deviceId: string, rowerName: string, startedAtMs: number }>>}
+ */
+async function listOpenWalkupSessions(orgId) {
+  if (!hasDb()) return [];
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const rows = await sql`
+    SELECT session_id, unique_id, rower_name, athlete_id, started_at, updated_at
+    FROM rnz_sessions
+    WHERE org_id = ${orgId}
+      AND source = 'walkup'
+      AND ended_at IS NULL
+    ORDER BY started_at DESC
+    LIMIT 200
+  `;
+  return rows.rows.map((row) => ({
+    sessionId: String(row.session_id),
+    deviceId: String(row.unique_id),
+    rowerName: String(row.rower_name || row.athlete_id || '').trim() || null,
+    startedAtMs: new Date(row.started_at).getTime(),
+    updatedAtMs: new Date(row.updated_at || row.started_at).getTime(),
+  }));
+}
+
+/**
+ * Touch open walk-up sessions so they stay "online" while the check-in page is open.
+ */
+async function heartbeatWalkupSession(orgId, sessionId) {
+  if (!hasDb()) return false;
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const sid = String(sessionId || '').trim();
+  if (!sid) return false;
+  const rows = await sql`
+    UPDATE rnz_sessions
+    SET updated_at = NOW()
+    WHERE org_id = ${orgId}
+      AND session_id = ${sid}
+      AND source = 'walkup'
+      AND ended_at IS NULL
+    RETURNING unique_id
+  `;
+  const row = rows.rows[0];
+  if (!row) return false;
+  await sql`
+    UPDATE rnz_devices
+    SET last_seen_at = NOW()
+    WHERE org_id = ${orgId} AND unique_id = ${row.unique_id}
+  `;
+  return true;
 }
 
 /**
@@ -1136,11 +1493,11 @@ async function getCapsizeAlerts(orgId) {
   return map;
 }
 
-async function persistBatch(orgId, sessionId, deviceId, athleteId, samples) {
+async function persistBatch(orgId, sessionId, deviceId, athleteId, samples, boatMeta = {}) {
   if (!hasDb() || !samples.length) return { ok: false, cleared: [] };
   await ensureOrgsBootstrapped();
   const dev = await ensureDevice(orgId, deviceId, athleteId);
-  await upsertSession(orgId, sessionId, dev.id, deviceId, athleteId);
+  await upsertSession(orgId, sessionId, dev.id, deviceId, athleteId, boatMeta);
   await backfillCapsizeGpsOnSamples(orgId, deviceId, samples);
   await insertSamples(orgId, sessionId, dev.id, deviceId, samples);
   await updateDeviceLatestGps(orgId, deviceId, samples);
@@ -1917,6 +2274,8 @@ async function getLogbook(orgId, opts = {}) {
         s.session_id,
         s.unique_id,
         s.athlete_id,
+        s.rower_name,
+        s.source,
         s.started_at,
         s.ended_at,
         s.updated_at,
@@ -2003,24 +2362,42 @@ async function getLogbook(orgId, opts = {}) {
       WHERE sm.org_id = ${orgId}
         AND sm.t_ms >= ${cutoffMs}
       GROUP BY sm.session_id, day_key
+    ),
+    walkup_days AS (
+      SELECT
+        rs.session_id,
+        to_char(
+          timezone(${timeZone}, rs.started_at),
+          'YYYY-MM-DD'
+        ) AS day_key,
+        (EXTRACT(EPOCH FROM rs.started_at) * 1000)::bigint AS first_t_ms,
+        (EXTRACT(EPOCH FROM COALESCE(rs.ended_at, rs.updated_at, rs.started_at)) * 1000)::bigint AS last_t_ms
+      FROM recent_sessions rs
+      WHERE rs.source = 'walkup'
     )
     SELECT
       rs.session_id,
       rs.unique_id,
       rs.athlete_id,
+      rs.rower_name,
+      rs.source,
       rs.started_at,
       rs.ended_at,
       rs.updated_at,
       rs.device_name,
-      dist.day_key,
+      COALESCE(dist.day_key, wd.day_key) AS day_key,
       COALESCE(dist.distance_m, 0) AS distance_m,
-      dist.first_t_ms,
-      dist.last_t_ms,
+      COALESCE(dist.first_t_ms, wd.first_t_ms) AS first_t_ms,
+      COALESCE(dist.last_t_ms, wd.last_t_ms) AS last_t_ms,
       COALESCE(caps.had_capsize, false) AS had_capsize
     FROM recent_sessions rs
-    INNER JOIN dist ON dist.session_id = rs.session_id
-    LEFT JOIN caps ON caps.session_id = rs.session_id AND caps.day_key = dist.day_key
-    ORDER BY dist.first_t_ms DESC NULLS LAST, rs.started_at DESC
+    LEFT JOIN dist ON dist.session_id = rs.session_id
+    LEFT JOIN walkup_days wd ON wd.session_id = rs.session_id
+    LEFT JOIN caps
+      ON caps.session_id = rs.session_id
+      AND caps.day_key = COALESCE(dist.day_key, wd.day_key)
+    WHERE dist.session_id IS NOT NULL OR rs.source = 'walkup'
+    ORDER BY COALESCE(dist.first_t_ms, wd.first_t_ms) DESC NULLS LAST, rs.started_at DESC
   `;
 
   /** @type {Map<string, object>} */
@@ -2041,11 +2418,16 @@ async function getLogbook(orgId, opts = {}) {
     const distanceM = Math.max(0, Number(row.distance_m) || 0);
     const onWaterMs = Math.max(0, (Number.isFinite(endMs) ? endMs : startMs) - startMs);
     const hadCapsize = row.had_capsize === true;
+    const isWalkup = String(row.source || '') === 'walkup';
+    const rowerName = row.rower_name || row.athlete_id || null;
     const session = {
       sessionId: String(row.session_id),
       uniqueId: String(row.unique_id),
       crew: String(row.device_name || row.unique_id),
-      athleteId: row.athlete_id || null,
+      athleteId: rowerName,
+      rowerName: rowerName,
+      source: isWalkup ? 'walkup' : 'recorder',
+      noGps: isWalkup,
       startedAt: new Date(Number.isFinite(startMs) ? startMs : row.started_at).toISOString(),
       endedAt: new Date(Number.isFinite(endMs) ? endMs : startMs).toISOString(),
       capsize: hadCapsize,
@@ -3086,6 +3468,10 @@ module.exports = {
   resolveMemoryOrgFromToken,
   persistBatch,
   endSession,
+  startWalkupSession,
+  endWalkupSession,
+  listOpenWalkupSessions,
+  heartbeatWalkupSession,
   raiseCapsizeAlert,
   clearCapsizeAlertDb,
   getCapsizeAlerts,
@@ -3141,4 +3527,12 @@ module.exports = {
   listCapsizeNotifyEmails,
   addCapsizeNotifyEmail,
   removeCapsizeNotifyEmail,
+  getFleetConfig,
+  listCoaches,
+  createCoach,
+  deleteCoach,
+  listBoats,
+  createBoat,
+  updateBoat,
+  deleteBoat,
 };

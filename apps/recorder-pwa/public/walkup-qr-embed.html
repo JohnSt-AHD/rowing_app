@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CrewSight walk-up QR embed</title>
+    <style>
+      html, body { margin: 0; background: transparent; font-family: system-ui, sans-serif; }
+      .qr-fab {
+        position: fixed;
+        right: 14px;
+        bottom: 14px;
+        z-index: 9999;
+        width: 118px;
+        padding: 10px 10px 8px;
+        border-radius: 14px;
+        background: rgba(10, 22, 40, 0.92);
+        border: 1px solid rgba(0, 229, 255, 0.35);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+        color: #e8f4fc;
+        text-align: center;
+        text-decoration: none;
+      }
+      .qr-fab img {
+        display: block;
+        width: 96px;
+        height: 96px;
+        margin: 0 auto 6px;
+        border-radius: 8px;
+        background: #fff;
+      }
+      .qr-fab strong {
+        display: block;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      .qr-fab span {
+        display: block;
+        font-size: 0.62rem;
+        color: #94a3b8;
+        margin-top: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      RowSafe embed (bottom-right QR):
+      1. Set CREWSIGHT_ORIGIN + club ingest/walk-up token below (or pass ?token=).
+      2. On rowsafe-map.html add near </body>:
+         <iframe src="https://YOUR-CREWSIGHT-HOST/walkup-qr-embed.html?token=CLUB_TOKEN"
+                 title="Check in" style="position:fixed;right:0;bottom:0;width:140px;height:160px;border:0;z-index:9999;background:transparent"></iframe>
+      Or copy the .qr-fab markup and point href/img at your walk-up URL.
+    -->
+    <a class="qr-fab" id="fab" href="/walkup" target="_blank" rel="noopener">
+      <img id="qr" alt="QR code to start a logbook session" width="96" height="96" />
+      <strong>Check in</strong>
+      <span>No GPS · logbook</span>
+    </a>
+    <script>
+      (function () {
+        const params = new URLSearchParams(location.search);
+        const token = params.get('token') || params.get('k') || '';
+        const origin = params.get('origin') || location.origin;
+        const walkup =
+          origin.replace(/\/$/, '') +
+          '/walkup' +
+          (token ? '?token=' + encodeURIComponent(token) : '');
+        const fab = document.getElementById('fab');
+        const qr = document.getElementById('qr');
+        fab.href = walkup;
+        qr.src =
+          'https://api.qrserver.com/v1/create-qr-code/?size=192x192&margin=8&data=' +
+          encodeURIComponent(walkup);
+      })();
+    </script>
+  </body>
+</html>
