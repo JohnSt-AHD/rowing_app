@@ -151,6 +151,7 @@
         <button type="button" class="setup-tab is-active" role="tab" id="setupTabGeofences" aria-selected="true" aria-controls="geofencePanel" data-setup-tab="geofences">Geofences</button>
         <button type="button" class="setup-tab" role="tab" id="setupTabAlerts" aria-selected="false" aria-controls="capsizeEmailPanel" data-setup-tab="alerts">Alerts</button>
         <button type="button" class="setup-tab" role="tab" id="setupTabMessages" aria-selected="false" aria-controls="regattaPanel" data-setup-tab="messages">Messages</button>
+        <button type="button" class="setup-tab" role="tab" id="setupTabFleet" aria-selected="false" aria-controls="fleetSetupPanel" data-setup-tab="fleet">Coaches &amp; Boats</button>
         <button type="button" class="setup-tab" role="tab" id="setupTabSettings" aria-selected="false" aria-controls="settingsPanel" data-setup-tab="settings">Settings</button>
         <button type="button" class="setup-tab" role="tab" id="setupTabData" aria-selected="false" aria-controls="dataManagePanel" data-setup-tab="data">Data</button>
         <button type="button" class="setup-tab" role="tab" id="setupTabDebug" aria-selected="false" aria-controls="monitorStatsPanel" data-setup-tab="debug">Debug</button>
@@ -232,6 +233,59 @@
             </div>
           </form>
           <p class="poll-line" id="regattaStatus">Loading messages…</p>
+        </div>
+      </section>
+
+      <section class="hub-panel dashboard-section setup-tab-panel" data-section-id="fleet-setup" data-setup-panel="fleet" data-default-open="true" id="fleetSetupPanel" hidden>
+        <div class="dashboard-section__head">
+          <button type="button" class="dashboard-section__toggle" aria-expanded="true" aria-controls="section-body-fleet-setup">
+            <span class="dashboard-section__chevron" aria-hidden="true"></span>
+            <h2 class="hub-section-title">Coaches &amp; boats</h2>
+          </button>
+          <div class="dashboard-section__tools">
+            <button type="button" class="info-tip-btn" data-info-tip="fleet" aria-expanded="false" aria-controls="info-tip-fleet" title="About coaches and boats" aria-label="About coaches and boats">i</button>
+          </div>
+        </div>
+        <div class="info-tip-panel" id="info-tip-fleet" hidden>
+          <p>Manage coach names and fleet boats for the CrewSight recorder APK. Rowers pick a coach and boat from dropdowns in Settings.</p>
+          <p>Boats display as <strong>Name - Class</strong> (e.g. Karapiro - 1X). Prognostic pace on the recorder uses the boat class reference time.</p>
+        </div>
+        <div class="dashboard-section__body" id="section-body-fleet-setup">
+          <p class="poll-line" id="fleetSetupStorageNote">Loading…</p>
+          <div class="fleet-setup-grid">
+            <div class="fleet-setup-col">
+              <h3 class="hub-section-title hub-section-title--sub">Coaches</h3>
+              <ul class="fleet-setup-list" id="fleetCoachList" aria-live="polite"></ul>
+              <p class="poll-line" id="fleetCoachListEmpty" hidden>No coaches yet.</p>
+              <form id="fleetCoachAddForm" class="fleet-setup-form">
+                <label class="ahd-field">
+                  Coach name
+                  <input type="text" id="fleetCoachName" required placeholder="e.g. Mike" maxlength="64" />
+                </label>
+                <button type="submit" class="hub-btn hub-btn--primary">Add coach</button>
+              </form>
+            </div>
+            <div class="fleet-setup-col">
+              <h3 class="hub-section-title hub-section-title--sub">Boats</h3>
+              <ul class="fleet-setup-list" id="fleetBoatList" aria-live="polite"></ul>
+              <p class="poll-line" id="fleetBoatListEmpty" hidden>No boats yet.</p>
+              <form id="fleetBoatAddForm" class="fleet-setup-form">
+                <label class="ahd-field">
+                  Boat name
+                  <input type="text" id="fleetBoatName" required placeholder="e.g. Karapiro" maxlength="64" />
+                </label>
+                <label class="ahd-field">
+                  Boat class
+                  <select id="fleetBoatClass" required aria-label="Boat class"></select>
+                </label>
+                <button type="submit" class="hub-btn hub-btn--primary">Add boat</button>
+              </form>
+            </div>
+          </div>
+          <div class="fleet-setup-form__actions">
+            <button type="button" class="hub-btn hub-btn--ghost" id="fleetSetupRefreshBtn">Refresh</button>
+          </div>
+          <p class="poll-line" id="fleetSetupStatus" role="status"></p>
         </div>
       </section>
 
@@ -889,6 +943,7 @@
     <script src="/dashboard-data-manage.js"></script>
     <script src="/dashboard-monitor-charts.js"></script>
     <script src="/dashboard-geofences.js"></script>
+    <script src="/dashboard-fleet-setup.js"></script>
     <script src="/dashboard-timing-lines.js"></script>
     <script src="/dashboard-course-view.js"></script>
     <script src="/dashboard-regatta.js"></script>

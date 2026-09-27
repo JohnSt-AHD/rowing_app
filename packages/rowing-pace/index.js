@@ -85,8 +85,71 @@ export function parseBoatClass(...parts) {
 /** @param {string|null|undefined} boatClass */
 export function reference2kSec(boatClass) {
   if (!boatClass) return null;
-  return WR_2K_SEC[boatClass] ?? null;
+  const code = normalizeBoatClassCode(boatClass);
+  return code ? WR_2K_SEC[code] ?? null : null;
 }
+
+/** @param {string|null|undefined} boatClass e.g. M1x, 1X, single */
+export function normalizeBoatClassCode(boatClass) {
+  if (boatClass == null || boatClass === '') return null;
+  const raw = String(boatClass).trim();
+  const parsed = parseBoatClass(raw);
+  if (parsed) return parsed;
+  const compact = raw.replace(/\s+/g, '').toUpperCase();
+  if (/^[1248][X+\-]$/.test(compact)) {
+    const seats = compact[0];
+    let type = compact.slice(1);
+    if (type === 'X') type = 'x';
+    return `M${seats}${type}`;
+  }
+  if (/^SINGLE$/i.test(raw)) return 'M1x';
+  if (/^DOUBLE$/i.test(raw)) return 'M2x';
+  if (/^PAIR$/i.test(raw)) return 'M2-';
+  if (/^QUAD$/i.test(raw)) return 'M4x';
+  if (/^FOUR$/i.test(raw)) return 'M4-';
+  if (/^EIGHT$/i.test(raw)) return 'M8+';
+  return null;
+}
+
+/** Display code only: M1x → 1X, M8+ → 8+ */
+export function formatBoatClassShort(boatClass) {
+  const code = normalizeBoatClassCode(boatClass);
+  if (!code) return '';
+  const m = /^([BJL]?)([MW])([1248])([X+\-])$/.exec(code);
+  if (!m) return code;
+  let type = m[4];
+  if (type === 'x') type = 'X';
+  return `${m[3]}${type}`;
+}
+
+/** @param {string} name @param {string|null|undefined} boatClass */
+export function formatBoatLabel(name, boatClass) {
+  const trimmed = String(name ?? '').trim();
+  const short = formatBoatClassShort(boatClass);
+  if (!trimmed) return short || '';
+  if (!short) return trimmed;
+  return `${trimmed} - ${short}`;
+}
+
+/** Boat class codes available for fleet setup dropdowns. */
+export const BOAT_CLASS_OPTIONS = [
+  'M1x',
+  'W1x',
+  'M2x',
+  'W2x',
+  'M2-',
+  'W2-',
+  'M2+',
+  'W2+',
+  'M4x',
+  'W4x',
+  'M4-',
+  'W4-',
+  'M4+',
+  'W4+',
+  'M8+',
+  'W8+',
+];
 
 /** @param {number|undefined|null} speedMps */
 export function formatSplit500m(speedMps) {

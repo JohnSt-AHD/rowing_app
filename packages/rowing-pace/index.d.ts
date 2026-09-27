@@ -1,6 +1,10 @@
 export const MIN_SPEED_MPS: number;
 
 export function parseBoatClass(...parts: (string | null | undefined)[]): string | null;
+export function normalizeBoatClassCode(boatClass: string | null | undefined): string | null;
+export function formatBoatClassShort(boatClass: string | null | undefined): string;
+export function formatBoatLabel(name: string, boatClass: string | null | undefined): string;
+export const BOAT_CLASS_OPTIONS: string[];
 export function reference2kSec(boatClass: string | null | undefined): number | null;
 export function formatSplit500m(speedMps: number | null | undefined): string;
 export function splitSecFromMps(speedMps: number | null | undefined): number | undefined;

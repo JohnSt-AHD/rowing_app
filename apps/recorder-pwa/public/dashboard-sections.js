@@ -19,7 +19,7 @@
     localStorage.setItem(LS_SECTIONS, JSON.stringify(state));
   }
 
-  const SETUP_TABS = ['geofences', 'alerts', 'messages', 'settings', 'data', 'debug'];
+  const SETUP_TABS = ['geofences', 'alerts', 'messages', 'fleet', 'settings', 'data', 'debug'];
   const LS_SETUP_TAB = 'rnz_dashboard_setup_tab';
   const SECTION_TO_TAB = {
     'capsize-emails': 'alerts',

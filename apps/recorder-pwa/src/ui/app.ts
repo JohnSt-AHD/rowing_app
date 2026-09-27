@@ -1,4 +1,11 @@
 import {
+  defaultFleetConfig,
+  fetchFleetConfig,
+  findBoat,
+  findCoach,
+  type FleetConfig,
+} from '../lib/fleet-config';
+import {
   loadSettings,
   sampleRateSecFromSettings,
   saveSettings,
@@ -83,6 +90,7 @@ function asset(path: string): string {
 
 export function mountApp(root: HTMLElement): void {
   let view: View = 'record';
+  let fleetConfigCache: FleetConfig | null = null;
   let recording = false;
   let capsizeActive = false;
   let backgroundStatus: BackgroundStatus = 'foreground';
@@ -102,7 +110,7 @@ export function mountApp(root: HTMLElement): void {
   let sessionMapGeofenceLayer: L.LayerGroup | null = null;
   const speedAvg = new MetricRollingAvg(SPEED_AVG_WINDOW_MS, 0.15);
   const strokeRateAvg = new MetricRollingAvg(STROKE_AVG_WINDOW_MS, 0);
-  const settings = loadSettings();
+  let settings = loadSettings();
 
   document.addEventListener('fullscreenchange', () => {
     const stage = root.querySelector('[data-session-stage]');
@@ -477,7 +485,7 @@ export function mountApp(root: HTMLElement): void {
     const s = loadSettings();
     setHudText(
       '[data-hud-split]',
-      formatPaceWithPrognostic(avgMps, s.deviceId, s.athleteId),
+      formatPaceWithPrognostic(avgMps, s.boatClass || s.deviceId, s.athleteId),
     );
 
     if (stats?.speedMps != null && stats.speedMps >= 0) {
@@ -598,7 +606,11 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function recordStatsBar(stats: ReturnType<RecorderController['getStats']> | undefined): string {
-    const device = settings.deviceId || '—';
+    const name = settings.deviceId || '—';
+    const coach = settings.athleteId?.trim() || '—';
+    const boat =
+      fleetConfigCache?.boats.find((b) => b.id === settings.boatId)?.label ||
+      (settings.boatClass ? settings.boatClass : '—');
     const status = capsizeActive ? 'CAPSIZE' : recording ? 'Recording' : 'Idle';
     const statusClass = capsizeActive
       ? 'hub-stats-item--danger'
@@ -653,7 +665,11 @@ export function mountApp(root: HTMLElement): void {
     return `
       <span class="hub-stats-item ${statusClass}">${status}</span>
       <span class="hub-stats-sep" aria-hidden="true">·</span>
-      <span class="hub-stats-item">Device: ${esc(device)}</span>
+      <span class="hub-stats-item">Name: ${esc(name)}</span>
+      <span class="hub-stats-sep" aria-hidden="true">·</span>
+      <span class="hub-stats-item">Coach: ${esc(coach)}</span>
+      <span class="hub-stats-sep" aria-hidden="true">·</span>
+      <span class="hub-stats-item">Boat: ${esc(boat)}</span>
       ${zone ? `<span class="hub-stats-sep" aria-hidden="true">·</span><span class="hub-stats-item ${stats?.inBoatPark ? 'hub-stats-item--boat-park' : 'hub-stats-item--on-water'}">${esc(zone)}</span>` : ''}
       ${spm ? `<span class="hub-stats-sep" aria-hidden="true">·</span><span class="hub-stats-item">${esc(spm)}</span>` : ''}
       ${bg ? `<span class="hub-stats-sep" aria-hidden="true">·</span><span class="hub-stats-item hub-stats-item--muted">${esc(bg)}</span>` : ''}
@@ -863,7 +879,25 @@ export function mountApp(root: HTMLElement): void {
 
   function settingsHtml(): string {
     const s = loadSettings();
+    const fleet = fleetConfigCache ?? defaultFleetConfig();
     const sampleSec = sampleRateSecFromSettings(s);
+    const selectedCoachId =
+      s.coachId ||
+      fleet.coaches.find((c) => c.name === s.athleteId)?.id ||
+      '';
+    const selectedBoatId = s.boatId || '';
+    const coachOptions = fleet.coaches
+      .map(
+        (c) =>
+          `<option value="${esc(c.id)}" data-name="${esc(c.name)}"${selectedCoachId === c.id ? ' selected' : ''}>${esc(c.name)}</option>`,
+      )
+      .join('');
+    const boatOptions = fleet.boats
+      .map(
+        (b) =>
+          `<option value="${esc(b.id)}" data-class="${esc(b.boatClass)}"${selectedBoatId === b.id ? ' selected' : ''}>${esc(b.label)}</option>`,
+      )
+      .join('');
     const geofenceInfo =
       'When enabled, use Standby on the Record screen to auto-start when leaving the boat park. Recording is suppressed inside the park and can auto-stop when you re-enter.';
     return `
@@ -877,16 +911,29 @@ export function mountApp(root: HTMLElement): void {
             </div>
           </div>
           <form class="hub-panel form" data-settings-form>
-            <h2 class="hub-section-title">Device &amp; upload</h2>
+            <h2 class="hub-section-title">Crew &amp; upload</h2>
             ${settingsField(
-              'Device ID',
-              'Unique name for this phone or boat tracker. Coaches see this label on the live map and in history.',
-              `<input name="deviceId" value="${esc(s.deviceId)}" required placeholder="CREW-01" />`,
+              'Name',
+              'Label for this phone on the live map and in session history (e.g. M4x JS).',
+              `<input name="deviceId" value="${esc(s.deviceId)}" required placeholder="M4x JS" />`,
             )}
             ${settingsField(
-              'Athlete',
-              'Optional athlete name or ID linked to this device for session reports.',
-              `<input name="athleteId" value="${esc(s.athleteId)}" placeholder="optional" />`,
+              'Coach',
+              'Coach for this outing — options are managed in CrewSight Manager → Setup → Coaches & Boats.',
+              `<select name="coachId" aria-label="Coach">
+                <option value="">— select coach —</option>
+                ${coachOptions}
+              </select>
+              <input type="hidden" name="coachName" value="${esc(s.athleteId)}" />`,
+            )}
+            ${settingsField(
+              'Boat',
+              'Fleet boat for this outing. Prognostic pace uses the boat class (e.g. Karapiro - 1X).',
+              `<select name="boatId" required aria-label="Boat">
+                <option value="">— select boat —</option>
+                ${boatOptions}
+              </select>
+              <input type="hidden" name="boatClass" value="${esc(s.boatClass)}" />`,
             )}
             ${settingsField(
               'URL',
@@ -1399,9 +1446,32 @@ export function mountApp(root: HTMLElement): void {
     });
 
     root.querySelector('[data-nav="settings"]')?.addEventListener('click', () => {
-      view = 'settings';
-      render();
+      void (async () => {
+        fleetConfigCache = await fetchFleetConfig(true);
+        view = 'settings';
+        render();
+      })();
     });
+
+    const syncFleetFormFields = () => {
+      const form = root.querySelector('[data-settings-form]') as HTMLFormElement | null;
+      if (!form) return;
+      const coachSel = form.querySelector('[name="coachId"]') as HTMLSelectElement | null;
+      const coachName = form.querySelector('[name="coachName"]') as HTMLInputElement | null;
+      const boatSel = form.querySelector('[name="boatId"]') as HTMLSelectElement | null;
+      const boatClass = form.querySelector('[name="boatClass"]') as HTMLInputElement | null;
+      if (coachSel && coachName) {
+        const opt = coachSel.selectedOptions[0];
+        coachName.value = opt?.dataset.name || opt?.textContent?.trim() || '';
+      }
+      if (boatSel && boatClass) {
+        const opt = boatSel.selectedOptions[0];
+        boatClass.value = opt?.dataset.class || '';
+      }
+    };
+
+    root.querySelector('[name="coachId"]')?.addEventListener('change', syncFleetFormFields);
+    root.querySelector('[name="boatId"]')?.addEventListener('change', syncFleetFormFields);
     root.querySelector('[data-nav="record"]')?.addEventListener('click', () => {
       view = 'record';
       render();
@@ -1410,7 +1480,15 @@ export function mountApp(root: HTMLElement): void {
     root.querySelector('[data-settings-form]')?.addEventListener('submit', (e) => {
       e.preventDefault();
       const form = e.target as HTMLFormElement;
-      saveSettings(settingsFromForm(form));
+      syncFleetFormFields();
+      const next = settingsFromForm(form);
+      const fleet = fleetConfigCache ?? defaultFleetConfig();
+      const boat = findBoat(fleet, next.boatId);
+      const coach = findCoach(fleet, next.coachId || '');
+      if (boat) next.boatClass = boat.boatClass;
+      if (coach) next.athleteId = coach.name;
+      saveSettings(next);
+      settings = next;
       pushLog('Settings saved.');
       view = 'record';
       render();

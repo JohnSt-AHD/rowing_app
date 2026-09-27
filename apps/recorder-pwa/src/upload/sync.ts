@@ -91,6 +91,8 @@ async function flushOutboxInner(
           sessionId: parsed.sessionId,
           deviceId: settings.deviceId,
           athleteId: settings.athleteId || undefined,
+          boatId: settings.boatId || undefined,
+          boatClass: settings.boatClass || undefined,
           samples: parsed.samples,
         }),
         PER_BATCH_TIMEOUT_MS,

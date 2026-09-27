@@ -56,12 +56,22 @@ export type TelemetryBatch = {
   sessionId: string;
   deviceId: string;
   athleteId?: string;
+  /** Selected fleet boat id from manager setup. */
+  boatId?: string;
+  /** Denormalised boat class code (e.g. M1x) for server display. */
+  boatClass?: string;
   samples: TelemetrySample[];
 };
 
 export type RecorderSettings = {
   deviceId: string;
   athleteId: string;
+  /** Coach name from fleet config (stored in athleteId on upload). */
+  coachId?: string;
+  /** Selected boat id from fleet config. */
+  boatId: string;
+  /** Boat class code for prognostic pace (from selected boat). */
+  boatClass: string;
   ingestUrl: string;
   ingestToken: string;
   gpsIntervalMs: number;
@@ -90,6 +100,9 @@ export const DEFAULT_INGEST_URL =
 export const DEFAULT_SETTINGS: RecorderSettings = {
   deviceId: '',
   athleteId: '',
+  coachId: '',
+  boatId: '',
+  boatClass: '',
   ingestUrl: DEFAULT_INGEST_URL,
   ingestToken: '',
   gpsIntervalMs: 3000,

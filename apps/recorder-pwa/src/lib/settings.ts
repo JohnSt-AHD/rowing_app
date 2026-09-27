@@ -104,9 +104,16 @@ export function settingsFromForm(form: HTMLFormElement): RecorderSettings {
   };
   const sampleSec = num('sampleRateSec', sampleRateSecFromSettings(DEFAULT_SETTINGS));
   const intervals = intervalsFromSampleRateSec(sampleSec);
+  const coachId = String(fd.get('coachId') ?? '').trim();
+  const coachName = String(fd.get('coachName') ?? '').trim();
+  const boatId = String(fd.get('boatId') ?? '').trim();
+  const boatClass = String(fd.get('boatClass') ?? '').trim();
   const settings = withOriginDefaults({
     deviceId: String(fd.get('deviceId') ?? '').trim(),
-    athleteId: String(fd.get('athleteId') ?? '').trim(),
+    athleteId: coachName || coachId,
+    coachId,
+    boatId,
+    boatClass,
     ingestUrl: String(fd.get('ingestUrl') ?? DEFAULT_INGEST_URL).trim(),
     ingestToken: String(fd.get('ingestToken') ?? '').trim(),
     gpsIntervalMs: intervals.gpsIntervalMs,

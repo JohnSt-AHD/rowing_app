@@ -74,6 +74,11 @@ module.exports = async function handler(req, res) {
     });
   }
 
+  const boatMeta = {
+    boatId: body.boatId != null ? String(body.boatId) : undefined,
+    boatClass: body.boatClass != null ? String(body.boatClass) : undefined,
+  };
+
   const result = await store.recordBatch(
     org.id,
     sessionId,
@@ -81,6 +86,7 @@ module.exports = async function handler(req, res) {
     body.athleteId,
     samples,
     req.headers['x-idempotency-key'] || req.headers['X-Idempotency-Key'],
+    boatMeta,
   );
 
   const { warmMapPositionsCacheAfterIngest } = require('./lib/map-positions-cache');
