@@ -1,9 +1,10 @@
 function formatBoatClassShort(boatClass) {
   const code = String(boatClass || '').trim();
-  const m = /^([BJL]?)([MW])([1248])([X+\-])$/.exec(code);
+  // Accept M1x / M1X (case-insensitive sculling marker).
+  const m = /^([BJL]?)([MW])([1248])([Xx+\-])$/.exec(code);
   if (!m) return code;
   let type = m[4];
-  if (type === 'x') type = 'X';
+  if (type === 'x' || type === 'X') type = 'X';
   return `${m[3]}${type}`;
 }
 
