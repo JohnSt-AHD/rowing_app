@@ -153,7 +153,7 @@ function normalizeGeofence(row) {
   return {
     id: row.id,
     name: row.name,
-    kind: row.kind || 'boat_park',
+    kind: normalizeGeofenceKind(row.kind, 'boat_park'),
     shapeType,
     centerLat: Number(row.center_lat ?? row.centerLat),
     centerLon: Number(row.center_lon ?? row.centerLon),
@@ -261,12 +261,35 @@ function toTraccarGeofence(g) {
   const norm = g && g.shapeType != null ? g : normalizeGeofence(g);
   const area = toTraccarArea(norm);
   if (!area) return null;
+  const kind = String(norm.kind || 'boat_park').toLowerCase() === 'hazard' ? 'hazard' : 'boat_park';
   return {
     id: norm.id,
     name: norm.name,
     area,
-    attributes: {},
+    attributes: {
+      kind,
+      notifyOnEnter: norm.notifyOnEnter === true,
+      entryNotifyMessage: norm.entryNotifyMessage || '',
+    },
   };
+}
+
+/** Normalize geofence kind to boat_park | hazard. */
+function normalizeGeofenceKind(input, fallback = 'boat_park') {
+  const k = String(input ?? fallback ?? 'boat_park').trim().toLowerCase();
+  return k === 'hazard' ? 'hazard' : 'boat_park';
+}
+
+/** Enabled hazard zones containing this point. */
+function findHazardZonesAt(lat, lon, geofences) {
+  if (!Array.isArray(geofences)) return [];
+  const out = [];
+  for (const g of geofences) {
+    if (!g || g.enabled === false) continue;
+    if (normalizeGeofenceKind(g.kind) !== 'hazard') continue;
+    if (pointInZoneGeometry(g, lat, lon)) out.push(g);
+  }
+  return out;
 }
 
 /** Map CrewSight geofences to Traccar snapshot shape (skips disabled / invalid geometry). */
@@ -292,9 +315,11 @@ module.exports = {
   pointInGeofence,
   findBoatParkAt,
   findNotifyZoneAt,
+  findHazardZonesAt,
   entryNotifyMessageFor,
   findSuppressRecordingAt,
   normalizeGeofence,
+  normalizeGeofenceKind,
   economyIntervalSecFromInput,
   sessionDwellSecFromInput,
   boolFromInput,

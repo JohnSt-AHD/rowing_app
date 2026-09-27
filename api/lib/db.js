@@ -306,6 +306,52 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
   await sql`ALTER TABLE rnz_regatta_messages ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
   await sql`ALTER TABLE rnz_idempotency ADD COLUMN IF NOT EXISTS org_id INTEGER REFERENCES rnz_orgs(id)`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_hazard_entries (
+      id BIGSERIAL PRIMARY KEY,
+      org_id INTEGER NOT NULL REFERENCES rnz_orgs(id) ON DELETE CASCADE,
+      geofence_id INTEGER NOT NULL REFERENCES rnz_geofences(id) ON DELETE CASCADE,
+      unique_id TEXT NOT NULL,
+      session_id TEXT,
+      hazard_name TEXT NOT NULL,
+      entered_at TIMESTAMPTZ NOT NULL,
+      exited_at TIMESTAMPTZ,
+      enter_lat DOUBLE PRECISION,
+      enter_lon DOUBLE PRECISION,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_hazard_entries_org_entered
+      ON rnz_hazard_entries (org_id, entered_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_hazard_entries_open
+      ON rnz_hazard_entries (org_id, unique_id, geofence_id)
+      WHERE exited_at IS NULL
+  `;
+  const hazardKindMig = await sql`
+    SELECT 1 AS ok FROM rnz_schema_migrations WHERE id = 'geofence_hazard_kind_rnz_v1' LIMIT 1
+  `;
+  if (!hazardKindMig.rows.length) {
+    // Promote known hazard zones (e.g. Pylons) that already use entry notifications.
+    await sql`
+      UPDATE rnz_geofences
+      SET kind = 'hazard',
+          updated_at = NOW()
+      WHERE kind IS DISTINCT FROM 'hazard'
+        AND (
+          name ILIKE '%pylon%'
+          OR (notify_on_enter = true AND name ILIKE '%hazard%')
+        )
+    `;
+    await sql`
+      INSERT INTO rnz_schema_migrations (id) VALUES ('geofence_hazard_kind_rnz_v1')
+      ON CONFLICT (id) DO NOTHING
+    `;
+  }
+
   await sql`
     CREATE TABLE IF NOT EXISTS rnz_timing_lines (
       id SERIAL PRIMARY KEY,
@@ -2830,12 +2876,14 @@ async function setIdempotency(orgId, key, response) {
 
 const {
   normalizeGeofence,
+  normalizeGeofenceKind,
   normalizePolygonInput,
   polygonCentroid,
   polygonBoundingRadiusM,
   economyIntervalSecFromInput,
   sessionDwellSecFromInput,
   boolFromInput,
+  findHazardZonesAt,
 } = require('./geofence');
 
 async function listGeofences(orgId) {
@@ -2861,7 +2909,7 @@ async function createGeofence(orgId, body) {
   await ensureOrgsBootstrapped();
   const name = String(body.name ?? '').trim();
   if (!name) throw new Error('name is required');
-  const kind = String(body.kind ?? 'boat_park').trim() || 'boat_park';
+  const kind = normalizeGeofenceKind(body.kind, 'boat_park');
   const economyInterval = economyIntervalSecFromInput(body);
   const economyGps = economyInterval;
   const economyUpload = economyInterval;
@@ -2869,7 +2917,13 @@ async function createGeofence(orgId, body) {
   const suppressRecording = boolFromInput(body, 'suppressRecording', 'suppress_recording', false);
   const autoStopOnEnter = boolFromInput(body, 'autoStopOnEnter', 'auto_stop_on_enter', false);
   const autoStartOnExit = boolFromInput(body, 'autoStartOnExit', 'auto_start_on_exit', false);
-  const notifyOnEnter = boolFromInput(body, 'notifyOnEnter', 'notify_on_enter', false);
+  // Hazards default to phone entry notification (e.g. Pylons).
+  const notifyOnEnter = boolFromInput(
+    body,
+    'notifyOnEnter',
+    'notify_on_enter',
+    kind === 'hazard',
+  );
   const entryNotifyMessage =
     body.entryNotifyMessage != null
       ? String(body.entryNotifyMessage).trim()
@@ -3019,6 +3073,10 @@ async function updateGeofenceSettings(orgId, id, body = {}) {
       ? String(body.entryNotifyMessage ?? body.entry_notify_message ?? '').trim()
       : null;
   const name = body.name != null ? String(body.name).trim() : null;
+  const kind =
+    body.kind != null || body.Kind != null
+      ? normalizeGeofenceKind(body.kind ?? body.Kind)
+      : null;
 
   let centerLat = null;
   let centerLon = null;
@@ -3062,6 +3120,7 @@ async function updateGeofenceSettings(orgId, id, body = {}) {
     UPDATE rnz_geofences
     SET
       name = COALESCE(${name || null}, name),
+      kind = COALESCE(${kind}, kind),
       shape_type = COALESCE(${shapeType}, shape_type),
       center_lat = COALESCE(${centerLat}, center_lat),
       center_lon = COALESCE(${centerLon}, center_lon),
@@ -3090,6 +3149,173 @@ async function updateGeofenceSettings(orgId, id, body = {}) {
   `;
   if (!rows.rows.length) return null;
   return normalizeGeofence(rows.rows[0]);
+}
+
+/**
+ * Open/close hazard-zone visits from the latest GPS fix.
+ * @param {number} orgId
+ * @param {string} uniqueId
+ * @param {string|null|undefined} sessionId
+ * @param {number} lat
+ * @param {number} lon
+ * @param {number} [tMs]
+ */
+async function syncHazardPresence(orgId, uniqueId, sessionId, lat, lon, tMs) {
+  if (!hasDb()) return;
+  const uid = String(uniqueId || '').trim();
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!uid || !Number.isFinite(la) || !Number.isFinite(lo)) return;
+
+  const geofences = await listGeofences(orgId);
+  const inside = findHazardZonesAt(la, lo, geofences);
+  const insideIds = new Set(inside.map((g) => Number(g.id)).filter((id) => Number.isFinite(id)));
+  const at = Number.isFinite(Number(tMs)) ? new Date(Number(tMs)) : new Date();
+  const sid = sessionId != null ? String(sessionId) : null;
+  const sql = await getSql();
+
+  for (const g of inside) {
+    const gid = Number(g.id);
+    if (!Number.isFinite(gid)) continue;
+    const existing = await sql`
+      SELECT id FROM rnz_hazard_entries
+      WHERE org_id = ${orgId}
+        AND geofence_id = ${gid}
+        AND unique_id = ${uid}
+        AND exited_at IS NULL
+      LIMIT 1
+    `;
+    if (existing.rows.length) {
+      if (sid) {
+        await sql`
+          UPDATE rnz_hazard_entries
+          SET session_id = COALESCE(session_id, ${sid}), updated_at = NOW()
+          WHERE id = ${existing.rows[0].id}
+        `;
+      }
+      continue;
+    }
+    await sql`
+      INSERT INTO rnz_hazard_entries (
+        org_id, geofence_id, unique_id, session_id, hazard_name,
+        entered_at, enter_lat, enter_lon
+      )
+      VALUES (
+        ${orgId}, ${gid}, ${uid}, ${sid}, ${String(g.name || 'Hazard')},
+        ${at}, ${la}, ${lo}
+      )
+    `;
+  }
+
+  if (insideIds.size === 0) {
+    await sql`
+      UPDATE rnz_hazard_entries
+      SET exited_at = ${at}, updated_at = NOW()
+      WHERE org_id = ${orgId}
+        AND unique_id = ${uid}
+        AND exited_at IS NULL
+    `;
+    return;
+  }
+
+  const openRows = await sql`
+    SELECT id, geofence_id FROM rnz_hazard_entries
+    WHERE org_id = ${orgId}
+      AND unique_id = ${uid}
+      AND exited_at IS NULL
+  `;
+  for (const row of openRows.rows) {
+    if (insideIds.has(Number(row.geofence_id))) continue;
+    await sql`
+      UPDATE rnz_hazard_entries
+      SET exited_at = ${at}, updated_at = NOW()
+      WHERE id = ${row.id}
+    `;
+  }
+}
+
+/**
+ * Day-grouped hazard-zone visits for RowSafe.
+ * @param {number} orgId
+ * @param {{ days?: number, timeZone?: string }} [opts]
+ */
+async function getHazardRegister(orgId, opts = {}) {
+  if (!hasDb()) return { timeZone: 'Pacific/Auckland', days: [] };
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const days = Math.min(Math.max(Number(opts.days) || 45, 1), 120);
+  const timeZone = String(opts.timeZone || 'Pacific/Auckland');
+  const cutoff = new Date(Date.now() - days * 86400000);
+
+  const rows = await sql`
+    SELECT
+      h.id,
+      h.geofence_id,
+      h.unique_id,
+      h.session_id,
+      h.hazard_name,
+      h.entered_at,
+      h.exited_at,
+      h.enter_lat,
+      h.enter_lon,
+      COALESCE(NULLIF(d.name, ''), h.unique_id) AS device_name,
+      to_char(timezone(${timeZone}, h.entered_at), 'YYYY-MM-DD') AS day_key
+    FROM rnz_hazard_entries h
+    LEFT JOIN rnz_devices d
+      ON d.org_id = h.org_id AND d.unique_id = h.unique_id
+    WHERE h.org_id = ${orgId}
+      AND h.entered_at >= ${cutoff}
+    ORDER BY h.entered_at DESC
+    LIMIT 1000
+  `;
+
+  /** @type {Map<string, object>} */
+  const byDay = new Map();
+  for (const row of rows.rows) {
+    const enteredMs = new Date(row.entered_at).getTime();
+    const exitedMs = row.exited_at ? new Date(row.exited_at).getTime() : null;
+    const day = row.day_key || logbookDayKey(Number.isFinite(enteredMs) ? enteredMs : Date.now(), timeZone);
+    const durationMs =
+      exitedMs != null && Number.isFinite(exitedMs) && Number.isFinite(enteredMs)
+        ? Math.max(0, exitedMs - enteredMs)
+        : null;
+    const entry = {
+      id: Number(row.id),
+      geofenceId: Number(row.geofence_id),
+      uniqueId: String(row.unique_id),
+      sessionId: row.session_id != null ? String(row.session_id) : null,
+      hazardName: String(row.hazard_name || 'Hazard'),
+      crew: String(row.device_name || row.unique_id),
+      enteredAt: new Date(Number.isFinite(enteredMs) ? enteredMs : Date.now()).toISOString(),
+      exitedAt:
+        exitedMs != null && Number.isFinite(exitedMs)
+          ? new Date(exitedMs).toISOString()
+          : null,
+      durationMs,
+      enterLat: row.enter_lat != null ? Number(row.enter_lat) : null,
+      enterLon: row.enter_lon != null ? Number(row.enter_lon) : null,
+      open: row.exited_at == null,
+    };
+    let dayRow = byDay.get(day);
+    if (!dayRow) {
+      dayRow = {
+        date: day,
+        entryCount: 0,
+        openCount: 0,
+        entries: [],
+      };
+      byDay.set(day, dayRow);
+    }
+    dayRow.entryCount += 1;
+    if (entry.open) dayRow.openCount += 1;
+    dayRow.entries.push(entry);
+  }
+
+  const daysOut = [...byDay.values()].sort((a, b) => (a.date < b.date ? 1 : -1));
+  for (const day of daysOut) {
+    day.entries.sort((a, b) => String(b.enteredAt).localeCompare(String(a.enteredAt)));
+  }
+  return { timeZone, days: daysOut };
 }
 
 async function deleteGeofence(orgId, id) {
@@ -3521,6 +3747,8 @@ module.exports = {
   createGeofence,
   updateGeofenceSettings,
   deleteGeofence,
+  syncHazardPresence,
+  getHazardRegister,
   listTimingLines,
   createTimingLine,
   generateTimingSplitCourse,

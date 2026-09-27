@@ -1252,6 +1252,10 @@
   color: #f59e0b;
 }
 
+.map-legend-item--hazard {
+  color: #dc2626;
+}
+
 .geofence-intro {
   margin: 0 0 0.85rem;
   font-size: 0.85rem;
@@ -1278,11 +1282,24 @@
   background: rgba(245, 158, 11, 0.08);
 }
 
+.geofence-item--hazard {
+  border-color: rgba(220, 38, 38, 0.4);
+  background: rgba(220, 38, 38, 0.08);
+}
+
 .geofence-item__main {
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
   min-width: 0;
+  flex: 1;
+}
+
+.geofence-item__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
 }
 
 .geofence-item__meta {

@@ -308,6 +308,7 @@
             <div class="setup-geo-map-col">
               <p class="map-legend map-legend--compact setup-map-legend">
                 <span class="map-legend-item map-legend-item--amber">● Geofence</span>
+                <span class="map-legend-item map-legend-item--hazard">● Hazard</span>
                 <span class="map-legend-item map-legend-item--live">● Start</span>
                 <span class="map-legend-item map-legend-item--lost">● Finish</span>
                 <span class="map-legend-item" style="color:#2563eb">● Split</span>
@@ -325,6 +326,13 @@
               <label class="ahd-field">
                 Name
                 <input type="text" id="geofenceName" required placeholder="Boat Park" />
+              </label>
+              <label class="ahd-field">
+                Kind
+                <select id="geofenceKind" aria-label="Geofence kind">
+                  <option value="boat_park" selected>Boat park / economy</option>
+                  <option value="hazard">Hazard (register + map)</option>
+                </select>
               </label>
               <label class="ahd-field">
                 Shape

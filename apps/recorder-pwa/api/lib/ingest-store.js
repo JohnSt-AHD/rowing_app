@@ -1684,6 +1684,34 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
     metrics.lastPersistError = String(persistError).slice(0, 300);
   }
 
+  if (persisted && db.hasDb()) {
+    try {
+      let lastFix = null;
+      for (let i = clean.samples.length - 1; i >= 0; i--) {
+        const fix = gpsFromSample(clean.samples[i]);
+        if (!fix) continue;
+        lastFix = {
+          lat: fix.lat,
+          lon: fix.lon,
+          t: Number(clean.samples[i].t) || now,
+        };
+        break;
+      }
+      if (lastFix) {
+        await db.syncHazardPresence(
+          orgId,
+          String(deviceId),
+          sessionId,
+          lastFix.lat,
+          lastFix.lon,
+          lastFix.t,
+        );
+      }
+    } catch (err) {
+      console.error('[ingest-store] hazard presence sync failed:', err);
+    }
+  }
+
   const result = {
     received: clean.samples.length,
     dropped: clean.dropped || undefined,
@@ -3103,6 +3131,16 @@ async function getLogbook(orgId, opts = {}) {
   }
 }
 
+async function getHazardRegister(orgId, opts = {}) {
+  if (!db.hasDb()) return { timeZone: opts.timeZone || 'Pacific/Auckland', days: [] };
+  try {
+    return await db.getHazardRegister(orgId, opts);
+  } catch (err) {
+    console.error('[ingest-store] getHazardRegister failed:', err);
+    throw err;
+  }
+}
+
 async function listHistoryDevices(orgId) {
   if (!db.hasDb()) return [];
   try {
@@ -3265,6 +3303,7 @@ module.exports = {
   getRouteHistory,
   listSessionsHistory,
   getLogbook,
+  getHazardRegister,
   listHistoryDevices,
   getDashboardHistory,
   getDashboardHistoryBySession,

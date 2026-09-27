@@ -21,6 +21,22 @@
     dashArray: '6 4',
   };
 
+  const HAZARD_STYLE = {
+    color: '#dc2626',
+    fillColor: '#ef4444',
+    fillOpacity: 0.2,
+    weight: 3,
+    dashArray: '2 6',
+  };
+
+  function styleForGeofence(g) {
+    return String(g?.kind || '').toLowerCase() === 'hazard' ? HAZARD_STYLE : GEOFENCE_STYLE;
+  }
+
+  function isHazard(g) {
+    return String(g?.kind || '').toLowerCase() === 'hazard';
+  }
+
   function headers() {
     if (typeof window.dashboardHeaders === 'function') return window.dashboardHeaders();
     return { Accept: 'application/json', 'Content-Type': 'application/json' };
@@ -99,7 +115,8 @@
       g.shapeType === 'polygon' && g.polygonCoords?.length >= 3
         ? `Polygon · ${g.polygonCoords.length} points`
         : `${Math.round(g.radiusM)} m radius`;
-    return `<strong>${esc(g.name)}</strong><br>Geofence zone · ${shape}<br>Every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording ? 'paused' : 'on'} · auto ${g.autoStopOnEnter ? 'stop' : 'stop off'} / ${g.autoStartOnExit ? 'start' : 'start off'}`;
+    const kindLabel = isHazard(g) ? 'Hazard zone' : 'Geofence zone';
+    return `<strong>${esc(g.name)}</strong><br>${kindLabel} · ${shape}<br>Every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording ? 'paused' : 'on'} · auto ${g.autoStopOnEnter ? 'stop' : 'stop off'} / ${g.autoStartOnExit ? 'start' : 'start off'}`;
   }
 
   function drawGeofences() {
@@ -111,16 +128,17 @@
       layers.edit.clearLayers();
       for (const g of geofences) {
         if (!g.enabled) continue;
+        const style = styleForGeofence(g);
         let layer;
         if (g.shapeType === 'polygon' && Array.isArray(g.polygonCoords) && g.polygonCoords.length >= 3) {
           layer = L.polygon(
             g.polygonCoords.map((pt) => [pt[0], pt[1]]),
-            GEOFENCE_STYLE,
+            style,
           );
         } else {
           layer = L.circle([g.centerLat, g.centerLon], {
             radius: g.radiusM,
-            ...GEOFENCE_STYLE,
+            ...style,
           });
         }
         layer.bindPopup(popupHtml(g));
@@ -369,19 +387,47 @@
     el.innerHTML = geofences
       .map(
         (g) => `
-      <div class="geofence-item" data-id="${g.id}">
+      <div class="geofence-item${isHazard(g) ? ' geofence-item--hazard' : ''}" data-id="${g.id}">
         <div class="geofence-item__main">
           <strong>${esc(g.name)}</strong>
-          <span class="geofence-item__meta">${esc(shapeSummary(g))}</span>
+          <span class="geofence-item__meta">${isHazard(g) ? 'Hazard' : 'Boat park'} · ${esc(shapeSummary(g))}</span>
           <span class="geofence-item__meta">Economy: every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording ? 'paused' : 'on'} · dwell ${g.sessionDwellSec ?? 45}s · auto-stop ${g.autoStopOnEnter ? 'on' : 'off'} · auto-start ${g.autoStartOnExit ? 'on' : 'off'} · notify ${g.notifyOnEnter ? 'on' : 'off'}${g.notifyOnEnter && g.entryNotifyMessage ? ` · “${esc(g.entryNotifyMessage)}”` : ''}</span>
         </div>
-        <button type="button" class="hub-btn hub-btn--danger geofence-delete-btn" data-id="${g.id}">Delete</button>
+        <div class="geofence-item__actions">
+          <button type="button" class="hub-btn hub-btn--ghost geofence-kind-btn" data-id="${g.id}" data-kind="${isHazard(g) ? 'boat_park' : 'hazard'}">${isHazard(g) ? 'Make boat park' : 'Make hazard'}</button>
+          <button type="button" class="hub-btn hub-btn--danger geofence-delete-btn" data-id="${g.id}">Delete</button>
+        </div>
       </div>`,
       )
       .join('');
     el.querySelectorAll('.geofence-delete-btn').forEach((btn) => {
       btn.addEventListener('click', () => void deleteGeofence(btn.getAttribute('data-id')));
     });
+    el.querySelectorAll('.geofence-kind-btn').forEach((btn) => {
+      btn.addEventListener('click', () =>
+        void setGeofenceKind(btn.getAttribute('data-id'), btn.getAttribute('data-kind')),
+      );
+    });
+  }
+
+  async function setGeofenceKind(id, kind) {
+    if (!id || !kind) return;
+    setStatus(kind === 'hazard' ? 'Marking as hazard…' : 'Marking as boat park…');
+    const payload =
+      kind === 'hazard'
+        ? { kind: 'hazard', notifyOnEnter: true }
+        : { kind: 'boat_park' };
+    const res = await fetch(`${apiBase()}/api/geofences?id=${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      setStatus(data.error || 'Update failed', true);
+      return;
+    }
+    await loadGeofences();
   }
 
   async function deleteGeofence(id) {
@@ -417,9 +463,10 @@
       return;
     }
 
+    const kind = $('#geofenceKind')?.value === 'hazard' ? 'hazard' : 'boat_park';
     let payload = {
       name,
-      kind: 'boat_park',
+      kind,
       shapeType,
       economyIntervalSec,
       sessionDwellSec,
@@ -427,7 +474,7 @@
       suppressRecording,
       autoStopOnEnter,
       autoStartOnExit,
-      notifyOnEnter,
+      notifyOnEnter: kind === 'hazard' ? notifyOnEnter || true : notifyOnEnter,
       entryNotifyMessage,
     };
 
@@ -472,10 +519,23 @@
     if ($('#geofenceAutoStart')) $('#geofenceAutoStart').checked = false;
     if ($('#geofenceNotifyEnter')) $('#geofenceNotifyEnter').checked = false;
     if ($('#geofenceNotifyMessage')) $('#geofenceNotifyMessage').value = '';
+    if ($('#geofenceKind')) $('#geofenceKind').value = 'boat_park';
     if ($('#geofenceShapeType')) $('#geofenceShapeType').value = 'circle';
     clearPolygonDraft();
     updateShapeFields();
     await loadGeofences();
+  }
+
+  function onKindChange() {
+    const kind = $('#geofenceKind')?.value;
+    if (kind !== 'hazard') return;
+    const notify = $('#geofenceNotifyEnter');
+    if (notify && !notify.checked) notify.checked = true;
+    const msg = $('#geofenceNotifyMessage');
+    const name = $('#geofenceName')?.value?.trim();
+    if (msg && !msg.value.trim() && name) {
+      msg.placeholder = `Please check course, ${name} ahead`;
+    }
   }
 
   function onMapClick(e) {
@@ -529,6 +589,7 @@
 
   function bind() {
     $('#geofenceForm')?.addEventListener('submit', createGeofence);
+    $('#geofenceKind')?.addEventListener('change', onKindChange);
     $('#geofenceShapeType')?.addEventListener('change', updateShapeFields);
     $('#geofencePickBtn')?.addEventListener('click', () => setPickMode(!pickMode));
     $('#geofenceMapCentreBtn')?.addEventListener('click', useMapCentre);
