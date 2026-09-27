@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CrewSight Manager icon size preview</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        background: #111827;
+        color: #e5e7eb;
+        margin: 0;
+        padding: 1.5rem;
+      }
+      h1 {
+        font-size: 1.25rem;
+        margin: 0 0 0.5rem;
+      }
+      p {
+        color: #9ca3af;
+        max-width: 720px;
+        line-height: 1.5;
+      }
+      .grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2rem;
+        margin-top: 1.5rem;
+        align-items: flex-start;
+      }
+      figure {
+        margin: 0;
+        text-align: center;
+      }
+      figcaption {
+        margin-top: 0.75rem;
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+      figcaption span {
+        display: block;
+        font-weight: 400;
+        color: #9ca3af;
+        font-size: 0.85rem;
+        margin-top: 0.25rem;
+      }
+      img {
+        width: 192px;
+        height: 192px;
+        image-rendering: auto;
+        border-radius: 22%;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      }
+      .compare {
+        margin-top: 2rem;
+      }
+      .compare img {
+        width: min(100%, 640px);
+        height: auto;
+        border-radius: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>CrewSight Manager — launcher icon size</h1>
+    <p>
+      Android home-screen icons are 1024×1024. The logo scale is currently
+      <strong>0.82</strong> (82% of the canvas). A 25% increase would be
+      <strong>1.025</strong>, but that clips — the practical maximum is
+      <strong>1.0</strong> (~22% larger).
+    </p>
+
+    <div class="grid">
+      <figure>
+        <img src="./manager-icon-current-82pct.png" alt="Current icon at 82% scale" />
+        <figcaption>
+          Current (scale 0.82)
+          <span>More padding around logo</span>
+        </figcaption>
+      </figure>
+      <figure>
+        <img src="./manager-icon-plus25pct-100.png" alt="Larger icon at 100% scale" />
+        <figcaption>
+          +25% target (scale 1.0 max)
+          <span>Logo fills the icon slot</span>
+        </figcaption>
+      </figure>
+    </div>
+
+    <figure class="compare">
+      <img src="./manager-icon-comparison.png" alt="Side by side comparison" />
+      <figcaption>Side-by-side comparison</figcaption>
+    </figure>
+  </body>
+</html>

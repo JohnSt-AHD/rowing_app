@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KRI race sim — input vs map output</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #171d24;
+      --text: #e8edf2;
+      --muted: #8b98a5;
+      --grid: #2a3440;
+      --good: #a3e635;
+      --warn: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.45 system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 20px;
+      max-width: 1100px;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 6px; }
+    .sub { color: var(--muted); margin-bottom: 18px; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--grid);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .stat .label { color: var(--muted); font-size: 12px; }
+    .stat .value { font-size: 1.2rem; font-weight: 600; margin-top: 4px; }
+    .stat .value.good { color: var(--good); }
+    .stat .value.warn { color: var(--warn); }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--grid);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .panel h2 { font-size: 1rem; margin: 0 0 4px; }
+    .caption { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+    canvas { width: 100% !important; height: 320px !important; }
+    .legend-note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+    .err { color: #f87171; }
+  </style>
+</head>
+<body>
+  <h1>KRI race sim — input vs map output</h1>
+  <p class="sub" id="meta">Loading…</p>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="panel">
+    <h2>Speed vs poll time</h2>
+    <p class="caption">Live samples every 3 s from production map-positions vs KRI ESP1 profile at along-course distance</p>
+    <canvas id="timeChart"></canvas>
+    <p class="legend-note">Input = KRI lane speed at simulated position · Raw = map marker speed · Path = 60 s rolling pace · Display = EMA shown on course view</p>
+  </div>
+
+  <div class="panel">
+    <h2>Speed vs along-course distance</h2>
+    <p class="caption">Same metrics vs distance from start line (turn-around at ~2 km visible on right)</p>
+    <canvas id="distChart"></canvas>
+  </div>
+
+  <script>
+    
+
+    function split500(mps) {
+      if (mps == null || !Number.isFinite(mps) || mps <= 0) return '—';
+      const t = 500 / mps;
+      const mm = Math.floor(t / 60);
+      const ss = (t % 60).toFixed(1).padStart(4, '0');
+      return mm + ':' + ss + '/500';
+    }
+
+    function pctErr(obs, truth) {
+      if (obs == null || truth == null || truth <= 0) return null;
+      return 100 * (obs - truth) / truth;
+    }
+
+    function avg(arr) {
+      const v = arr.filter(x => x != null && Number.isFinite(x));
+      if (!v.length) return null;
+      return v.reduce((a, b) => a + b, 0) / v.length;
+    }
+
+    function buildCharts(payload) {
+      const samples = payload.samples || [];
+      const steady = samples.filter(r => r.inputMps && r.distM < 1900);
+
+      document.getElementById('meta').textContent =
+        `${payload.deviceId} · ${payload.lane} · ${payload.courseGroup} · collected ${payload.collectedAt} · ${samples.length} samples @ ${payload.pollSec}s`;
+
+      const metrics = [
+        { key: 'rawMps', label: 'Raw marker', cls: 'warn' },
+        { key: 'pathMps', label: 'Path pace (60s)', cls: 'good' },
+        { key: 'displayMps', label: 'Display EMA', cls: 'good' },
+      ];
+
+      const statsEl = document.getElementById('stats');
+      statsEl.innerHTML = metrics.map(m => {
+        const errs = steady.map(r => pctErr(r[m.key], r.inputMps)).filter(x => x != null);
+        const avgErr = avg(errs);
+        const cls = Math.abs(avgErr || 0) <= 3 ? 'good' : 'warn';
+        return `<div class="stat"><div class="label">${m.label} vs input</div><div class="value ${cls}">${avgErr == null ? '—' : (avgErr >= 0 ? '+' : '') + avgErr.toFixed(1) + '% avg'}</div></div>`;
+      }).join('') + `<div class="stat"><div class="label">Steady samples</div><div class="value">${steady.length} / ${samples.length}</div></div>`;
+
+      const kriProfile = payload.kriProfile || [];
+      const profileDistKm = kriProfile.map(p => (p.distance / 1000).toFixed(3));
+      const profileSpeed = kriProfile.map(p => p.speed);
+
+      const tLabels = samples.map(r => r.tSec.toFixed(0));
+      const dLabels = samples.map(r => (r.distM / 1000).toFixed(3));
+
+      const common = {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#e8edf2' } },
+          tooltip: {
+            callbacks: {
+              label(ctx) {
+                const v = ctx.parsed.y;
+                if (v == null || !Number.isFinite(v)) return ctx.dataset.label + ': —';
+                return ctx.dataset.label + ': ' + v.toFixed(2) + ' m/s (' + split500(v) + ')';
+              }
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#8b98a5', maxTicksLimit: 12 }, grid: { color: '#2a3440' } },
+          y: {
+            title: { display: true, text: 'Speed (m/s)', color: '#8b98a5' },
+            ticks: { color: '#8b98a5' },
+            grid: { color: '#2a3440' },
+            min: 0,
+            suggestedMax: 6.5
+          }
+        }
+      };
+
+      const series = (key) => samples.map(r => r[key] ?? null);
+
+      const datasets = [
+        { label: 'KRI input (at position)', data: series('inputMps'), borderColor: '#ffffff', backgroundColor: 'transparent', borderWidth: 2.2, pointRadius: 3, spanGaps: false },
+        { label: 'Map raw speed', data: series('rawMps'), borderColor: '#f97316', backgroundColor: 'transparent', borderWidth: 1.2, pointRadius: 2, spanGaps: false },
+        { label: 'Path pace (60s)', data: series('pathMps'), borderColor: '#a3e635', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, spanGaps: false },
+        { label: 'Display EMA', data: series('displayMps'), borderColor: '#38bdf8', backgroundColor: 'transparent', borderWidth: 1.6, pointRadius: 2, spanGaps: false },
+      ];
+
+      new Chart(document.getElementById('timeChart'), {
+        type: 'line',
+        data: { labels: tLabels, datasets },
+        options: {
+          ...common,
+          scales: {
+            ...common.scales,
+            x: { ...common.scales.x, title: { display: true, text: 'Elapsed (seconds)', color: '#8b98a5' } }
+          }
+        }
+      });
+
+      new Chart(document.getElementById('distChart'), {
+        type: 'line',
+        data: {
+          labels: dLabels,
+          datasets: [
+            ...datasets,
+            {
+              label: 'KRI profile (reference)',
+              data: profileSpeed,
+              borderColor: 'rgba(255,255,255,0.25)',
+              borderDash: [6, 4],
+              borderWidth: 1,
+              pointRadius: 0,
+              spanGaps: true,
+              xAxisID: 'x2'
+            }
+          ]
+        },
+        options: {
+          ...common,
+          scales: {
+            ...common.scales,
+            x: { ...common.scales.x, title: { display: true, text: 'Along-course distance (km)', color: '#8b98a5' } }
+          }
+        }
+      });
+    }
+
+    buildCharts({"deviceId":"TEST-KRI-RACE","lane":"ESP1","courseGroup":"2 km course","collectedAt":"2026-07-24 14:36:17 New Zealand Standard Time","pollSec":3,"kriProfile":[{"distance":0,"speed":5.5},{"distance":50,"speed":5.5},{"distance":100,"speed":5.3},{"distance":150,"speed":5.2},{"distance":200,"speed":5.1},{"distance":250,"speed":5},{"distance":300,"speed":4.9},{"distance":350,"speed":4.9},{"distance":400,"speed":4.8},{"distance":450,"speed":4.8},{"distance":500,"speed":4.7},{"distance":550,"speed":4.7},{"distance":600,"speed":4.7},{"distance":650,"speed":4.8},{"distance":700,"speed":4.8},{"distance":750,"speed":4.7},{"distance":800,"speed":4.6},{"distance":850,"speed":4.7},{"distance":900,"speed":4.7},{"distance":950,"speed":4.7},{"distance":1000,"speed":4.8},{"distance":1050,"speed":4.8},{"distance":1100,"speed":4.6},{"distance":1150,"speed":4.6},{"distance":1200,"speed":4.6},{"distance":1250,"speed":4.6},{"distance":1300,"speed":4.9},{"distance":1350,"speed":4.6},{"distance":1400,"speed":4.5},{"distance":1450,"speed":4.6},{"distance":1500,"speed":4.6},{"distance":1550,"speed":4.7},{"distance":1600,"speed":4.7},{"distance":1650,"speed":4.5},{"distance":1700,"speed":4.6},{"distance":1750,"speed":4.6},{"distance":1800,"speed":4.6},{"distance":1850,"speed":4.6},{"distance":1900,"speed":4.5},{"distance":1950,"speed":4.5},{"distance":2000,"speed":3.7}],"samples":[{"tSec":2.3,"distM":1547.2,"inputMps":4.694,"rawMps":4.683,"pathMps":4.592,"displayMps":4.678,"stale":false},{"tSec":7.1,"distM":1567.4,"inputMps":4.7,"rawMps":4.703,"pathMps":4.609,"displayMps":4.664,"stale":false},{"tSec":12.0,"distM":1597.6,"inputMps":4.7,"rawMps":4.706,"pathMps":4.629,"displayMps":4.657,"stale":false},{"tSec":16.8,"distM":1617.7,"inputMps":4.629,"rawMps":4.659,"pathMps":4.644,"displayMps":4.655,"stale":false},{"tSec":21.7,"distM":1637.5,"inputMps":4.55,"rawMps":4.588,"pathMps":4.646,"displayMps":4.653,"stale":false},{"tSec":26.5,"distM":1657.2,"inputMps":4.514,"rawMps":4.513,"pathMps":4.637,"displayMps":4.65,"stale":false},{"tSec":31.4,"distM":1686.3,"inputMps":4.573,"rawMps":4.564,"pathMps":4.634,"displayMps":4.647,"stale":false},{"tSec":36.2,"distM":1705.9,"inputMps":4.6,"rawMps":4.589,"pathMps":4.63,"displayMps":4.643,"stale":false},{"tSec":41.1,"distM":1725.6,"inputMps":4.6,"rawMps":4.583,"pathMps":4.62,"displayMps":4.639,"stale":false},{"tSec":45.9,"distM":1745.4,"inputMps":4.6,"rawMps":4.599,"pathMps":4.61,"displayMps":4.633,"stale":false},{"tSec":50.8,"distM":1775.0,"inputMps":4.6,"rawMps":4.617,"pathMps":4.601,"displayMps":4.627,"stale":false},{"tSec":55.6,"distM":1794.7,"inputMps":4.6,"rawMps":4.593,"pathMps":4.587,"displayMps":4.619,"stale":false},{"tSec":60.4,"distM":1814.4,"inputMps":4.6,"rawMps":4.59,"pathMps":4.589,"displayMps":4.613,"stale":false},{"tSec":65.3,"distM":1834.1,"inputMps":4.6,"rawMps":4.621,"pathMps":4.593,"displayMps":4.609,"stale":false},{"tSec":70.1,"distM":1863.6,"inputMps":4.573,"rawMps":4.598,"pathMps":4.6,"displayMps":4.607,"stale":false},{"tSec":75.0,"distM":1883.2,"inputMps":4.534,"rawMps":4.558,"pathMps":4.599,"displayMps":4.605,"stale":false},{"tSec":79.8,"distM":1902.5,"inputMps":4.5,"rawMps":4.486,"pathMps":4.587,"displayMps":4.602,"stale":false},{"tSec":84.6,"distM":1921.8,"inputMps":4.5,"rawMps":4.446,"pathMps":4.575,"displayMps":4.596,"stale":false},{"tSec":89.5,"distM":1950.8,"inputMps":4.488,"rawMps":4.483,"pathMps":4.567,"displayMps":4.59,"stale":false},{"tSec":94.3,"distM":1969.6,"inputMps":4.186,"rawMps":4.177,"pathMps":4.525,"displayMps":4.577,"stale":false},{"tSec":99.2,"distM":1987.2,"inputMps":3.905,"rawMps":3.881,"pathMps":4.458,"displayMps":4.554,"stale":false},{"tSec":104.0,"distM":2000.0,"inputMps":3.7,"rawMps":1.829,"pathMps":4.325,"displayMps":4.508,"stale":false},{"tSec":108.8,"distM":1976.7,"inputMps":4.072,"rawMps":9.758,"pathMps":4.29,"displayMps":4.464,"stale":false},{"tSec":113.7,"distM":1958.9,"inputMps":4.358,"rawMps":4.411,"pathMps":4.227,"displayMps":4.417,"stale":false},{"tSec":118.5,"distM":1939.8,"inputMps":4.5,"rawMps":4.517,"pathMps":4.222,"displayMps":4.378,"stale":false},{"tSec":123.3,"distM":1920.6,"inputMps":4.5,"rawMps":4.501,"pathMps":4.221,"displayMps":4.346,"stale":false},{"tSec":128.2,"distM":1891.5,"inputMps":4.517,"rawMps":4.5,"pathMps":4.225,"displayMps":4.322,"stale":false},{"tSec":133.0,"distM":1872.1,"inputMps":4.556,"rawMps":4.583,"pathMps":4.228,"displayMps":4.303,"stale":false},{"tSec":137.9,"distM":1852.6,"inputMps":4.595,"rawMps":4.591,"pathMps":4.264,"displayMps":4.295,"stale":false},{"tSec":142.7,"distM":1822.8,"inputMps":4.6,"rawMps":4.604,"pathMps":4.341,"displayMps":4.305,"stale":false}]});
+  </script>
+</body>
+</html>

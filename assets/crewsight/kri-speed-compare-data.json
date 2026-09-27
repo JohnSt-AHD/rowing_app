@@ -1,0 +1,445 @@
+{
+  "deviceId": "TEST-KRI-RACE",
+  "lane": "ESP1",
+  "courseGroup": "2 km course",
+  "collectedAt": "2026-07-24 14:36:17 New Zealand Standard Time",
+  "pollSec": 3,
+  "kriProfile": [
+    {
+      "distance": 0,
+      "speed": 5.5
+    },
+    {
+      "distance": 50,
+      "speed": 5.5
+    },
+    {
+      "distance": 100,
+      "speed": 5.3
+    },
+    {
+      "distance": 150,
+      "speed": 5.2
+    },
+    {
+      "distance": 200,
+      "speed": 5.1
+    },
+    {
+      "distance": 250,
+      "speed": 5
+    },
+    {
+      "distance": 300,
+      "speed": 4.9
+    },
+    {
+      "distance": 350,
+      "speed": 4.9
+    },
+    {
+      "distance": 400,
+      "speed": 4.8
+    },
+    {
+      "distance": 450,
+      "speed": 4.8
+    },
+    {
+      "distance": 500,
+      "speed": 4.7
+    },
+    {
+      "distance": 550,
+      "speed": 4.7
+    },
+    {
+      "distance": 600,
+      "speed": 4.7
+    },
+    {
+      "distance": 650,
+      "speed": 4.8
+    },
+    {
+      "distance": 700,
+      "speed": 4.8
+    },
+    {
+      "distance": 750,
+      "speed": 4.7
+    },
+    {
+      "distance": 800,
+      "speed": 4.6
+    },
+    {
+      "distance": 850,
+      "speed": 4.7
+    },
+    {
+      "distance": 900,
+      "speed": 4.7
+    },
+    {
+      "distance": 950,
+      "speed": 4.7
+    },
+    {
+      "distance": 1000,
+      "speed": 4.8
+    },
+    {
+      "distance": 1050,
+      "speed": 4.8
+    },
+    {
+      "distance": 1100,
+      "speed": 4.6
+    },
+    {
+      "distance": 1150,
+      "speed": 4.6
+    },
+    {
+      "distance": 1200,
+      "speed": 4.6
+    },
+    {
+      "distance": 1250,
+      "speed": 4.6
+    },
+    {
+      "distance": 1300,
+      "speed": 4.9
+    },
+    {
+      "distance": 1350,
+      "speed": 4.6
+    },
+    {
+      "distance": 1400,
+      "speed": 4.5
+    },
+    {
+      "distance": 1450,
+      "speed": 4.6
+    },
+    {
+      "distance": 1500,
+      "speed": 4.6
+    },
+    {
+      "distance": 1550,
+      "speed": 4.7
+    },
+    {
+      "distance": 1600,
+      "speed": 4.7
+    },
+    {
+      "distance": 1650,
+      "speed": 4.5
+    },
+    {
+      "distance": 1700,
+      "speed": 4.6
+    },
+    {
+      "distance": 1750,
+      "speed": 4.6
+    },
+    {
+      "distance": 1800,
+      "speed": 4.6
+    },
+    {
+      "distance": 1850,
+      "speed": 4.6
+    },
+    {
+      "distance": 1900,
+      "speed": 4.5
+    },
+    {
+      "distance": 1950,
+      "speed": 4.5
+    },
+    {
+      "distance": 2000,
+      "speed": 3.7
+    }
+  ],
+  "samples": [
+    {
+      "tSec": 2.3,
+      "distM": 1547.2,
+      "inputMps": 4.694,
+      "rawMps": 4.683,
+      "pathMps": 4.592,
+      "displayMps": 4.678,
+      "stale": false
+    },
+    {
+      "tSec": 7.1,
+      "distM": 1567.4,
+      "inputMps": 4.7,
+      "rawMps": 4.703,
+      "pathMps": 4.609,
+      "displayMps": 4.664,
+      "stale": false
+    },
+    {
+      "tSec": 12.0,
+      "distM": 1597.6,
+      "inputMps": 4.7,
+      "rawMps": 4.706,
+      "pathMps": 4.629,
+      "displayMps": 4.657,
+      "stale": false
+    },
+    {
+      "tSec": 16.8,
+      "distM": 1617.7,
+      "inputMps": 4.629,
+      "rawMps": 4.659,
+      "pathMps": 4.644,
+      "displayMps": 4.655,
+      "stale": false
+    },
+    {
+      "tSec": 21.7,
+      "distM": 1637.5,
+      "inputMps": 4.55,
+      "rawMps": 4.588,
+      "pathMps": 4.646,
+      "displayMps": 4.653,
+      "stale": false
+    },
+    {
+      "tSec": 26.5,
+      "distM": 1657.2,
+      "inputMps": 4.514,
+      "rawMps": 4.513,
+      "pathMps": 4.637,
+      "displayMps": 4.65,
+      "stale": false
+    },
+    {
+      "tSec": 31.4,
+      "distM": 1686.3,
+      "inputMps": 4.573,
+      "rawMps": 4.564,
+      "pathMps": 4.634,
+      "displayMps": 4.647,
+      "stale": false
+    },
+    {
+      "tSec": 36.2,
+      "distM": 1705.9,
+      "inputMps": 4.6,
+      "rawMps": 4.589,
+      "pathMps": 4.63,
+      "displayMps": 4.643,
+      "stale": false
+    },
+    {
+      "tSec": 41.1,
+      "distM": 1725.6,
+      "inputMps": 4.6,
+      "rawMps": 4.583,
+      "pathMps": 4.62,
+      "displayMps": 4.639,
+      "stale": false
+    },
+    {
+      "tSec": 45.9,
+      "distM": 1745.4,
+      "inputMps": 4.6,
+      "rawMps": 4.599,
+      "pathMps": 4.61,
+      "displayMps": 4.633,
+      "stale": false
+    },
+    {
+      "tSec": 50.8,
+      "distM": 1775.0,
+      "inputMps": 4.6,
+      "rawMps": 4.617,
+      "pathMps": 4.601,
+      "displayMps": 4.627,
+      "stale": false
+    },
+    {
+      "tSec": 55.6,
+      "distM": 1794.7,
+      "inputMps": 4.6,
+      "rawMps": 4.593,
+      "pathMps": 4.587,
+      "displayMps": 4.619,
+      "stale": false
+    },
+    {
+      "tSec": 60.4,
+      "distM": 1814.4,
+      "inputMps": 4.6,
+      "rawMps": 4.59,
+      "pathMps": 4.589,
+      "displayMps": 4.613,
+      "stale": false
+    },
+    {
+      "tSec": 65.3,
+      "distM": 1834.1,
+      "inputMps": 4.6,
+      "rawMps": 4.621,
+      "pathMps": 4.593,
+      "displayMps": 4.609,
+      "stale": false
+    },
+    {
+      "tSec": 70.1,
+      "distM": 1863.6,
+      "inputMps": 4.573,
+      "rawMps": 4.598,
+      "pathMps": 4.6,
+      "displayMps": 4.607,
+      "stale": false
+    },
+    {
+      "tSec": 75.0,
+      "distM": 1883.2,
+      "inputMps": 4.534,
+      "rawMps": 4.558,
+      "pathMps": 4.599,
+      "displayMps": 4.605,
+      "stale": false
+    },
+    {
+      "tSec": 79.8,
+      "distM": 1902.5,
+      "inputMps": 4.5,
+      "rawMps": 4.486,
+      "pathMps": 4.587,
+      "displayMps": 4.602,
+      "stale": false
+    },
+    {
+      "tSec": 84.6,
+      "distM": 1921.8,
+      "inputMps": 4.5,
+      "rawMps": 4.446,
+      "pathMps": 4.575,
+      "displayMps": 4.596,
+      "stale": false
+    },
+    {
+      "tSec": 89.5,
+      "distM": 1950.8,
+      "inputMps": 4.488,
+      "rawMps": 4.483,
+      "pathMps": 4.567,
+      "displayMps": 4.59,
+      "stale": false
+    },
+    {
+      "tSec": 94.3,
+      "distM": 1969.6,
+      "inputMps": 4.186,
+      "rawMps": 4.177,
+      "pathMps": 4.525,
+      "displayMps": 4.577,
+      "stale": false
+    },
+    {
+      "tSec": 99.2,
+      "distM": 1987.2,
+      "inputMps": 3.905,
+      "rawMps": 3.881,
+      "pathMps": 4.458,
+      "displayMps": 4.554,
+      "stale": false
+    },
+    {
+      "tSec": 104.0,
+      "distM": 2000.0,
+      "inputMps": 3.7,
+      "rawMps": 1.829,
+      "pathMps": 4.325,
+      "displayMps": 4.508,
+      "stale": false
+    },
+    {
+      "tSec": 108.8,
+      "distM": 1976.7,
+      "inputMps": 4.072,
+      "rawMps": 9.758,
+      "pathMps": 4.29,
+      "displayMps": 4.464,
+      "stale": false
+    },
+    {
+      "tSec": 113.7,
+      "distM": 1958.9,
+      "inputMps": 4.358,
+      "rawMps": 4.411,
+      "pathMps": 4.227,
+      "displayMps": 4.417,
+      "stale": false
+    },
+    {
+      "tSec": 118.5,
+      "distM": 1939.8,
+      "inputMps": 4.5,
+      "rawMps": 4.517,
+      "pathMps": 4.222,
+      "displayMps": 4.378,
+      "stale": false
+    },
+    {
+      "tSec": 123.3,
+      "distM": 1920.6,
+      "inputMps": 4.5,
+      "rawMps": 4.501,
+      "pathMps": 4.221,
+      "displayMps": 4.346,
+      "stale": false
+    },
+    {
+      "tSec": 128.2,
+      "distM": 1891.5,
+      "inputMps": 4.517,
+      "rawMps": 4.5,
+      "pathMps": 4.225,
+      "displayMps": 4.322,
+      "stale": false
+    },
+    {
+      "tSec": 133.0,
+      "distM": 1872.1,
+      "inputMps": 4.556,
+      "rawMps": 4.583,
+      "pathMps": 4.228,
+      "displayMps": 4.303,
+      "stale": false
+    },
+    {
+      "tSec": 137.9,
+      "distM": 1852.6,
+      "inputMps": 4.595,
+      "rawMps": 4.591,
+      "pathMps": 4.264,
+      "displayMps": 4.295,
+      "stale": false
+    },
+    {
+      "tSec": 142.7,
+      "distM": 1822.8,
+      "inputMps": 4.6,
+      "rawMps": 4.604,
+      "pathMps": 4.341,
+      "displayMps": 4.305,
+      "stale": false
+    }
+  ]
+}

@@ -43,7 +43,7 @@
     { "source": "/manager", "destination": "/manager/index.html" },
     { "source": "/manager/", "destination": "/manager/index.html" },
     {
-      "source": "/((?!api/|downloads/|manager/).*)",
+      "source": "/((?!api/|downloads/|manager/|walkup).*)",
       "destination": "/index.html"
     }
   ]

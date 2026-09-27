@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>W2x EH — 1 min speed zoom</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: #0f1419; color: #e8edf2; padding: 20px; }
+    h1 { font-size: 1.2rem; margin: 0 0 6px; }
+    .sub { color: #8b98a5; margin-bottom: 16px; }
+    .panel { background: #171d24; border: 1px solid #2a3440; border-radius: 10px; padding: 16px; }
+    canvas { width: 100% !important; height: 360px !important; }
+    .note { color: #8b98a5; font-size: 12px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>W2x EH — 1 minute zoom</h1>
+  <p class="sub">08:08:53 New Zealand Standard Time → 08:09:53 New Zealand Standard Time · Dashboard path avg 2:25.8 · Raw GPS avg 27:13.4</p>
+  <div class="panel">
+    <canvas id="chart"></canvas>
+    <p class="note">
+      <strong>Orange</strong> = raw Android GPS speed from device (often near zero at 1 Hz).<br>
+      <strong>Green</strong> = dashboard view (60s path pace / <code>pathSpeedMps</code> — what Course view shows after today&apos;s fix).<br>
+      <strong>Red dashed</strong> = old course-view instant segment speed (what caused the jumping % before the fix).
+    </p>
+  </div>
+  <script>
+    const payload = {"meta": {"session_id": "36d4cfd9-bef9-4184-b75a-9c2623e14620", "unique_id": "W2x EH", "athlete_id": "Eva Hofmans", "from": "2026-07-23T19:52:14.803Z", "to": "2026-07-23T21:28:07.203Z"}, "start_t": 1784837333804, "end_t": 1784837393804, "series": {"sec": [1.883, 3.888, 5.893, 7.897, 9.901, 11.904, 13.908, 15.911, 17.915, 19.919, 21.921, 23.924, 25.929, 27.933, 29.938, 31.943, 33.948, 35.952, 37.956, 39.96, 41.964, 43.968, 45.973, 47.976, 49.98, 51.983, 53.987, 55.991, 57.996, 60.0], "android_gps_mps": [0.22, 0.32, 0.17, 0.33, 0.25, 0.08, 0.28, 0.28, 0.11, 0.27, 0.29, 0.18, 0.3, 0.16, 0.06, 0.33, 0.15, 0.32, 0.3, 0.25, 0.36, 0.17, 0.29, 0.3, 0.1, 0.2, 0.36, 0.15, 0.3, 0.38], "dashboard_path_mps": [3.5152531490385948, 3.326601118014254, 3.4590682148163063, 3.5381717949366522, 3.602445830498481, 3.6052007073055727, 3.665478710476697, 3.6101927336508672, 3.5994752049626513, 3.622443494944814, 3.5782336003674535, 3.4246770253488523, 3.4003550508198144, 3.4293275465253905, 3.3400097461837763, 3.509692820331288, 3.433723460303676, 3.4982807951506953, 3.6305072062860204, 3.576183270810261, 3.5593458606137403, 3.3251076993777473, 3.363863776536749, 3.2993101410189682, 3.325817955987262, 3.2958267069265332, 3.157330433156349, 3.02286863554902, 3.098078279593649, 3.067746550423377], "old_instant_mps": [2.3370863956840693, 1.093352640789597, 5.220400676984097, 5.181460201375665, 3.323739494290421, 3.6756790658806153, 4.548962700485265, 3.652055360869586, 1.6785032440383905, 6.2833850242228255, 2.412839975271198, 2.3498063878576905, 3.8346292552109977, 1.8621097704706417, 0.9845144789203523, 6.4797589177902895, 0.9488146063614744, 4.651004775637481, 4.664381927827445, 2.450245441203342, 3.098173900395758, 1.3261646840351204, 2.530385108040556, 1.5351259294991648, 3.8365425992599627, 2.44906429210759, 1.6785038884588301, 1.8360833645985146, 3.9201658906565937, 1.45707137768376]}};
+    const s = payload.series;
+    const tooltipSplit = (v) => {
+      if (v == null || !Number.isFinite(v) || v < 0.25) return '—';
+      const sec = 500 / v;
+      const mm = Math.floor(sec / 60);
+      const ss = (sec % 60).toFixed(1).padStart(4, '0');
+      return mm + ':' + ss + '/500';
+    };
+    new Chart(document.getElementById('chart'), {
+      type: 'line',
+      data: {
+        labels: s.sec.map(v => v.toFixed(0) + 's'),
+        datasets: [
+          { label: 'Raw GPS (device)', data: s.android_gps_mps, borderColor: '#f97316', borderWidth: 1.5, pointRadius: 2, spanGaps: false },
+          { label: 'Dashboard path pace (60s)', data: s.dashboard_path_mps, borderColor: '#a3e635', borderWidth: 2.5, pointRadius: 0, spanGaps: false },
+          { label: 'Old instant (pre-fix course view)', data: s.old_instant_mps, borderColor: '#ef4444', borderWidth: 1, borderDash: [6,4], pointRadius: 0, spanGaps: false },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#e8edf2' } },
+          tooltip: {
+            callbacks: {
+              label(ctx) {
+                const v = ctx.parsed.y;
+                return ctx.dataset.label + ': ' + (v == null ? '—' : v.toFixed(2) + ' m/s (' + tooltipSplit(v) + ')');
+              }
+            }
+          }
+        },
+        scales: {
+          x: { title: { display: true, text: 'Seconds into 1-min window', color: '#8b98a5' }, ticks: { color: '#8b98a5' }, grid: { color: '#2a3440' } },
+          y: { title: { display: true, text: 'Speed (m/s)', color: '#8b98a5' }, min: 0, suggestedMax: 6, ticks: { color: '#8b98a5' }, grid: { color: '#2a3440' } },
+        },
+      },
+    });
+  </script>
+</body>
+</html>
