@@ -3105,6 +3105,78 @@ async function enrichTraccarSnapshotRowing(orgId, snapshot, onlineMs) {
   return snapshot;
 }
 
+/** Attach open walk-up (no-GPS) check-ins to Traccar-shaped snapshot for RowSafe. */
+async function enrichTraccarSnapshotWalkups(orgId, snapshot) {
+  if (!db.hasDb() || !snapshot) return snapshot;
+  let walkups = [];
+  try {
+    walkups = await db.listOpenWalkupSessions(orgId);
+  } catch (err) {
+    console.error('[ingest-store] snapshot walkup list failed:', err);
+    return snapshot;
+  }
+  if (!walkups.length) return snapshot;
+
+  const devices = Array.isArray(snapshot.devices) ? [...snapshot.devices] : [];
+  const byUnique = new Map();
+  for (const d of devices) {
+    const uid = String(d?.uniqueId || d?.attributes?.uniqueId || '').trim();
+    if (uid) byUnique.set(uid, d);
+  }
+
+  let nextSyntheticId = -900000;
+  for (const d of devices) {
+    const id = Number(d?.id);
+    if (Number.isFinite(id) && id <= nextSyntheticId) nextSyntheticId = id - 1;
+  }
+
+  for (const w of walkups) {
+    const uid = String(w.deviceId || '').trim();
+    if (!uid) continue;
+    const rower = String(w.rowerName || '').trim();
+    const existing = byUnique.get(uid);
+    if (existing) {
+      if (rower) existing.name = rower;
+      existing.status = 'online';
+      existing.attributes = {
+        ...(existing.attributes || {}),
+        uniqueId: uid,
+        name: rower || existing.name || uid,
+        rowerName: rower || existing.attributes?.rowerName || '',
+        source: 'walkup',
+        noGps: true,
+        walkupSessionId: w.sessionId,
+      };
+      continue;
+    }
+    const id = nextSyntheticId--;
+    const device = {
+      id,
+      name: rower || uid,
+      uniqueId: uid,
+      status: 'online',
+      lastUpdate: new Date(w.updatedAtMs || w.startedAtMs || Date.now()).toISOString(),
+      disabled: false,
+      attributes: {
+        uniqueId: uid,
+        name: rower || uid,
+        rowerName: rower,
+        coach: '',
+        boatClass: '',
+        boatName: uid,
+        source: 'walkup',
+        noGps: true,
+        walkupSessionId: w.sessionId,
+      },
+    };
+    devices.push(device);
+    byUnique.set(uid, device);
+  }
+
+  snapshot.devices = devices;
+  return snapshot;
+}
+
 async function getTraccarSnapshot(orgId, onlineMs = 120000) {
   let snapshot;
   if (db.hasDb()) {
@@ -3139,6 +3211,7 @@ async function getTraccarSnapshot(orgId, onlineMs = 120000) {
     }));
     snapshot = { devices, positions, geofences: [], groups: [] };
   }
+  snapshot = await enrichTraccarSnapshotWalkups(orgId, snapshot);
   snapshot = await enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs);
   snapshot = await enrichTraccarSnapshotRowing(orgId, snapshot, onlineMs);
   snapshot = await enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs);
