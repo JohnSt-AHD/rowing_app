@@ -244,6 +244,7 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_geofences ALTER COLUMN auto_start_on_exit SET DEFAULT false`;
   await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS notify_on_enter BOOLEAN NOT NULL DEFAULT false`;
   await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS entry_notify_message TEXT`;
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'boat_park'`;
 
   await sql`
     CREATE TABLE IF NOT EXISTS rnz_schema_migrations (
@@ -558,6 +559,12 @@ async function ensureHazardRegisterSchema() {
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
+  // Production skips full initSchema DDL — ensure kind exists before SELECT/INSERT.
+  await sql`ALTER TABLE rnz_geofences ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'boat_park'`.catch(
+    (err) => {
+      console.warn('[db] geofence kind column skipped:', err && err.message ? err.message : err);
+    },
+  );
   await sql`
     CREATE TABLE IF NOT EXISTS rnz_hazard_entries (
       id BIGSERIAL PRIMARY KEY,
@@ -3386,17 +3393,43 @@ async function syncHazardPresence(orgId, uniqueId, sessionId, lat, lon, tMs) {
 }
 
 /**
+ * Enabled hazard geofence definitions for RowSafe register.
+ * @param {number} orgId
+ */
+async function listHazardZones(orgId) {
+  if (!hasDb()) return [];
+  const all = await listGeofences(orgId);
+  return all
+    .filter((g) => g && g.enabled !== false && normalizeGeofenceKind(g.kind) === 'hazard')
+    .map((g) => ({
+      id: g.id,
+      name: g.name,
+      kind: 'hazard',
+      shapeType: g.shapeType,
+      centerLat: g.centerLat,
+      centerLon: g.centerLon,
+      radiusM: g.radiusM,
+      notifyOnEnter: g.notifyOnEnter === true,
+      entryNotifyMessage: g.entryNotifyMessage || '',
+    }));
+}
+
+/**
  * Day-grouped hazard-zone visits for RowSafe.
  * @param {number} orgId
  * @param {{ days?: number, timeZone?: string }} [opts]
  */
 async function getHazardRegister(orgId, opts = {}) {
-  if (!hasDb()) return { timeZone: 'Pacific/Auckland', days: [] };
+  if (!hasDb()) return { timeZone: 'Pacific/Auckland', days: [], zones: [] };
   const sql = await getSql();
   await ensureOrgsBootstrapped();
   const days = Math.min(Math.max(Number(opts.days) || 45, 1), 120);
   const timeZone = String(opts.timeZone || 'Pacific/Auckland');
   const cutoff = new Date(Date.now() - days * 86400000);
+  const zones = await listHazardZones(orgId).catch((err) => {
+    console.error('[db] listHazardZones failed:', err);
+    return [];
+  });
 
   const rows = await sql`
     SELECT
@@ -3466,7 +3499,7 @@ async function getHazardRegister(orgId, opts = {}) {
   for (const day of daysOut) {
     day.entries.sort((a, b) => String(b.enteredAt).localeCompare(String(a.enteredAt)));
   }
-  return { timeZone, days: daysOut };
+  return { timeZone, days: daysOut, zones };
 }
 
 async function deleteGeofence(orgId, id) {
@@ -3901,6 +3934,7 @@ module.exports = {
   deleteGeofence,
   syncHazardPresence,
   getHazardRegister,
+  listHazardZones,
   listTimingLines,
   createTimingLine,
   generateTimingSplitCourse,

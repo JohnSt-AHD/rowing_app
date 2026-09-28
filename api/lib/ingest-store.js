@@ -3210,7 +3210,9 @@ async function getLogbook(orgId, opts = {}) {
 }
 
 async function getHazardRegister(orgId, opts = {}) {
-  if (!db.hasDb()) return { timeZone: opts.timeZone || 'Pacific/Auckland', days: [] };
+  if (!db.hasDb()) {
+    return { timeZone: opts.timeZone || 'Pacific/Auckland', days: [], zones: [] };
+  }
   try {
     return await db.getHazardRegister(orgId, opts);
   } catch (err) {
