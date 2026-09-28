@@ -1287,6 +1287,11 @@
   background: rgba(220, 38, 38, 0.08);
 }
 
+.geofence-item--editing {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
 .geofence-item__main {
   display: flex;
   flex-direction: column;
@@ -1307,6 +1312,109 @@
   color: var(--ahd-muted);
 }
 
+.geofence-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-top: 0.35rem;
+  padding: 0.85rem 0.9rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--ahd-border, rgba(15, 23, 42, 0.12));
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.geofence-form--editing {
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.12);
+}
+
+.geofence-form__head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.15rem;
+}
+
+.geofence-form__title {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: var(--ahd-text);
+}
+
+.geofence-form__hint {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--ahd-muted);
+  line-height: 1.4;
+}
+
+.geofence-fieldset {
+  margin: 0;
+  padding: 0.75rem 0.8rem 0.85rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.7);
+  min-width: 0;
+}
+
+.geofence-fieldset legend {
+  padding: 0 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.geofence-field-grid {
+  display: grid;
+  gap: 0.75rem 0.85rem;
+  align-items: start;
+}
+
+.geofence-field-grid--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.geofence-field-grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.geofence-field-grid--notify {
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(0, 1.3fr);
+  align-items: end;
+}
+
+.geofence-field-grid .ahd-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0;
+  min-width: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ahd-muted);
+}
+
+.geofence-field-grid .ahd-field input,
+.geofence-field-grid .ahd-field select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.geofence-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem 0.85rem;
+  margin-top: 0.75rem;
+}
+
+.geofence-toolbar {
+  margin-bottom: 0.35rem;
+}
+
 .geofence-form__actions {
   display: flex;
   flex-wrap: wrap;
@@ -1320,15 +1428,13 @@
   gap: 0.45rem;
   font-weight: 500;
   color: var(--ahd-text);
+  margin: 0;
 }
 
 .geofence-form__check input {
   width: auto;
   margin: 0;
-}
-
-.geofence-shape-fields {
-  margin-bottom: 0.75rem;
+  flex-shrink: 0;
 }
 
 .geofence-draw-help {
@@ -1343,7 +1449,19 @@
 }
 
 .geofence-form__actions--submit {
-  margin-top: 0.35rem;
+  margin-top: 0.15rem;
+}
+
+@media (max-width: 900px) {
+  .geofence-field-grid--3 {
+    grid-template-columns: 1fr;
+  }
+
+  .geofence-field-grid--2,
+  .geofence-field-grid--notify,
+  .geofence-check-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .hub-divider {

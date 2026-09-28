@@ -317,39 +317,48 @@
             </div>
             <div class="setup-geo-forms">
           <div id="geofenceList" class="geofence-list" aria-live="polite"></div>
-          <div class="geofence-form__actions">
+          <div class="geofence-form__actions geofence-toolbar">
             <button type="button" class="hub-btn hub-btn--ghost" id="geofenceEditToggle">Edit zones on map</button>
             <button type="button" class="hub-btn hub-btn--ghost" id="geofenceRefreshBtn">Refresh zones</button>
           </div>
           <form id="geofenceForm" class="geofence-form">
-            <div class="ahd-inline-fields">
-              <label class="ahd-field">
-                Name
-                <input type="text" id="geofenceName" required placeholder="Boat Park" />
-              </label>
-              <label class="ahd-field">
-                Kind
-                <select id="geofenceKind" aria-label="Geofence kind">
-                  <option value="boat_park" selected>Boat park / economy</option>
-                  <option value="hazard">Hazard (register + map)</option>
-                </select>
-              </label>
-              <label class="ahd-field">
-                Shape
-                <select id="geofenceShapeType" aria-label="Geofence shape">
-                  <option value="circle" selected>Circle</option>
-                  <option value="polygon">Polygon (draw on map)</option>
-                </select>
-              </label>
+            <div class="geofence-form__head">
+              <h3 class="geofence-form__title" id="geofenceFormTitle">Add zone</h3>
+              <p class="geofence-form__hint" id="geofenceFormHint">Create a new boat-park or hazard zone.</p>
             </div>
-            <div id="geofenceCircleFields" class="geofence-shape-fields">
-              <div class="ahd-inline-fields">
+            <input type="hidden" id="geofenceEditId" value="" />
+
+            <fieldset class="geofence-fieldset">
+              <legend>Basics</legend>
+              <div class="geofence-field-grid geofence-field-grid--3">
+                <label class="ahd-field">
+                  Name
+                  <input type="text" id="geofenceName" required placeholder="Boat Park" />
+                </label>
+                <label class="ahd-field">
+                  Kind
+                  <select id="geofenceKind" aria-label="Geofence kind">
+                    <option value="boat_park" selected>Boat park / economy</option>
+                    <option value="hazard">Hazard (register + map)</option>
+                  </select>
+                </label>
+                <label class="ahd-field">
+                  Shape
+                  <select id="geofenceShapeType" aria-label="Geofence shape">
+                    <option value="circle" selected>Circle</option>
+                    <option value="polygon">Polygon (draw on map)</option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="geofence-fieldset" id="geofenceCircleFields">
+              <legend>Circle geometry</legend>
+              <div class="geofence-field-grid geofence-field-grid--3">
                 <label class="ahd-field">
                   Radius (m)
                   <input type="number" id="geofenceRadius" min="20" step="10" value="150" />
                 </label>
-              </div>
-              <div class="ahd-inline-fields">
                 <label class="ahd-field">
                   Centre latitude
                   <input type="number" id="geofenceLat" step="any" placeholder="-37.9196" />
@@ -363,8 +372,10 @@
                 <button type="button" class="hub-btn" id="geofencePickBtn">Pick centre on map</button>
                 <button type="button" class="hub-btn hub-btn--ghost" id="geofenceMapCentreBtn">Use map centre</button>
               </div>
-            </div>
-            <div id="geofencePolygonFields" class="geofence-shape-fields" hidden>
+            </fieldset>
+
+            <fieldset class="geofence-fieldset" id="geofencePolygonFields" hidden>
+              <legend>Polygon geometry</legend>
               <p class="geofence-draw-help">Click the map to add corners, then Finish polygon.</p>
               <p class="geofence-draw-status poll-line" id="geofenceDrawStatus">No polygon drawn yet.</p>
               <div class="geofence-form__actions">
@@ -373,49 +384,57 @@
                 <button type="button" class="hub-btn hub-btn--ghost" id="geofenceUndoPointBtn" disabled>Undo point</button>
                 <button type="button" class="hub-btn hub-btn--ghost" id="geofenceClearDrawBtn" disabled>Clear</button>
               </div>
-            </div>
-            <div class="ahd-inline-fields geofence-form__economy">
-              <label class="ahd-field">
-                Economy interval (s) in zone
-                <input type="number" id="geofenceIntervalSec" min="1" step="1" value="30" />
-              </label>
-              <label class="ahd-field">
-                Session dwell (s)
-                <input type="number" id="geofenceDwellSec" min="5" step="5" value="45" title="Seconds inside/outside before auto start or stop" />
-              </label>
-            </div>
-            <div class="ahd-inline-fields geofence-form__economy">
-              <label class="ahd-field geofence-form__check">
-                <input type="checkbox" id="geofenceDisableCapsize" checked />
-                Disable capsize in zone
-              </label>
-              <label class="ahd-field geofence-form__check">
-                <input type="checkbox" id="geofenceSuppressRecording" />
-                Suppress recording in zone
-              </label>
-            </div>
-            <div class="ahd-inline-fields geofence-form__economy">
-              <label class="ahd-field geofence-form__check">
-                <input type="checkbox" id="geofenceAutoStop" />
-                Auto-stop session on enter
-              </label>
-              <label class="ahd-field geofence-form__check">
-                <input type="checkbox" id="geofenceAutoStart" />
-                Auto-start on exit (standby)
-              </label>
-            </div>
-            <div class="ahd-inline-fields geofence-form__economy">
-              <label class="ahd-field geofence-form__check">
-                <input type="checkbox" id="geofenceNotifyEnter" />
-                Notify phone on zone entry
-              </label>
-              <label class="ahd-field">
-                Entry notification message
-                <input type="text" id="geofenceNotifyMessage" placeholder="Please check course, Pylons ahead" />
-              </label>
-            </div>
+            </fieldset>
+
+            <fieldset class="geofence-fieldset">
+              <legend>In-zone behaviour</legend>
+              <div class="geofence-field-grid geofence-field-grid--2">
+                <label class="ahd-field">
+                  Economy interval (s)
+                  <input type="number" id="geofenceIntervalSec" min="1" step="1" value="30" />
+                </label>
+                <label class="ahd-field">
+                  Session dwell (s)
+                  <input type="number" id="geofenceDwellSec" min="5" step="5" value="45" title="Seconds inside/outside before auto start or stop" />
+                </label>
+              </div>
+              <div class="geofence-check-grid">
+                <label class="ahd-field geofence-form__check">
+                  <input type="checkbox" id="geofenceDisableCapsize" checked />
+                  Disable capsize in zone
+                </label>
+                <label class="ahd-field geofence-form__check">
+                  <input type="checkbox" id="geofenceSuppressRecording" />
+                  Suppress recording in zone
+                </label>
+                <label class="ahd-field geofence-form__check">
+                  <input type="checkbox" id="geofenceAutoStop" />
+                  Auto-stop session on enter
+                </label>
+                <label class="ahd-field geofence-form__check">
+                  <input type="checkbox" id="geofenceAutoStart" />
+                  Auto-start on exit (standby)
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="geofence-fieldset">
+              <legend>Entry notification</legend>
+              <div class="geofence-field-grid geofence-field-grid--notify">
+                <label class="ahd-field geofence-form__check">
+                  <input type="checkbox" id="geofenceNotifyEnter" />
+                  Notify phone on zone entry
+                </label>
+                <label class="ahd-field">
+                  Entry message
+                  <input type="text" id="geofenceNotifyMessage" placeholder="Please check course, Pylons ahead" />
+                </label>
+              </div>
+            </fieldset>
+
             <div class="geofence-form__actions geofence-form__actions--submit">
-              <button type="submit" class="hub-btn hub-btn--primary">Add zone</button>
+              <button type="submit" class="hub-btn hub-btn--primary" id="geofenceSubmitBtn">Add zone</button>
+              <button type="button" class="hub-btn hub-btn--ghost" id="geofenceCancelEditBtn" hidden>Cancel edit</button>
             </div>
           </form>
           <p class="poll-line" id="geofenceStatus">Loading geofences…</p>

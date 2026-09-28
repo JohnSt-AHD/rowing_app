@@ -10,6 +10,8 @@
   let polygonReady = false;
   let geofences = [];
   let editGeofenceMode = false;
+  /** @type {string|number|null} */
+  let editingId = null;
   const layersByMap = new WeakMap();
   const clickBound = new WeakSet();
 
@@ -385,49 +387,123 @@
       return;
     }
     el.innerHTML = geofences
-      .map(
-        (g) => `
-      <div class="geofence-item${isHazard(g) ? ' geofence-item--hazard' : ''}" data-id="${g.id}">
+      .map((g) => {
+        const editing = String(editingId) === String(g.id);
+        return `
+      <div class="geofence-item${isHazard(g) ? ' geofence-item--hazard' : ''}${editing ? ' geofence-item--editing' : ''}" data-id="${g.id}">
         <div class="geofence-item__main">
           <strong>${esc(g.name)}</strong>
           <span class="geofence-item__meta">${isHazard(g) ? 'Hazard' : 'Boat park'} · ${esc(shapeSummary(g))}</span>
           <span class="geofence-item__meta">Economy: every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording ? 'paused' : 'on'} · dwell ${g.sessionDwellSec ?? 45}s · auto-stop ${g.autoStopOnEnter ? 'on' : 'off'} · auto-start ${g.autoStartOnExit ? 'on' : 'off'} · notify ${g.notifyOnEnter ? 'on' : 'off'}${g.notifyOnEnter && g.entryNotifyMessage ? ` · “${esc(g.entryNotifyMessage)}”` : ''}</span>
         </div>
         <div class="geofence-item__actions">
-          <button type="button" class="hub-btn hub-btn--ghost geofence-kind-btn" data-id="${g.id}" data-kind="${isHazard(g) ? 'boat_park' : 'hazard'}">${isHazard(g) ? 'Make boat park' : 'Make hazard'}</button>
+          <button type="button" class="hub-btn hub-btn--ghost geofence-edit-btn" data-id="${g.id}">${editing ? 'Editing…' : 'Edit'}</button>
           <button type="button" class="hub-btn hub-btn--danger geofence-delete-btn" data-id="${g.id}">Delete</button>
         </div>
-      </div>`,
-      )
+      </div>`;
+      })
       .join('');
     el.querySelectorAll('.geofence-delete-btn').forEach((btn) => {
       btn.addEventListener('click', () => void deleteGeofence(btn.getAttribute('data-id')));
     });
-    el.querySelectorAll('.geofence-kind-btn').forEach((btn) => {
-      btn.addEventListener('click', () =>
-        void setGeofenceKind(btn.getAttribute('data-id'), btn.getAttribute('data-kind')),
-      );
+    el.querySelectorAll('.geofence-edit-btn').forEach((btn) => {
+      btn.addEventListener('click', () => beginEdit(btn.getAttribute('data-id')));
     });
   }
 
-  async function setGeofenceKind(id, kind) {
-    if (!id || !kind) return;
-    setStatus(kind === 'hazard' ? 'Marking as hazard…' : 'Marking as boat park…');
-    const payload =
-      kind === 'hazard'
-        ? { kind: 'hazard', notifyOnEnter: true }
-        : { kind: 'boat_park' };
-    const res = await fetch(`${apiBase()}/api/geofences?id=${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      headers: headers(),
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      setStatus(data.error || 'Update failed', true);
+  function syncFormModeUi() {
+    const editing = editingId != null && String(editingId) !== '';
+    const title = $('#geofenceFormTitle');
+    const hint = $('#geofenceFormHint');
+    const submit = $('#geofenceSubmitBtn');
+    const cancel = $('#geofenceCancelEditBtn');
+    const idInput = $('#geofenceEditId');
+    if (idInput) idInput.value = editing ? String(editingId) : '';
+    if (title) title.textContent = editing ? 'Edit zone' : 'Add zone';
+    if (hint) {
+      hint.textContent = editing
+        ? 'Update the selected zone, then Save changes.'
+        : 'Create a new boat-park or hazard zone.';
+    }
+    if (submit) submit.textContent = editing ? 'Save changes' : 'Add zone';
+    if (cancel) cancel.hidden = !editing;
+    $('#geofenceForm')?.classList.toggle('geofence-form--editing', editing);
+  }
+
+  function resetFormDefaults() {
+    $('#geofenceForm')?.reset();
+    if ($('#geofenceIntervalSec')) $('#geofenceIntervalSec').value = '30';
+    if ($('#geofenceDwellSec')) $('#geofenceDwellSec').value = '45';
+    if ($('#geofenceRadius')) $('#geofenceRadius').value = '150';
+    if ($('#geofenceDisableCapsize')) $('#geofenceDisableCapsize').checked = true;
+    if ($('#geofenceSuppressRecording')) $('#geofenceSuppressRecording').checked = false;
+    if ($('#geofenceAutoStop')) $('#geofenceAutoStop').checked = false;
+    if ($('#geofenceAutoStart')) $('#geofenceAutoStart').checked = false;
+    if ($('#geofenceNotifyEnter')) $('#geofenceNotifyEnter').checked = false;
+    if ($('#geofenceNotifyMessage')) $('#geofenceNotifyMessage').value = '';
+    if ($('#geofenceKind')) $('#geofenceKind').value = 'boat_park';
+    if ($('#geofenceShapeType')) $('#geofenceShapeType').value = 'circle';
+    clearPolygonDraft();
+    updateShapeFields();
+  }
+
+  function cancelEdit() {
+    editingId = null;
+    resetFormDefaults();
+    syncFormModeUi();
+    renderList();
+    setStatus('Edit cancelled.');
+  }
+
+  function beginEdit(id) {
+    if (!id) return;
+    const g = geofences.find((x) => String(x.id) === String(id));
+    if (!g) {
+      setStatus('Zone not found.', true);
       return;
     }
-    await loadGeofences();
+    editingId = g.id;
+    if ($('#geofenceName')) $('#geofenceName').value = g.name || '';
+    if ($('#geofenceKind')) $('#geofenceKind').value = isHazard(g) ? 'hazard' : 'boat_park';
+    if ($('#geofenceIntervalSec')) {
+      $('#geofenceIntervalSec').value = String(g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30);
+    }
+    if ($('#geofenceDwellSec')) $('#geofenceDwellSec').value = String(g.sessionDwellSec ?? 45);
+    if ($('#geofenceDisableCapsize')) $('#geofenceDisableCapsize').checked = g.disableCapsize !== false;
+    if ($('#geofenceSuppressRecording')) {
+      $('#geofenceSuppressRecording').checked = g.suppressRecording === true;
+    }
+    if ($('#geofenceAutoStop')) $('#geofenceAutoStop').checked = g.autoStopOnEnter === true;
+    if ($('#geofenceAutoStart')) $('#geofenceAutoStart').checked = g.autoStartOnExit === true;
+    if ($('#geofenceNotifyEnter')) $('#geofenceNotifyEnter').checked = g.notifyOnEnter === true;
+    if ($('#geofenceNotifyMessage')) {
+      $('#geofenceNotifyMessage').value = g.entryNotifyMessage || '';
+    }
+
+    const isPoly =
+      g.shapeType === 'polygon' && Array.isArray(g.polygonCoords) && g.polygonCoords.length >= 3;
+    if ($('#geofenceShapeType')) $('#geofenceShapeType').value = isPoly ? 'polygon' : 'circle';
+    if (isPoly) {
+      polygonDraft = g.polygonCoords.map((pt) => ({ lat: Number(pt[0]), lon: Number(pt[1]) }));
+      polygonReady = true;
+      setDrawPolygonMode(false);
+      updateDraftLayer();
+      updateDrawButtons();
+      if ($('#geofenceLat')) $('#geofenceLat').value = '';
+      if ($('#geofenceLon')) $('#geofenceLon').value = '';
+      if ($('#geofenceRadius')) $('#geofenceRadius').value = '150';
+    } else {
+      clearPolygonDraft();
+      if ($('#geofenceLat')) $('#geofenceLat').value = String(g.centerLat ?? '');
+      if ($('#geofenceLon')) $('#geofenceLon').value = String(g.centerLon ?? '');
+      if ($('#geofenceRadius')) $('#geofenceRadius').value = String(g.radiusM ?? 150);
+    }
+    updateShapeFields();
+    syncFormModeUi();
+    renderList();
+    setStatus(`Editing “${g.name}”. Change fields and click Save changes.`);
+    $('#geofenceForm')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    $('#geofenceName')?.focus();
   }
 
   async function deleteGeofence(id) {
@@ -442,11 +518,15 @@
       setStatus(data.error || 'Delete failed', true);
       return;
     }
+    if (String(editingId) === String(id)) {
+      editingId = null;
+      resetFormDefaults();
+      syncFormModeUi();
+    }
     await loadGeofences();
   }
 
-  async function createGeofence(ev) {
-    ev.preventDefault();
+  function buildPayloadFromForm() {
     const name = $('#geofenceName')?.value?.trim();
     const shapeType = currentShapeType();
     const economyIntervalSec = Number($('#geofenceIntervalSec')?.value) || 30;
@@ -457,13 +537,13 @@
     const autoStartOnExit = $('#geofenceAutoStart')?.checked === true;
     const notifyOnEnter = $('#geofenceNotifyEnter')?.checked === true;
     const entryNotifyMessage = $('#geofenceNotifyMessage')?.value?.trim() || '';
+    const kind = $('#geofenceKind')?.value === 'hazard' ? 'hazard' : 'boat_park';
 
     if (!name) {
       setStatus('Name is required.', true);
-      return;
+      return null;
     }
 
-    const kind = $('#geofenceKind')?.value === 'hazard' ? 'hazard' : 'boat_park';
     let payload = {
       name,
       kind,
@@ -481,7 +561,7 @@
     if (shapeType === 'polygon') {
       if (!polygonReady || polygonDraft.length < 3) {
         setStatus('Draw a polygon on the map with at least 3 points, then Finish polygon.', true);
-        return;
+        return null;
       }
       payload.polygonCoords = polygonDraft.map((p) => [p.lat, p.lon]);
     } else {
@@ -490,18 +570,29 @@
       const radiusM = Number($('#geofenceRadius')?.value);
       if (!Number.isFinite(centerLat) || !Number.isFinite(centerLon)) {
         setStatus('Latitude and longitude are required.', true);
-        return;
+        return null;
       }
       if (!Number.isFinite(radiusM) || radiusM <= 0) {
         setStatus('Radius must be a positive number (metres).', true);
-        return;
+        return null;
       }
       payload = { ...payload, centerLat, centerLon, radiusM };
     }
+    return payload;
+  }
 
-    setStatus('Saving…');
-    const res = await fetch(`${apiBase()}/api/geofences`, {
-      method: 'POST',
+  async function saveGeofence(ev) {
+    ev.preventDefault();
+    const payload = buildPayloadFromForm();
+    if (!payload) return;
+
+    const editing = editingId != null && String(editingId) !== '';
+    setStatus(editing ? 'Saving changes…' : 'Saving…');
+    const url = editing
+      ? `${apiBase()}/api/geofences?id=${encodeURIComponent(String(editingId))}`
+      : `${apiBase()}/api/geofences`;
+    const res = await fetch(url, {
+      method: editing ? 'PATCH' : 'POST',
       headers: headers(),
       body: JSON.stringify(payload),
     });
@@ -510,20 +601,11 @@
       setStatus(data.error || 'Save failed', true);
       return;
     }
-    $('#geofenceForm')?.reset();
-    if ($('#geofenceIntervalSec')) $('#geofenceIntervalSec').value = '30';
-    if ($('#geofenceDwellSec')) $('#geofenceDwellSec').value = '45';
-    if ($('#geofenceDisableCapsize')) $('#geofenceDisableCapsize').checked = true;
-    if ($('#geofenceSuppressRecording')) $('#geofenceSuppressRecording').checked = false;
-    if ($('#geofenceAutoStop')) $('#geofenceAutoStop').checked = false;
-    if ($('#geofenceAutoStart')) $('#geofenceAutoStart').checked = false;
-    if ($('#geofenceNotifyEnter')) $('#geofenceNotifyEnter').checked = false;
-    if ($('#geofenceNotifyMessage')) $('#geofenceNotifyMessage').value = '';
-    if ($('#geofenceKind')) $('#geofenceKind').value = 'boat_park';
-    if ($('#geofenceShapeType')) $('#geofenceShapeType').value = 'circle';
-    clearPolygonDraft();
-    updateShapeFields();
+    editingId = null;
+    resetFormDefaults();
+    syncFormModeUi();
     await loadGeofences();
+    setStatus(editing ? 'Zone updated.' : 'Zone added.');
   }
 
   function onKindChange() {
@@ -576,7 +658,7 @@
     setDrawPolygonMode(false);
     polygonReady = true;
     updateDrawButtons();
-    setStatus(`Polygon ready (${polygonDraft.length} points). Enter a name and click Add zone.`);
+    setStatus(`Polygon ready (${polygonDraft.length} points). Enter a name and click ${editingId != null ? 'Save changes' : 'Add zone'}.`);
   }
 
   function undoPolygonPoint() {
@@ -588,7 +670,8 @@
   }
 
   function bind() {
-    $('#geofenceForm')?.addEventListener('submit', createGeofence);
+    $('#geofenceForm')?.addEventListener('submit', (ev) => void saveGeofence(ev));
+    $('#geofenceCancelEditBtn')?.addEventListener('click', cancelEdit);
     $('#geofenceKind')?.addEventListener('change', onKindChange);
     $('#geofenceShapeType')?.addEventListener('change', updateShapeFields);
     $('#geofencePickBtn')?.addEventListener('click', () => setPickMode(!pickMode));
@@ -608,6 +691,7 @@
     bindMapClicks();
     updateShapeFields();
     updateDrawButtons();
+    syncFormModeUi();
   }
 
   window.dashboardInitGeofences = function () {
