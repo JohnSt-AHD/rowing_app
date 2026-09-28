@@ -2124,6 +2124,58 @@ async function getLatestSessionStateByDevice(orgId) {
 }
 
 /**
+ * Latest outing crew labels per device (coach + boat) for Manager / RowSafe tickets.
+ * @returns {Promise<Map<string, {
+ *   coach: string|null,
+ *   rowerName: string|null,
+ *   boatId: number|null,
+ *   boatClass: string|null,
+ *   boatName: string|null,
+ *   source: string|null,
+ * }>>}
+ */
+async function getLatestSessionCrewMetaByDevice(orgId) {
+  if (!hasDb()) return new Map();
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const rows = await sql`
+    SELECT DISTINCT ON (s.unique_id)
+      s.unique_id,
+      s.athlete_id,
+      s.rower_name,
+      s.boat_id,
+      s.boat_class,
+      s.source,
+      b.name AS boat_name
+    FROM rnz_sessions s
+    LEFT JOIN rnz_boats b
+      ON b.org_id = s.org_id AND b.id = s.boat_id
+    WHERE s.org_id = ${orgId}
+    ORDER BY s.unique_id, COALESCE(s.updated_at, s.started_at) DESC
+  `;
+  const byDevice = new Map();
+  for (const row of rows.rows) {
+    const coach = String(row.athlete_id || '').trim() || null;
+    const rowerName = String(row.rower_name || '').trim() || null;
+    const boatClass = String(row.boat_class || '').trim() || null;
+    const boatName = String(row.boat_name || '').trim() || null;
+    const boatId =
+      row.boat_id != null && Number.isFinite(Number(row.boat_id))
+        ? Number(row.boat_id)
+        : null;
+    byDevice.set(String(row.unique_id), {
+      coach,
+      rowerName,
+      boatId,
+      boatClass,
+      boatName,
+      source: row.source != null ? String(row.source) : null,
+    });
+  }
+  return byDevice;
+}
+
+/**
  * Server ingest times per device (telemetry + last GPS batch).
  * @returns {Promise<Map<string, { lastSeenMs: number, lastGpsIngestMs: number|null }>>}
  */
@@ -2300,24 +2352,44 @@ async function getRegistryGpsByDevice(orgId) {
 
 async function listRegistryDevices(orgId) {
   const sql = await getSql();
-  const rows = await sql`
-    SELECT id, unique_id, athlete_id, name, first_seen_at, last_seen_at
-    FROM rnz_devices
-    WHERE org_id = ${orgId}
-    ORDER BY last_seen_at DESC
-  `;
-  return rows.rows.map((d) => ({
-    id: Number(d.id),
-    name: d.name || d.unique_id,
-    uniqueId: d.unique_id,
-    status: 'online',
-    lastUpdate: d.last_seen_at,
-    disabled: false,
-    attributes: {
-      athleteId: d.athlete_id || '',
+  const [rows, crewMeta] = await Promise.all([
+    sql`
+      SELECT id, unique_id, athlete_id, name, first_seen_at, last_seen_at
+      FROM rnz_devices
+      WHERE org_id = ${orgId}
+      ORDER BY last_seen_at DESC
+    `,
+    getLatestSessionCrewMetaByDevice(orgId).catch((err) => {
+      console.error('[db] crew meta for registry failed:', err);
+      return new Map();
+    }),
+  ]);
+  return rows.rows.map((d) => {
+    const uid = String(d.unique_id);
+    const meta = crewMeta.get(uid);
+    const coach = meta?.coach || String(d.athlete_id || '').trim() || '';
+    const boatClass = meta?.boatClass || '';
+    const boatName = meta?.boatName || '';
+    const displayName = String(d.name || d.unique_id);
+    return {
+      id: Number(d.id),
+      name: displayName,
       uniqueId: d.unique_id,
-    },
-  }));
+      status: 'online',
+      lastUpdate: d.last_seen_at,
+      disabled: false,
+      attributes: {
+        athleteId: coach,
+        uniqueId: d.unique_id,
+        name: displayName,
+        coach,
+        boatClass,
+        boatName,
+        rowerName: meta?.rowerName || '',
+        boatId: meta?.boatId != null ? String(meta.boatId) : '',
+      },
+    };
+  });
 }
 
 /** Devices with sample time range (for dashboard history — not limited to live poll). */
@@ -3802,6 +3874,7 @@ module.exports = {
   getDeviceIngestTimes,
   getDeviceRegistryTimes,
   getLatestSessionStateByDevice,
+  getLatestSessionCrewMetaByDevice,
   getMapPositions,
   getRegistryMapPositions,
   getRegistryGpsByDevice,

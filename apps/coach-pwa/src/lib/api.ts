@@ -2,7 +2,14 @@ import { authHeaders, type CoachSettings } from './settings';
 
 export type FleetDevice = {
   deviceId: string;
+  /** Device / outing name (recorder Name = deviceId). */
+  name?: string | null;
   athleteId?: string | null;
+  /** Coach name from latest session. */
+  coach?: string | null;
+  boatId?: number | string | null;
+  boatClass?: string | null;
+  boatName?: string | null;
   online?: boolean;
   lastSeenAgoSec?: number;
   /** Walk-up / logbook-only session (no GPS). */

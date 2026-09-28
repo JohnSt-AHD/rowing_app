@@ -1466,6 +1466,16 @@ button.coach-btn.coach-btn--ghost {
   -webkit-text-fill-color: #1a1b1d;
 }
 
+.crew-ticket__crew {
+  font-size: 0.8rem;
+  font-weight: 650;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .crew-ticket__id {
   font-size: 0.72rem;
   font-weight: 700;

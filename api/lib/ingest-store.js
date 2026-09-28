@@ -1905,9 +1905,34 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
     fixAgeSec != null && gpsIngestAgoSec != null ? fixAgeSec - gpsIngestAgoSec : null;
   const gpsFixAgeSec = stats.gps?.gpsFixAgeSec ?? null;
   const uploadLagSec = stats.gps?.uploadLagSec ?? null;
+  const coach =
+    entry.coach != null && String(entry.coach).trim()
+      ? String(entry.coach).trim()
+      : entry.athleteId
+        ? String(entry.athleteId).trim()
+        : null;
+  const boatClass =
+    entry.boatClass != null && String(entry.boatClass).trim()
+      ? String(entry.boatClass).trim()
+      : null;
+  const boatName =
+    entry.boatName != null && String(entry.boatName).trim()
+      ? String(entry.boatName).trim()
+      : null;
+  const name =
+    entry.name != null && String(entry.name).trim()
+      ? String(entry.name).trim()
+      : entry.deviceId
+        ? String(entry.deviceId)
+        : null;
   return {
     deviceId: entry.deviceId,
-    athleteId: entry.athleteId || null,
+    athleteId: coach || entry.athleteId || null,
+    name,
+    coach,
+    boatId: entry.boatId != null ? entry.boatId : null,
+    boatClass,
+    boatName,
     sessionId: entry.sessionId,
     online,
     lastSeenMs,
@@ -1976,7 +2001,12 @@ function listDevicesFromMemory(opts = {}) {
       orgId,
       {
         deviceId: row.deviceId,
+        name: row.deviceId,
         athleteId: row.athleteId,
+        coach: row.athleteId,
+        boatId: row.boatId || null,
+        boatClass: row.boatClass || null,
+        boatName: row.boatName || null,
         sessionId,
         samples: row.samples,
         lastSeenMs: row.updatedAt,
@@ -2018,23 +2048,40 @@ async function listDevices(orgId, opts = {}) {
       // Registry-only for live polls. Do NOT scan rnz_samples for motion/path-pace
       // here — those queries duplicate /api/map-positions and can 504 on Vercel.
       const telemetryWindowMs = Math.min(Math.max(windowMs, 60000), 120000);
-      const [registryGps, registryTimes, rowingTel, dbCapsizeAlerts, batteryByDevice, strokeByDevice] =
-        await Promise.all([
+      const [
+        registryGps,
+        registryTimes,
+        rowingTel,
+        dbCapsizeAlerts,
+        batteryByDevice,
+        strokeByDevice,
+        crewMeta,
+      ] = await Promise.all([
         db.getRegistryGpsByDevice(orgId),
         db.getDeviceRegistryTimes(orgId),
         db.getLatestRowingTelemetry(orgId, telemetryWindowMs),
         loadDbCapsizeAlerts(orgId),
         db.getLatestBatteryByDevice(orgId),
         db.getLatestStrokeByDevice(orgId, telemetryWindowMs),
+        db.getLatestSessionCrewMetaByDevice(orgId).catch((err) => {
+          console.error('[ingest-store] crew meta failed:', err);
+          return new Map();
+        }),
       ]);
 
       for (const [deviceId, regFix] of registryGps) {
+        const meta = crewMeta.get(deviceId);
         const patched = applyRegistryGpsToDevice(
           buildDeviceEntry(
             orgId,
             {
               deviceId,
-              athleteId: null,
+              name: deviceId,
+              athleteId: meta?.coach || null,
+              coach: meta?.coach || null,
+              boatId: meta?.boatId ?? null,
+              boatClass: meta?.boatClass || null,
+              boatName: meta?.boatName || null,
               sessionId: '',
               samples: [
                 {
@@ -2068,13 +2115,19 @@ async function listDevices(orgId, opts = {}) {
         if (byDevice.has(deviceId)) continue;
         const lastSeenMs = times.lastSeenMs || 0;
         if (!lastSeenMs) continue;
+        const meta = crewMeta.get(deviceId);
         byDevice.set(
           deviceId,
           buildDeviceEntry(
             orgId,
             {
               deviceId,
-              athleteId: null,
+              name: deviceId,
+              athleteId: meta?.coach || null,
+              coach: meta?.coach || null,
+              boatId: meta?.boatId ?? null,
+              boatClass: meta?.boatClass || null,
+              boatName: meta?.boatName || null,
               sessionId: '',
               samples: [],
               lastSeenMs,
@@ -2089,6 +2142,23 @@ async function listDevices(orgId, opts = {}) {
       }
 
       for (const dev of byDevice.values()) {
+        const meta = crewMeta.get(dev.deviceId);
+        if (meta) {
+          if (meta.coach) {
+            dev.coach = meta.coach;
+            if (!dev.athleteId) dev.athleteId = meta.coach;
+          }
+          if (meta.boatClass) dev.boatClass = meta.boatClass;
+          if (meta.boatName) dev.boatName = meta.boatName;
+          if (meta.boatId != null) dev.boatId = meta.boatId;
+          if (meta.rowerName) {
+            dev.name = meta.rowerName;
+          } else if (!dev.name) {
+            dev.name = dev.deviceId;
+          }
+        } else if (!dev.name) {
+          dev.name = dev.deviceId;
+        }
         mergeListDeviceDbTelemetry(
           dev,
           rowingTel.get(dev.deviceId),
@@ -2138,7 +2208,11 @@ async function listDevices(orgId, opts = {}) {
           existing.noGps = true;
           existing.source = 'walkup';
           existing.walkupSessionId = w.sessionId;
-          if (w.rowerName) existing.athleteId = w.rowerName;
+          if (w.rowerName) {
+            existing.name = w.rowerName;
+            existing.athleteId = w.rowerName;
+          }
+          if (!existing.boatName) existing.boatName = w.deviceId;
           existing.lastSeenMs = Math.max(existing.lastSeenMs || 0, lastSeenMs);
           existing.lastSeenAgoSec = Math.max(
             0,
@@ -2148,7 +2222,11 @@ async function listDevices(orgId, opts = {}) {
         }
         byDevice.set(w.deviceId, {
           deviceId: w.deviceId,
+          name: w.rowerName || w.deviceId,
           athleteId: w.rowerName,
+          coach: null,
+          boatName: w.deviceId,
+          boatClass: null,
           sessionId: w.sessionId,
           walkupSessionId: w.sessionId,
           source: 'walkup',

@@ -647,8 +647,21 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function deviceDisplayName(d: FleetDevice): string {
-    const name = String(d.athleteId ?? '').trim();
+    // Recorder "Name" is deviceId; walk-up may set name to rower.
+    const name = String(d.name ?? '').trim();
     return name || d.deviceId;
+  }
+
+  function deviceCrewDetailLine(d: FleetDevice): string {
+    const parts: string[] = [];
+    const coach = String(d.coach ?? d.athleteId ?? '').trim();
+    const boatName = String(d.boatName ?? '').trim();
+    const boatClass = String(d.boatClass ?? '').trim();
+    // Avoid repeating walk-up rower as "coach" when name already shows it.
+    if (coach && coach !== String(d.name ?? '').trim()) parts.push(`Coach ${coach}`);
+    if (boatName) parts.push(boatName);
+    if (boatClass) parts.push(boatClass);
+    return parts.join(' · ');
   }
 
   function formatSpeedKmh(mps: number | null | undefined): string {
@@ -741,14 +754,13 @@ export function mountApp(root: HTMLElement): void {
       : d.lastSeenAgoSec != null
         ? `Last seen ${d.lastSeenAgoSec}s ago`
         : 'Offline';
+    const crewLine = deviceCrewDetailLine(d);
     return (
       `<li class="${ticketClass}" data-device-id="${esc(d.deviceId)}">` +
       `<span class="crew-ticket__dot" style="background:${accent}" aria-hidden="true"></span>` +
       `<div class="crew-ticket__body">` +
       `<div class="crew-ticket__name">${esc(d.displayName)}</div>` +
-      (d.displayName !== d.deviceId
-        ? `<div class="crew-ticket__id">${esc(d.deviceId)}</div>`
-        : '') +
+      (crewLine ? `<div class="crew-ticket__crew">${esc(crewLine)}</div>` : '') +
       `<div class="crew-ticket__meta">${esc(meta)}</div>` +
       `</div>` +
       `<div class="crew-ticket__status">` +
