@@ -108,6 +108,8 @@ export function mountApp(root: HTMLElement): void {
   let sessionMapMarker: L.CircleMarker | null = null;
   let sessionMapTrail: L.Polyline | null = null;
   let sessionMapGeofenceLayer: L.LayerGroup | null = null;
+  /** Keep map centered on the phone GPS; pauses when the user pans/zooms. */
+  let sessionMapFollow = true;
   const speedAvg = new MetricRollingAvg(SPEED_AVG_WINDOW_MS, 0.15);
   const strokeRateAvg = new MetricRollingAvg(STROKE_AVG_WINDOW_MS, 0);
   let settings = loadSettings();
@@ -316,6 +318,20 @@ export function mountApp(root: HTMLElement): void {
     sessionMap?.invalidateSize();
   }
 
+  function updateSessionMapFollowButton(): void {
+    const btn = root.querySelector('[data-map-follow]') as HTMLButtonElement | null;
+    if (!btn) return;
+    btn.classList.toggle('is-active', sessionMapFollow);
+    btn.setAttribute('aria-pressed', sessionMapFollow ? 'true' : 'false');
+    btn.textContent = sessionMapFollow ? 'Following' : 'Follow';
+  }
+
+  function setSessionMapFollow(on: boolean): void {
+    sessionMapFollow = on;
+    updateSessionMapFollowButton();
+    if (on) updateSessionMapOverlay();
+  }
+
   function drawGeofencesOnMap(list: GeofenceConfig[]): void {
     if (!sessionMap) return;
     if (sessionMapGeofenceLayer) {
@@ -360,6 +376,7 @@ export function mountApp(root: HTMLElement): void {
       const stats = controller?.getStats();
       const lat = stats?.lastGps?.lat ?? -37.928;
       const lon = stats?.lastGps?.lon ?? 175.548;
+      sessionMapFollow = true;
       sessionMap = L.map(el, {
         preferCanvas: true,
         zoomControl: true,
@@ -368,6 +385,14 @@ export function mountApp(root: HTMLElement): void {
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
       }).addTo(sessionMap);
+      sessionMap.on('dragstart', () => {
+        if (!sessionMapFollow) return;
+        setSessionMapFollow(false);
+      });
+      sessionMap.on('zoomstart', (e: L.LeafletEvent) => {
+        if (!sessionMapFollow || !e.originalEvent) return;
+        setSessionMapFollow(false);
+      });
       drawGeofencesOnMap(getCachedGeofences());
       void fetchGeofences(loadSettings().ingestUrl, loadSettings().ingestToken).then(
         (list) => {
@@ -378,6 +403,7 @@ export function mountApp(root: HTMLElement): void {
         },
       );
     }
+    updateSessionMapFollowButton();
     updateSessionMapOverlay();
     requestAnimationFrame(() => invalidateSessionMap());
   }
@@ -413,6 +439,9 @@ export function mountApp(root: HTMLElement): void {
         sessionMap.setView(ll, Math.max(sessionMap.getZoom(), 15));
       } else {
         sessionMapMarker.setLatLng(ll);
+        if (sessionMapFollow) {
+          sessionMap.setView(ll, Math.max(sessionMap.getZoom(), 15), { animate: true });
+        }
       }
     }
   }
@@ -789,6 +818,7 @@ export function mountApp(root: HTMLElement): void {
         <div class="session-fs-panel session-fs-panel--map ${fsTab === 'map' ? 'is-active' : ''}" data-fs-panel="map">
           <div class="session-map-stage">
             <div class="session-map-wrap" data-session-map></div>
+            <button type="button" class="session-map-follow ${sessionMapFollow ? 'is-active' : ''}" data-map-follow aria-pressed="${sessionMapFollow ? 'true' : 'false'}">${sessionMapFollow ? 'Following' : 'Follow'}</button>
             <div class="session-metrics-ticket" aria-label="Session metrics">
               ${metricsBlockHtml('ticket')}
             </div>
@@ -1551,6 +1581,10 @@ export function mountApp(root: HTMLElement): void {
         await runSync(true);
         render();
       });
+    });
+
+    root.querySelector('[data-map-follow]')?.addEventListener('click', () => {
+      setSessionMapFollow(true);
     });
 
     root.querySelectorAll('[data-fs-tab]').forEach((btn) => {

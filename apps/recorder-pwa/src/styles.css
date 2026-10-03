@@ -944,6 +944,30 @@
   background: #0c1c34;
 }
 
+.session-map-follow {
+  position: absolute;
+  left: 0.65rem;
+  top: 0.65rem;
+  z-index: 500;
+  appearance: none;
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  border-radius: 8px;
+  padding: 0.4rem 0.7rem;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #e8f4fc;
+  background: rgba(10, 22, 40, 0.88);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.session-map-follow.is-active {
+  color: #0a1628;
+  background: #00e5ff;
+  border-color: #00e5ff;
+}
+
 .session-metrics-ticket {
   position: absolute;
   right: 0.65rem;
