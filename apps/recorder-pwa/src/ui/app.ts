@@ -36,7 +36,12 @@ import {
   type NativeStandbyStatus,
 } from '../lib/native-capsize-monitor';
 import { fetchGeofences, getCachedGeofences } from '../lib/geofence-service';
-import type { GeofenceConfig } from '../lib/geofence';
+import {
+  LAKE_MASK_OUTER_RING,
+  lakeBoundaryRing,
+  normalizeGeofenceKind,
+  type GeofenceConfig,
+} from '../lib/geofence';
 import {
   clearSessionSpeedBuffer,
   getSessionSpeedSamples,
@@ -363,8 +368,29 @@ export function mountApp(root: HTMLElement): void {
     }
     for (const g of list) {
       if (!g.enabled) continue;
-      const isNotify = Boolean(g.notifyOnEnter);
-      const color = isNotify ? '#f87171' : g.kind === 'boat_park' ? '#f59e0b' : '#38bdf8';
+      const kind = normalizeGeofenceKind(g.kind);
+      if (kind === 'lake') {
+        const hole = lakeBoundaryRing(g);
+        if (hole.length < 3) continue;
+        L.polygon([LAKE_MASK_OUTER_RING, hole], {
+          color: '#475569',
+          fillColor: '#1e293b',
+          fillOpacity: 0.45,
+          stroke: false,
+          interactive: false,
+        }).addTo(sessionMapGeofenceLayer);
+        L.polygon(hole, {
+          color: '#94a3b8',
+          fillOpacity: 0,
+          weight: 2,
+          dashArray: '4 3',
+        })
+          .bindTooltip(g.name || 'Lake boundary')
+          .addTo(sessionMapGeofenceLayer);
+        continue;
+      }
+      const isNotify = Boolean(g.notifyOnEnter) || kind === 'hazard';
+      const color = isNotify ? '#f87171' : '#f59e0b';
       if (g.shapeType === 'circle' && g.radiusM > 0) {
         L.circle([g.centerLat, g.centerLon], {
           radius: g.radiusM,
@@ -623,12 +649,17 @@ export function mountApp(root: HTMLElement): void {
         if (label) label.textContent = 'Locating…';
         if (sub) sub.textContent = '';
       } else if (stats.inBoatPark) {
-        zoneEl.setAttribute('data-zone', 'boat_park');
-        const zoneName = stats.boatParkName?.trim();
+        const zoneName = stats.boatParkName?.trim() || 'Geofence zone';
+        const lake = stats.restrictionKind === 'lake';
+        zoneEl.setAttribute('data-zone', lake ? 'outside_lake' : 'boat_park');
         if (label) {
           label.textContent = stats.recordingSuppressed
-            ? `${zoneName || 'Geofence zone'} · paused`
-            : zoneName || 'Geofence zone';
+            ? lake
+              ? `${zoneName} · outside · paused`
+              : `${zoneName} · paused`
+            : lake
+              ? `${zoneName} · outside`
+              : zoneName;
         }
         if (sub) sub.textContent = '';
       } else {

@@ -1,6 +1,6 @@
 /** Geofence types and geometry (mirrors api/lib/geofence.js). */
 
-export type GeofenceKind = 'boat_park';
+export type GeofenceKind = 'boat_park' | 'hazard' | 'lake';
 export type GeofenceShapeType = 'circle' | 'polygon';
 
 export type GeofenceConfig = {
@@ -16,11 +16,20 @@ export type GeofenceConfig = {
   /** GPS + upload interval (s) while inside this zone (when not suppressing). */
   economyIntervalSec: number;
   disableCapsize: boolean;
-  /** Do not queue/upload telemetry while inside. */
+  /**
+   * Do not queue/upload telemetry while restricted.
+   * Boat park: inside. Lake: outside boundary.
+   */
   suppressRecording: boolean;
-  /** Auto-stop session after dwell inside. */
+  /**
+   * Auto-stop session after dwell in restricted state.
+   * Boat park: inside. Lake: outside boundary.
+   */
   autoStopOnEnter: boolean;
-  /** Auto-start session after dwell outside (armed standby). */
+  /**
+   * Auto-start session after dwell in allowed state (armed standby).
+   * Boat park: outside park. Lake: inside lake.
+   */
   autoStartOnExit: boolean;
   /** Seconds of continuous inside/outside before auto start/stop. */
   sessionDwellSec: number;
@@ -31,6 +40,14 @@ export type GeofenceConfig = {
 };
 
 const EARTH_RADIUS_M = 6371000;
+
+/** Outer ring for inverted lake masks (lat, lon). Leaves a hole for the lake. */
+export const LAKE_MASK_OUTER_RING: Array<[number, number]> = [
+  [-85, -180],
+  [-85, 180],
+  [85, 180],
+  [85, -180],
+];
 
 function toRad(deg: number): number {
   return (deg * Math.PI) / 180;
@@ -111,6 +128,16 @@ function parsePolygonCoords(raw: unknown): Array<[number, number]> {
   return ring.length >= 3 ? ring : [];
 }
 
+export function normalizeGeofenceKind(
+  input: unknown,
+  fallback: GeofenceKind = 'boat_park',
+): GeofenceKind {
+  const k = String(input ?? fallback ?? 'boat_park').trim().toLowerCase();
+  if (k === 'hazard') return 'hazard';
+  if (k === 'lake' || k === 'water') return 'lake';
+  return 'boat_park';
+}
+
 export function pointInZoneGeometry(g: GeofenceConfig, lat: number, lon: number): boolean {
   if (!g.enabled) return false;
   if (g.shapeType === 'polygon') {
@@ -120,8 +147,73 @@ export function pointInZoneGeometry(g: GeofenceConfig, lat: number, lon: number)
 }
 
 export function pointInGeofence(g: GeofenceConfig, lat: number, lon: number): boolean {
-  if (!g.enabled || g.kind !== 'boat_park') return false;
+  if (!g.enabled || normalizeGeofenceKind(g.kind) !== 'boat_park') return false;
   return pointInZoneGeometry(g, lat, lon);
+}
+
+/** Approximate a circle as a lat/lon ring (for lake map masks). */
+export function circleToRing(
+  centerLat: number,
+  centerLon: number,
+  radiusM: number,
+  steps = 72,
+): Array<[number, number]> {
+  if (!Number.isFinite(centerLat) || !Number.isFinite(centerLon) || !(radiusM > 0)) {
+    return [];
+  }
+  const ring: Array<[number, number]> = [];
+  const latRad = toRad(centerLat);
+  const metersPerDegLat = 111_320;
+  const metersPerDegLon = Math.max(1e-6, 111_320 * Math.cos(latRad));
+  const dLat = radiusM / metersPerDegLat;
+  const dLon = radiusM / metersPerDegLon;
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * Math.PI * 2;
+    ring.push([centerLat + dLat * Math.sin(a), centerLon + dLon * Math.cos(a)]);
+  }
+  return ring;
+}
+
+/** Lake shore ring used as the hole in the grey outside-lake mask. */
+export function lakeBoundaryRing(g: GeofenceConfig): Array<[number, number]> {
+  if (g.shapeType === 'polygon' && g.polygonCoords?.length >= 3) {
+    return g.polygonCoords.map(([lat, lon]) => [lat, lon] as [number, number]);
+  }
+  return circleToRing(g.centerLat, g.centerLon, g.radiusM);
+}
+
+/**
+ * Restricted for session economy / suppress / auto-stop:
+ * boat_park → inside; lake → outside.
+ */
+export function isSessionRestrictedAt(
+  g: GeofenceConfig,
+  lat: number,
+  lon: number,
+): boolean {
+  if (!g.enabled) return false;
+  const kind = normalizeGeofenceKind(g.kind);
+  if (kind === 'hazard') return false;
+  const inside = pointInZoneGeometry(g, lat, lon);
+  if (kind === 'lake') return !inside;
+  if (kind === 'boat_park') return inside;
+  return false;
+}
+
+export function findSessionRestrictionAt(
+  lat: number,
+  lon: number,
+  geofences: GeofenceConfig[],
+): GeofenceConfig | null {
+  for (const g of geofences) {
+    if (normalizeGeofenceKind(g.kind) !== 'lake') continue;
+    if (isSessionRestrictedAt(g, lat, lon)) return g;
+  }
+  for (const g of geofences) {
+    if (normalizeGeofenceKind(g.kind) !== 'boat_park') continue;
+    if (isSessionRestrictedAt(g, lat, lon)) return g;
+  }
+  return null;
 }
 
 export function findNotifyZoneAt(
@@ -143,15 +235,13 @@ export function entryNotifyMessageFor(g: GeofenceConfig): string {
   return `Please check course, ${name} ahead`;
 }
 
+/** @deprecated Prefer findSessionRestrictionAt — includes lake outside-boundary. */
 export function findBoatParkAt(
   lat: number,
   lon: number,
   geofences: GeofenceConfig[],
 ): GeofenceConfig | null {
-  for (const g of geofences) {
-    if (pointInGeofence(g, lat, lon)) return g;
-  }
-  return null;
+  return findSessionRestrictionAt(lat, lon, geofences);
 }
 
 function boolFlag(raw: Record<string, unknown>, camel: string, snake: string): boolean {
@@ -179,7 +269,7 @@ export function normalizeGeofence(raw: Record<string, unknown>): GeofenceConfig 
   return {
     id: Number(raw.id),
     name: String(raw.name ?? ''),
-    kind: String(raw.kind ?? 'boat_park'),
+    kind: normalizeGeofenceKind(raw.kind),
     shapeType,
     centerLat: Number(raw.centerLat ?? raw.center_lat),
     centerLon: Number(raw.centerLon ?? raw.center_lon),

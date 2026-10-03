@@ -35,9 +35,10 @@ import {
 } from '../lib/native-capsize-monitor';
 import {
   distanceM,
-  findBoatParkAt,
   entryNotifyMessageFor,
   findNotifyZoneAt,
+  findSessionRestrictionAt,
+  normalizeGeofenceKind,
   type GeofenceConfig,
 } from '../lib/geofence';
 import { fetchGeofences } from '../lib/geofence-service';
@@ -72,11 +73,13 @@ export type RecorderStats = {
   tiltDeg?: number;
   capsize?: boolean;
   motionCalibrated?: boolean;
-  /** True when inside a dashboard boat-park geofence. */
+  /** True when in a restricted session zone (boat park inside, or outside lake). */
   inBoatPark?: boolean;
-  /** Name of matched boat-park zone, if any. */
+  /** Name of matched restriction zone, if any. */
   boatParkName?: string | null;
-  /** True when telemetry is suppressed inside the zone. */
+  /** Kind of active restriction zone (`boat_park` | `lake`). */
+  restrictionKind?: string | null;
+  /** True when telemetry is suppressed in the restricted state. */
   recordingSuppressed?: boolean;
   /** Active regatta control message for this device, if any. */
   regattaMessage?: { id: number; text: string } | null;
@@ -308,6 +311,7 @@ export async function startRecorder(
       capsizeAllowed = !match.disableCapsize;
       lastEconomySignature = [
         match.name,
+        String(match.kind),
         String(match.economyIntervalSec),
         String(match.disableCapsize),
         String(match.suppressRecording),
@@ -325,15 +329,24 @@ export async function startRecorder(
     const configChangedInZone =
       inBoatPark && !modeChanged && prevSignature !== lastEconomySignature;
     if (modeChanged || configChangedInZone) {
+      const kind = match ? normalizeGeofenceKind(match.kind) : 'boat_park';
+      const enterMsg =
+        kind === 'lake'
+          ? `${match!.name}: outside lake — ${
+              recordingSuppressed
+                ? 'recording paused'
+                : `every ${Math.round(effectiveGpsIntervalMs / 1000)}s`
+            }${capsizeAllowed ? '' : ', capsize off'}.`
+          : `${match!.name}: boat park — ${
+              recordingSuppressed
+                ? 'recording paused'
+                : `every ${Math.round(effectiveGpsIntervalMs / 1000)}s`
+            }${capsizeAllowed ? '' : ', capsize off'}.`;
       onLog(
         modeChanged
           ? inBoatPark
-            ? `${match!.name}: boat park — ${
-                recordingSuppressed
-                  ? 'recording paused'
-                  : `every ${Math.round(effectiveGpsIntervalMs / 1000)}s`
-              }${capsizeAllowed ? '' : ', capsize off'}.`
-            : 'On water — full recording restored.'
+            ? enterMsg
+            : 'Full recording restored.'
           : `${match!.name} config updated.`,
       );
       if (nativeCapsizeMonitorOn) {
@@ -354,7 +367,12 @@ export async function startRecorder(
       Date.now() - insideSinceMs >= Math.max(5000, match.sessionDwellSec * 1000)
     ) {
       autoStopFired = true;
-      onLog(`${match.name}: auto-stopping session (inside geofence).`);
+      const kind = normalizeGeofenceKind(match.kind);
+      onLog(
+        kind === 'lake'
+          ? `${match.name}: auto-stopping session (outside lake).`
+          : `${match.name}: auto-stopping session (inside geofence).`,
+      );
       hooks?.onGeofenceAutoStop?.(match);
     }
 
@@ -363,7 +381,7 @@ export async function startRecorder(
 
   const checkGeofenceAt = (lat: number, lon: number) => {
     if (!geofences.length || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    applyEconomyMode(findBoatParkAt(lat, lon, geofences));
+    applyEconomyMode(findSessionRestrictionAt(lat, lon, geofences));
 
     const notifyZone = findNotifyZoneAt(lat, lon, geofences);
     const zoneKey = notifyZone ? `id:${notifyZone.id}` : '';
@@ -847,6 +865,9 @@ export async function startRecorder(
       ...stats,
       inBoatPark,
       boatParkName: activeBoatPark?.name ?? null,
+      restrictionKind: activeBoatPark
+        ? normalizeGeofenceKind(activeBoatPark.kind)
+        : null,
       recordingSuppressed,
     }),
     flush: () => pushBatch(),

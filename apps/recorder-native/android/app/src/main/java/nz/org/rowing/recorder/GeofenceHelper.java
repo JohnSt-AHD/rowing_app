@@ -20,14 +20,46 @@ final class GeofenceHelper {
                 .apply();
     }
 
-    static JSONObject findBoatParkAt(Context ctx, double lat, double lon) {
+    static boolean isLakeKind(JSONObject g) {
+        if (g == null) return false;
+        String k = g.optString("kind", "boat_park").trim().toLowerCase();
+        return "lake".equals(k) || "water".equals(k);
+    }
+
+    static boolean isBoatParkKind(JSONObject g) {
+        if (g == null) return false;
+        String k = g.optString("kind", "boat_park").trim().toLowerCase();
+        return "boat_park".equals(k) || k.isEmpty();
+    }
+
+    /**
+     * Restricted for session economy / suppress:
+     * boat_park → inside; lake → outside boundary.
+     */
+    static boolean isSessionRestricted(JSONObject g, double lat, double lon) {
+        if (g == null || !g.optBoolean("enabled", true)) return false;
+        boolean inside = pointInZoneGeometry(g, lat, lon);
+        if (isLakeKind(g)) return !inside;
+        if (isBoatParkKind(g)) return inside;
+        return false;
+    }
+
+    static JSONObject findSessionRestrictionAt(Context ctx, double lat, double lon) {
         if (!Double.isFinite(lat) || !Double.isFinite(lon)) return null;
         JSONArray geofences = loadGeofences(ctx);
         for (int i = 0; i < geofences.length(); i++) {
             JSONObject g = geofences.optJSONObject(i);
-            if (g != null && pointInGeofence(g, lat, lon)) return g;
+            if (g != null && isLakeKind(g) && isSessionRestricted(g, lat, lon)) return g;
+        }
+        for (int i = 0; i < geofences.length(); i++) {
+            JSONObject g = geofences.optJSONObject(i);
+            if (g != null && isBoatParkKind(g) && isSessionRestricted(g, lat, lon)) return g;
         }
         return null;
+    }
+
+    static JSONObject findBoatParkAt(Context ctx, double lat, double lon) {
+        return findSessionRestrictionAt(ctx, lat, lon);
     }
 
     /** First enabled zone with notifyOnEnter at this point (any kind). */
@@ -87,7 +119,7 @@ final class GeofenceHelper {
 
     static boolean pointInGeofence(JSONObject g, double lat, double lon) {
         if (g == null || g.optBoolean("enabled", true) == false) return false;
-        if (!"boat_park".equals(g.optString("kind", "boat_park"))) return false;
+        if (!isBoatParkKind(g)) return false;
         return pointInZoneGeometry(g, lat, lon);
     }
 
@@ -150,15 +182,21 @@ final class GeofenceHelper {
         return 45_000L;
     }
 
-    /** True when inside a boat-park zone that blocks auto-start until exit. */
+    /**
+     * True when in a restricted state that blocks auto-start until allowed
+     * (inside boat park, or outside lake).
+     */
     static boolean isInsideAutoStartBlockingZone(Context ctx, double lat, double lon) {
-        JSONObject match = findBoatParkAt(ctx, lat, lon);
+        JSONObject match = findSessionRestrictionAt(ctx, lat, lon);
         return match != null && autoStartOnExit(match);
     }
 
     static String autoStartBlockingZoneName(Context ctx, double lat, double lon) {
-        JSONObject match = findBoatParkAt(ctx, lat, lon);
+        JSONObject match = findSessionRestrictionAt(ctx, lat, lon);
         if (match != null && autoStartOnExit(match)) {
+            if (isLakeKind(match)) {
+                return match.optString("name", "lake");
+            }
             return match.optString("name", "boat park");
         }
         return "";

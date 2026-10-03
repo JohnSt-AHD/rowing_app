@@ -31,12 +31,58 @@
     dashArray: '2 6',
   };
 
+  const LAKE_SHORE_STYLE = {
+    color: '#94a3b8',
+    fillOpacity: 0,
+    weight: 2,
+    dashArray: '4 3',
+  };
+
+  const LAKE_MASK_OUTER = [
+    [-85, -180],
+    [-85, 180],
+    [85, 180],
+    [85, -180],
+  ];
+
+  function kindOf(g) {
+    const k = String(g?.kind || 'boat_park').toLowerCase();
+    if (k === 'hazard') return 'hazard';
+    if (k === 'lake' || k === 'water') return 'lake';
+    return 'boat_park';
+  }
+
   function styleForGeofence(g) {
-    return String(g?.kind || '').toLowerCase() === 'hazard' ? HAZARD_STYLE : GEOFENCE_STYLE;
+    return kindOf(g) === 'hazard' ? HAZARD_STYLE : GEOFENCE_STYLE;
   }
 
   function isHazard(g) {
-    return String(g?.kind || '').toLowerCase() === 'hazard';
+    return kindOf(g) === 'hazard';
+  }
+
+  function isLake(g) {
+    return kindOf(g) === 'lake';
+  }
+
+  function circleToRing(lat, lon, radiusM, steps = 72) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !(radiusM > 0)) return [];
+    const ring = [];
+    const metersPerDegLat = 111320;
+    const metersPerDegLon = Math.max(1e-6, 111320 * Math.cos((lat * Math.PI) / 180));
+    const dLat = radiusM / metersPerDegLat;
+    const dLon = radiusM / metersPerDegLon;
+    for (let i = 0; i < steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      ring.push([lat + dLat * Math.sin(a), lon + dLon * Math.cos(a)]);
+    }
+    return ring;
+  }
+
+  function lakeHoleRing(g) {
+    if (g.shapeType === 'polygon' && Array.isArray(g.polygonCoords) && g.polygonCoords.length >= 3) {
+      return g.polygonCoords.map((pt) => [Number(pt[0]), Number(pt[1])]);
+    }
+    return circleToRing(Number(g.centerLat), Number(g.centerLon), Number(g.radiusM));
   }
 
   function headers() {
@@ -117,8 +163,34 @@
       g.shapeType === 'polygon' && g.polygonCoords?.length >= 3
         ? `Polygon · ${g.polygonCoords.length} points`
         : `${Math.round(g.radiusM)} m radius`;
-    const kindLabel = isHazard(g) ? 'Hazard zone' : 'Geofence zone';
-    return `<strong>${esc(g.name)}</strong><br>${kindLabel} · ${shape}<br>Every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording ? 'paused' : 'on'} · auto ${g.autoStopOnEnter ? 'stop' : 'stop off'} / ${g.autoStartOnExit ? 'start' : 'start off'}`;
+    const kind = kindOf(g);
+    const kindLabel =
+      kind === 'hazard' ? 'Hazard zone' : kind === 'lake' ? 'Lake boundary' : 'Boat park';
+    const suppressLabel =
+      kind === 'lake'
+        ? g.suppressRecording
+          ? 'paused outside'
+          : 'record outside on'
+        : g.suppressRecording
+          ? 'paused'
+          : 'on';
+    const stopLabel =
+      kind === 'lake'
+        ? g.autoStopOnEnter
+          ? 'stop outside'
+          : 'stop off'
+        : g.autoStopOnEnter
+          ? 'stop'
+          : 'stop off';
+    const startLabel =
+      kind === 'lake'
+        ? g.autoStartOnExit
+          ? 'start inside'
+          : 'start off'
+        : g.autoStartOnExit
+          ? 'start'
+          : 'start off';
+    return `<strong>${esc(g.name)}</strong><br>${kindLabel} · ${shape}<br>Every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${suppressLabel} · auto ${stopLabel} / ${startLabel}`;
   }
 
   function drawGeofences() {
@@ -130,6 +202,23 @@
       layers.edit.clearLayers();
       for (const g of geofences) {
         if (!g.enabled) continue;
+        if (isLake(g)) {
+          const hole = lakeHoleRing(g);
+          if (hole.length < 3) continue;
+          const mask = L.polygon([LAKE_MASK_OUTER, hole], {
+            color: '#475569',
+            fillColor: '#1e293b',
+            fillOpacity: 0.45,
+            stroke: false,
+            interactive: false,
+          });
+          layers.geofence.addLayer(mask);
+          const shore = L.polygon(hole, LAKE_SHORE_STYLE);
+          shore.bindPopup(popupHtml(g));
+          layers.geofence.addLayer(shore);
+          if (editGeofenceMode) attachGeofenceEditHandles(g, layers.edit);
+          continue;
+        }
         const style = styleForGeofence(g);
         let layer;
         if (g.shapeType === 'polygon' && Array.isArray(g.polygonCoords) && g.polygonCoords.length >= 3) {
@@ -390,10 +479,10 @@
       .map((g) => {
         const editing = String(editingId) === String(g.id);
         return `
-      <div class="geofence-item${isHazard(g) ? ' geofence-item--hazard' : ''}${editing ? ' geofence-item--editing' : ''}" data-id="${g.id}">
+      <div class="geofence-item${isHazard(g) ? ' geofence-item--hazard' : ''}${isLake(g) ? ' geofence-item--lake' : ''}${editing ? ' geofence-item--editing' : ''}" data-id="${g.id}">
         <div class="geofence-item__main">
           <strong>${esc(g.name)}</strong>
-          <span class="geofence-item__meta">${isHazard(g) ? 'Hazard' : 'Boat park'} · ${esc(shapeSummary(g))}</span>
+          <span class="geofence-item__meta">${isHazard(g) ? 'Hazard' : isLake(g) ? 'Lake' : 'Boat park'} · ${esc(shapeSummary(g))}</span>
           <span class="geofence-item__meta">Economy: every ${g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30}s · capsize ${g.disableCapsize ? 'off' : 'on'} · record ${g.suppressRecording ? 'paused' : 'on'} · dwell ${g.sessionDwellSec ?? 45}s · auto-stop ${g.autoStopOnEnter ? 'on' : 'off'} · auto-start ${g.autoStartOnExit ? 'on' : 'off'} · notify ${g.notifyOnEnter ? 'on' : 'off'}${g.notifyOnEnter && g.entryNotifyMessage ? ` · “${esc(g.entryNotifyMessage)}”` : ''}</span>
         </div>
         <div class="geofence-item__actions">
@@ -420,10 +509,10 @@
     const idInput = $('#geofenceEditId');
     if (idInput) idInput.value = editing ? String(editingId) : '';
     if (title) title.textContent = editing ? 'Edit zone' : 'Add zone';
-    if (hint) {
-      hint.textContent = editing
-        ? 'Update the selected zone, then Save changes.'
-        : 'Create a new boat-park or hazard zone.';
+    if (hint && !editing) {
+      hint.textContent = 'Create a boat-park, lake boundary, or hazard zone.';
+    } else if (hint && editing) {
+      hint.textContent = 'Update the selected zone, then Save changes.';
     }
     if (submit) submit.textContent = editing ? 'Save changes' : 'Add zone';
     if (cancel) cancel.hidden = !editing;
@@ -445,6 +534,7 @@
     if ($('#geofenceShapeType')) $('#geofenceShapeType').value = 'circle';
     clearPolygonDraft();
     updateShapeFields();
+    onKindChange({ applyDefaults: false });
   }
 
   function cancelEdit() {
@@ -464,7 +554,8 @@
     }
     editingId = g.id;
     if ($('#geofenceName')) $('#geofenceName').value = g.name || '';
-    if ($('#geofenceKind')) $('#geofenceKind').value = isHazard(g) ? 'hazard' : 'boat_park';
+    if ($('#geofenceKind')) $('#geofenceKind').value = kindOf(g);
+    onKindChange({ applyDefaults: false });
     if ($('#geofenceIntervalSec')) {
       $('#geofenceIntervalSec').value = String(g.economyIntervalSec ?? g.economyGpsIntervalSec ?? 30);
     }
@@ -537,7 +628,9 @@
     const autoStartOnExit = $('#geofenceAutoStart')?.checked === true;
     const notifyOnEnter = $('#geofenceNotifyEnter')?.checked === true;
     const entryNotifyMessage = $('#geofenceNotifyMessage')?.value?.trim() || '';
-    const kind = $('#geofenceKind')?.value === 'hazard' ? 'hazard' : 'boat_park';
+    const kindRaw = $('#geofenceKind')?.value;
+    const kind =
+      kindRaw === 'hazard' ? 'hazard' : kindRaw === 'lake' ? 'lake' : 'boat_park';
 
     if (!name) {
       setStatus('Name is required.', true);
@@ -608,11 +701,71 @@
     setStatus(editing ? 'Zone updated.' : 'Zone added.');
   }
 
-  function onKindChange() {
-    const kind = $('#geofenceKind')?.value;
+  function onKindChange(opts = {}) {
+    const applyDefaults = opts.applyDefaults !== false;
+    const kind = $('#geofenceKind')?.value || 'boat_park';
+    const hint = $('#geofenceBehaviourHint');
+    const legend = $('#geofenceBehaviourLegend');
+    const formHint = $('#geofenceFormHint');
+
+    if (kind === 'lake') {
+      if (legend) legend.textContent = 'Outside-lake behaviour';
+      if (hint) {
+        hint.textContent =
+          'Lake boundary: apply these while OUTSIDE the polygon. Inside the lake, map colours stay normal and recording runs fully.';
+      }
+      if (formHint) {
+        formHint.textContent =
+          'Draw the lake shoreline. Outside is greyed on the map; leave suppress + auto-stop on to stop tracking if a phone leaves the lake.';
+      }
+      const shape = $('#geofenceShapeType');
+      if (shape && applyDefaults) {
+        shape.value = 'polygon';
+        updateShapeFields();
+      }
+      if (applyDefaults) {
+        if ($('#geofenceSuppressRecording')) $('#geofenceSuppressRecording').checked = true;
+        if ($('#geofenceAutoStop')) $('#geofenceAutoStop').checked = true;
+        if ($('#geofenceAutoStart')) $('#geofenceAutoStart').checked = true;
+        if ($('#geofenceDisableCapsize')) $('#geofenceDisableCapsize').checked = false;
+        if ($('#geofenceName') && !$('#geofenceName').value.trim()) {
+          $('#geofenceName').placeholder = 'Lake Karapiro';
+        }
+      }
+      if ($('#geofenceDisableCapsizeLabel')) {
+        $('#geofenceDisableCapsizeLabel').textContent = 'Disable capsize outside lake';
+      }
+      if ($('#geofenceSuppressLabel')) {
+        $('#geofenceSuppressLabel').textContent = 'Suppress recording outside lake';
+      }
+      if ($('#geofenceAutoStopLabel')) {
+        $('#geofenceAutoStopLabel').textContent = 'Auto-stop session when outside';
+      }
+      if ($('#geofenceAutoStartLabel')) {
+        $('#geofenceAutoStartLabel').textContent = 'Auto-start when entering lake (standby)';
+      }
+      return;
+    }
+
+    if (legend) legend.textContent = 'In-zone behaviour';
+    if (hint) hint.textContent = 'Boat park: apply these while inside the zone.';
+    if (formHint) formHint.textContent = 'Create a boat-park, lake boundary, or hazard zone.';
+    if ($('#geofenceDisableCapsizeLabel')) {
+      $('#geofenceDisableCapsizeLabel').textContent = 'Disable capsize in zone';
+    }
+    if ($('#geofenceSuppressLabel')) {
+      $('#geofenceSuppressLabel').textContent = 'Suppress recording in zone';
+    }
+    if ($('#geofenceAutoStopLabel')) {
+      $('#geofenceAutoStopLabel').textContent = 'Auto-stop session on enter';
+    }
+    if ($('#geofenceAutoStartLabel')) {
+      $('#geofenceAutoStartLabel').textContent = 'Auto-start on exit (standby)';
+    }
+
     if (kind !== 'hazard') return;
     const notify = $('#geofenceNotifyEnter');
-    if (notify && !notify.checked) notify.checked = true;
+    if (notify && applyDefaults && !notify.checked) notify.checked = true;
     const msg = $('#geofenceNotifyMessage');
     const name = $('#geofenceName')?.value?.trim();
     if (msg && !msg.value.trim() && name) {

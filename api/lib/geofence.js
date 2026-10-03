@@ -115,17 +115,44 @@ function pointInZoneGeometry(g, lat, lon) {
 }
 
 function pointInGeofence(g, lat, lon) {
-  if (!g || g.enabled === false || g.kind !== 'boat_park') return false;
+  if (!g || g.enabled === false || normalizeGeofenceKind(g.kind) !== 'boat_park') {
+    return false;
+  }
   return pointInZoneGeometry(g, lat, lon);
+}
+
+/**
+ * Session "restricted" zone at this point:
+ * - boat_park: inside the park
+ * - lake: outside the lake boundary
+ */
+function isSessionRestrictedAt(g, lat, lon) {
+  if (!g || g.enabled === false) return false;
+  const kind = normalizeGeofenceKind(g.kind);
+  if (kind === 'hazard') return false;
+  const inside = pointInZoneGeometry(g, lat, lon);
+  if (kind === 'lake') return !inside;
+  if (kind === 'boat_park') return inside;
+  return false;
+}
+
+/** @param {Array<object>} geofences */
+function findSessionRestrictionAt(lat, lon, geofences) {
+  if (!Array.isArray(geofences)) return null;
+  for (const g of geofences) {
+    if (normalizeGeofenceKind(g.kind) !== 'lake') continue;
+    if (isSessionRestrictedAt(g, lat, lon)) return g;
+  }
+  for (const g of geofences) {
+    if (normalizeGeofenceKind(g.kind) !== 'boat_park') continue;
+    if (isSessionRestrictedAt(g, lat, lon)) return g;
+  }
+  return null;
 }
 
 /** @param {Array<object>} geofences */
 function findBoatParkAt(lat, lon, geofences) {
-  if (!Array.isArray(geofences)) return null;
-  for (const g of geofences) {
-    if (pointInGeofence(g, lat, lon)) return g;
-  }
-  return null;
+  return findSessionRestrictionAt(lat, lon, geofences);
 }
 
 function economyIntervalSecFromInput(input) {
@@ -219,14 +246,10 @@ function findNotifyZoneAt(lat, lon, geofences) {
   return null;
 }
 
-/** Find a boat-park zone that suppresses recording at this point. */
+/** Find a session-restriction zone that suppresses recording at this point. */
 function findSuppressRecordingAt(lat, lon, geofences) {
-  if (!Array.isArray(geofences)) return null;
-  for (const g of geofences) {
-    if (!pointInGeofence(g, lat, lon)) continue;
-    if (g.suppressRecording !== true) continue;
-    return g;
-  }
+  const match = findSessionRestrictionAt(lat, lon, geofences);
+  if (match && match.suppressRecording === true) return match;
   return null;
 }
 
@@ -261,7 +284,7 @@ function toTraccarGeofence(g) {
   const norm = g && g.shapeType != null ? g : normalizeGeofence(g);
   const area = toTraccarArea(norm);
   if (!area) return null;
-  const kind = String(norm.kind || 'boat_park').toLowerCase() === 'hazard' ? 'hazard' : 'boat_park';
+  const kind = normalizeGeofenceKind(norm.kind);
   return {
     id: norm.id,
     name: norm.name,
@@ -274,10 +297,12 @@ function toTraccarGeofence(g) {
   };
 }
 
-/** Normalize geofence kind to boat_park | hazard. */
+/** Normalize geofence kind to boat_park | hazard | lake. */
 function normalizeGeofenceKind(input, fallback = 'boat_park') {
   const k = String(input ?? fallback ?? 'boat_park').trim().toLowerCase();
-  return k === 'hazard' ? 'hazard' : 'boat_park';
+  if (k === 'hazard') return 'hazard';
+  if (k === 'lake' || k === 'water') return 'lake';
+  return 'boat_park';
 }
 
 /** Enabled hazard zones containing this point. */
@@ -313,6 +338,8 @@ module.exports = {
   polygonBoundingRadiusM,
   pointInZoneGeometry,
   pointInGeofence,
+  isSessionRestrictedAt,
+  findSessionRestrictionAt,
   findBoatParkAt,
   findNotifyZoneAt,
   findHazardZonesAt,

@@ -1,10 +1,15 @@
 /**
  * Armed geofence standby: low-rate GPS watch while idle.
- * Auto-starts a session after dwell outside a zone with autoStartOnExit.
+ * Auto-starts after dwell in the "allowed" state for autoStartOnExit zones
+ * (outside boat park, or inside lake boundary).
  */
 import type { RecorderSettings } from '@rowing/telemetry-types';
 import { startGpsWatcher } from '@rowing/sensor-adapters';
-import { findBoatParkAt, type GeofenceConfig } from './geofence';
+import {
+  findSessionRestrictionAt,
+  normalizeGeofenceKind,
+  type GeofenceConfig,
+} from './geofence';
 import { fetchGeofences } from './geofence-service';
 
 export type StandbyStatus = {
@@ -89,7 +94,7 @@ export async function startGeofenceStandby(
       emit('Armed — waiting for GPS (no auto-start zones yet)');
     } else {
       hooks.onLog(
-        `Geofence standby armed — auto-start after leaving park (${autoStartZones().length} zone(s)).`,
+        `Geofence standby armed — auto-start when allowed (${autoStartZones().length} zone(s)).`,
       );
       emit('Armed — waiting for GPS…');
     }
@@ -106,13 +111,13 @@ export async function startGeofenceStandby(
     const elapsed = Date.now() - outsideSinceMs;
     if (elapsed < dwellMs) {
       const left = Math.ceil((dwellMs - elapsed) / 1000);
-      emit(`Outside park — auto-start in ${left}s`);
+      emit(`Ready — auto-start in ${left}s`);
       return;
     }
 
     startTriggered = true;
     emit('Starting session…');
-    hooks.onLog('Left geofence — auto-starting session.');
+    hooks.onLog('Geofence allowed — auto-starting session.');
     void Promise.resolve(hooks.onAutoStart()).catch((e) => {
       startTriggered = false;
       outsideSinceMs = null;
@@ -136,14 +141,19 @@ export async function startGeofenceStandby(
       return;
     }
 
-    const match = findBoatParkAt(lat, lon, geofences);
+    const match = findSessionRestrictionAt(lat, lon, geofences);
     const blocking = match != null && match.autoStartOnExit === true;
     inside = blocking;
     zoneName = blocking ? match!.name : null;
 
     if (blocking) {
       outsideSinceMs = null;
-      emit(`In ${match!.name} — leave park to auto-start`);
+      const kind = normalizeGeofenceKind(match!.kind);
+      emit(
+        kind === 'lake'
+          ? `Outside ${match!.name} — enter lake to auto-start`
+          : `In ${match!.name} — leave park to auto-start`,
+      );
       return;
     }
 

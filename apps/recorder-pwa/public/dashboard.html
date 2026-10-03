@@ -324,7 +324,7 @@
           <form id="geofenceForm" class="geofence-form">
             <div class="geofence-form__head">
               <h3 class="geofence-form__title" id="geofenceFormTitle">Add zone</h3>
-              <p class="geofence-form__hint" id="geofenceFormHint">Create a new boat-park or hazard zone.</p>
+              <p class="geofence-form__hint" id="geofenceFormHint">Create a boat-park, lake boundary, or hazard zone.</p>
             </div>
             <input type="hidden" id="geofenceEditId" value="" />
 
@@ -339,6 +339,7 @@
                   Kind
                   <select id="geofenceKind" aria-label="Geofence kind">
                     <option value="boat_park" selected>Boat park / economy</option>
+                    <option value="lake">Lake boundary (record inside)</option>
                     <option value="hazard">Hazard (register + map)</option>
                   </select>
                 </label>
@@ -387,7 +388,8 @@
             </fieldset>
 
             <fieldset class="geofence-fieldset">
-              <legend>In-zone behaviour</legend>
+              <legend id="geofenceBehaviourLegend">In-zone behaviour</legend>
+              <p class="geofence-form__hint" id="geofenceBehaviourHint">Boat park: apply these while inside the zone.</p>
               <div class="geofence-field-grid geofence-field-grid--2">
                 <label class="ahd-field">
                   Economy interval (s)
@@ -401,19 +403,19 @@
               <div class="geofence-check-grid">
                 <label class="ahd-field geofence-form__check">
                   <input type="checkbox" id="geofenceDisableCapsize" checked />
-                  Disable capsize in zone
+                  <span id="geofenceDisableCapsizeLabel">Disable capsize in zone</span>
                 </label>
                 <label class="ahd-field geofence-form__check">
                   <input type="checkbox" id="geofenceSuppressRecording" />
-                  Suppress recording in zone
+                  <span id="geofenceSuppressLabel">Suppress recording in zone</span>
                 </label>
                 <label class="ahd-field geofence-form__check">
                   <input type="checkbox" id="geofenceAutoStop" />
-                  Auto-stop session on enter
+                  <span id="geofenceAutoStopLabel">Auto-stop session on enter</span>
                 </label>
                 <label class="ahd-field geofence-form__check">
                   <input type="checkbox" id="geofenceAutoStart" />
-                  Auto-start on exit (standby)
+                  <span id="geofenceAutoStartLabel">Auto-start on exit (standby)</span>
                 </label>
               </div>
             </fieldset>

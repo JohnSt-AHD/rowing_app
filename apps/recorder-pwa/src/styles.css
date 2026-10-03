@@ -620,6 +620,11 @@
   background: rgba(14, 116, 144, 0.22);
 }
 
+.session-zone-badge[data-zone='outside_lake'] {
+  border-color: rgba(148, 163, 184, 0.55);
+  background: rgba(51, 65, 85, 0.45);
+}
+
 .session-zone-badge[data-zone='boat_park'] {
   border-color: rgba(245, 158, 11, 0.5);
   background: rgba(180, 83, 9, 0.2);
@@ -635,6 +640,10 @@
 
 .session-zone-badge[data-zone='on_water'] .session-zone-badge__label {
   color: #7dd3fc;
+}
+
+.session-zone-badge[data-zone='outside_lake'] .session-zone-badge__label {
+  color: #cbd5e1;
 }
 
 .session-zone-badge[data-zone='boat_park'] .session-zone-badge__label {
