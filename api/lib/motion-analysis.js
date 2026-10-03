@@ -17,7 +17,11 @@ const DEFAULTS = {
   capsizeHoldMs: 400,
   capsizeClearDot: 0.55,
   capsizeClearHoldMs: 1000,
-  hpWindowMs: 450,
+  /**
+   * High-pass window for surge. Slightly longer than a typical catch→finish
+   * micro-dip so drive double-peaks are smoothed without erasing the catch check.
+   */
+  hpWindowMs: 550,
 };
 
 function clamp(v, lo, hi) {
@@ -55,6 +59,69 @@ function movingAverage(values, centerIdx, radius) {
     }
   }
   return n ? sum / n : values[centerIdx];
+}
+
+/**
+ * @param {number[]} hp
+ * @param {number[]} times
+ * @param {number} minProminence
+ * @param {number} minIntervalMs
+ * @param {'peak'|'valley'} kind
+ * @returns {{ t: number, v: number }[]}
+ */
+function collectExtrema(hp, times, minProminence, minIntervalMs, kind) {
+  /** @type {{ t: number, v: number }[]} */
+  const out = [];
+  for (let i = 2; i < hp.length - 2; i++) {
+    const v = hp[i];
+    const isExt =
+      kind === 'peak'
+        ? v >= hp[i - 1] && v >= hp[i + 1] && v >= hp[i - 2] && v >= hp[i + 2]
+        : v <= hp[i - 1] && v <= hp[i + 1] && v <= hp[i - 2] && v <= hp[i + 2];
+    if (!isExt) continue;
+    if (kind === 'peak' ? v < minProminence : v > -minProminence) continue;
+
+    const last = out[out.length - 1];
+    if (last && times[i] - last.t < minIntervalMs) {
+      const stronger = kind === 'peak' ? v > last.v : v < last.v;
+      if (stronger) out[out.length - 1] = { t: times[i], v };
+      continue;
+    }
+    out.push({ t: times[i], v });
+  }
+  return out;
+}
+
+/**
+ * @param {{ t: number, v: number }[]} events
+ * @param {number} minIntervalMs
+ * @param {number} maxIntervalMs
+ * @param {number} minSpm
+ * @param {number} maxSpm
+ * @returns {{ score: number, spm: number|null, intervals: number[] }}
+ */
+function scoreStrokeEvents(events, minIntervalMs, maxIntervalMs, minSpm, maxSpm) {
+  if (events.length < 3) return { score: -1, spm: null, intervals: [] };
+  /** @type {number[]} */
+  const intervals = [];
+  for (let i = 1; i < events.length; i++) {
+    const dtMs = events[i].t - events[i - 1].t;
+    if (dtMs >= minIntervalMs && dtMs <= maxIntervalMs) intervals.push(dtMs);
+  }
+  if (intervals.length < 2) return { score: -1, spm: null, intervals };
+
+  const sorted = [...intervals].sort((a, b) => a - b);
+  const medianMs = sorted[Math.floor(sorted.length / 2)];
+  const spm = Math.round((60000 / medianMs) * 10) / 10;
+  if (spm < minSpm || spm > maxSpm) return { score: -1, spm: null, intervals };
+
+  const mean = intervals.reduce((s, v) => s + v, 0) / intervals.length;
+  const spread =
+    intervals.reduce((s, v) => s + Math.abs(v - mean), 0) / intervals.length / mean;
+  const meanDepth =
+    events.reduce((s, e) => s + Math.abs(e.v), 0) / Math.max(1, events.length);
+  const score = intervals.length * 2 + meanDepth * 3 - spread * 8;
+  return { score, spm, intervals };
 }
 
 /**
@@ -204,57 +271,50 @@ class MotionAnalyzer {
     else if (sz >= sx && sz >= sy) axis = 'lz';
 
     const raw = linear.map((s) => s[axis]);
+    const times = linear.map((s) => s.t);
     const dt =
-      (linear[linear.length - 1].t - linear[0].t) / Math.max(1, linear.length - 1);
+      (times[times.length - 1] - times[0]) / Math.max(1, times.length - 1);
     const radius = Math.max(2, Math.round(this.opts.hpWindowMs / Math.max(1, dt)));
     const hp = raw.map((v, i) => v - movingAverage(raw, i, radius));
 
     const rms = Math.sqrt(hp.reduce((s, v) => s + v * v, 0) / hp.length);
-    const minProminence = Math.max(0.08, rms * 0.35);
+    const minProminence = Math.max(0.12, rms * 0.45);
 
-    /** @type {{ t: number, v: number }[]} */
-    const peaks = [];
-    for (let i = 2; i < hp.length - 2; i++) {
-      const v = hp[i];
-      if (v <= hp[i - 1] || v <= hp[i + 1]) continue;
-      if (v < minProminence) continue;
+    // Prefer catch valleys (see packages/motion-analysis); score peaks for flipped axis.
+    const valleys = collectExtrema(
+      hp,
+      times,
+      minProminence,
+      this.minPeakIntervalMs,
+      'valley',
+    );
+    const peaks = collectExtrema(
+      hp,
+      times,
+      minProminence,
+      this.minPeakIntervalMs,
+      'peak',
+    );
 
-      const last = peaks[peaks.length - 1];
-      if (last && linear[i].t - last.t < this.minPeakIntervalMs) {
-        if (v > last.v) peaks[peaks.length - 1] = { t: linear[i].t, v };
-        continue;
-      }
-      peaks.push({ t: linear[i].t, v });
-    }
+    const valleyScore = scoreStrokeEvents(
+      valleys,
+      this.minPeakIntervalMs,
+      this.maxPeakIntervalMs,
+      this.minSpm,
+      this.maxSpm,
+    );
+    const peakScore = scoreStrokeEvents(
+      peaks,
+      this.minPeakIntervalMs,
+      this.maxPeakIntervalMs,
+      this.minSpm,
+      this.maxSpm,
+    );
 
-    this.peaks = peaks;
-    if (peaks.length < 3) {
-      this.strokeRate = null;
-      return;
-    }
-
-    /** @type {number[]} */
-    const intervals = [];
-    for (let i = 1; i < peaks.length; i++) {
-      const dtMs = peaks[i].t - peaks[i - 1].t;
-      if (dtMs >= this.minPeakIntervalMs && dtMs <= this.maxPeakIntervalMs) {
-        intervals.push(dtMs);
-      }
-    }
-    if (intervals.length < 2) {
-      this.strokeRate = null;
-      return;
-    }
-
-    intervals.sort((a, b) => a - b);
-    const medianMs = intervals[Math.floor(intervals.length / 2)];
-    const spm = Math.round((60000 / medianMs) * 10) / 10;
-
-    if (spm >= this.minSpm && spm <= this.maxSpm) {
-      this.strokeRate = spm;
-    } else {
-      this.strokeRate = null;
-    }
+    const usePeaks = peakScore.score > valleyScore.score + 1.5;
+    const chosen = usePeaks ? peakScore : valleyScore;
+    this.peaks = usePeaks ? peaks : valleys;
+    this.strokeRate = chosen.spm;
   }
 
   /** @returns {{ strokeRate: number|null, capsize: boolean, tiltDeg: number|null, calibrated: boolean }} */
