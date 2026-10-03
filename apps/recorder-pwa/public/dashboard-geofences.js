@@ -33,7 +33,10 @@
 
   const LAKE_SHORE_STYLE = {
     color: '#94a3b8',
-    fillOpacity: 0,
+    // Stroke only — a filled shore (even at fillOpacity 0) is still hit-testable in
+    // SVG, and bindPopup's click handler calls DomEvent.stop, which blocks map clicks
+    // used for Draw polygon / Pick centre inside the lake hole.
+    fill: false,
     weight: 2,
     dashArray: '4 3',
   };

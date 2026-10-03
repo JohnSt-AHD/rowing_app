@@ -381,7 +381,7 @@ export function mountApp(root: HTMLElement): void {
         }).addTo(sessionMapGeofenceLayer);
         L.polygon(hole, {
           color: '#94a3b8',
-          fillOpacity: 0,
+          fill: false,
           weight: 2,
           dashArray: '4 3',
         })
