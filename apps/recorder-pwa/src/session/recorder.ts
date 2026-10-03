@@ -28,7 +28,13 @@ import {
   syncNativeCapsizeUpright,
   syncNativeStrokeRate,
 } from '../lib/native-capsize-monitor';
-import { findBoatParkAt, entryNotifyMessageFor, findNotifyZoneAt, type GeofenceConfig } from '../lib/geofence';
+import {
+  distanceM,
+  findBoatParkAt,
+  entryNotifyMessageFor,
+  findNotifyZoneAt,
+  type GeofenceConfig,
+} from '../lib/geofence';
 import { fetchGeofences } from '../lib/geofence-service';
 import {
   maybeNotifyGeofenceEntry,
@@ -54,6 +60,8 @@ export type RecorderStats = {
   lastGps?: { t: number; lat: number; lon: number; spd?: number };
   /** Latest GPS speed (m/s) for pace display. */
   speedMps?: number;
+  /** Cumulative path distance this session (metres). */
+  distanceM: number;
   pendingOutbox: number;
   strokeRate?: number;
   tiltDeg?: number;
@@ -154,8 +162,21 @@ export async function startRecorder(
     gpsCount: 0,
     motionCount: 0,
     hrCount: 0,
+    distanceM: 0,
     pendingOutbox: 0,
   };
+
+  /** Ignore GPS jitter / teleport glitches when accumulating path distance. */
+  const MIN_DISTANCE_STEP_M = 2.5;
+  const MAX_DISTANCE_STEP_M = 80;
+
+  function accumulateDistance(lat: number, lon: number): void {
+    const prev = stats.lastGps;
+    if (!prev) return;
+    const step = distanceM(prev.lat, prev.lon, lat, lon);
+    if (step < MIN_DISTANCE_STEP_M || step > MAX_DISTANCE_STEP_M) return;
+    stats.distanceM += step;
+  }
 
   let latestHr: TelemetrySample['hr'];
   let latestMotion: TelemetrySample['motion'];
@@ -694,6 +715,7 @@ export async function startRecorder(
           if (pulse.nativeGpsCount != null) {
             stats.gpsCount = pulse.nativeGpsCount;
           }
+          accumulateDistance(g.lat, g.lon);
           stats.lastGps = {
             t: g.t,
             lat: g.lat,
@@ -710,6 +732,7 @@ export async function startRecorder(
         (r) => {
           if (stopped) return;
           stats.gpsCount++;
+          accumulateDistance(r.lat, r.lon);
           stats.lastGps = { t: r.t, lat: r.lat, lon: r.lon, spd: r.spd };
           if (r.spd != null && r.spd >= 0) stats.speedMps = r.spd;
           checkGeofenceAt(r.lat, r.lon);

@@ -42,7 +42,17 @@ import {
   getSessionTrailLatLon,
   pushSessionSpeedSample,
 } from '../lib/session-speed-buffer';
-import { drawSpeedTimeChart } from '../lib/session-speed-chart';
+import {
+  drawSpeedTimeChart,
+  paceBandFromPrognostic,
+  speedChartColorForPrognostic,
+  type PaceBandId,
+} from '../lib/session-speed-chart';
+import {
+  parseBoatClass,
+  prognosticPercent,
+  speedMpsForPrognostic,
+} from '@rowing/rowing-pace';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { resolveResumeCandidate } from '../lib/session-resume';
@@ -126,10 +136,12 @@ export function mountApp(root: HTMLElement): void {
       btn.textContent =
         document.fullscreenElement === stage ? 'Exit fullscreen' : 'Fullscreen';
     }
+    updatePaceFullscreenTheme();
     if (document.fullscreenElement === stage) {
       requestAnimationFrame(() => {
         refreshFsPanels();
         if (fsTab === 'map') invalidateSessionMap();
+        updatePaceFullscreenTheme();
       });
     }
   });
@@ -142,6 +154,7 @@ export function mountApp(root: HTMLElement): void {
     requestAnimationFrame(() => {
       refreshFsPanels();
       if (fsTab === 'map') invalidateSessionMap();
+      updatePaceFullscreenTheme();
     });
   };
   window.addEventListener('resize', onFsViewportChange);
@@ -281,6 +294,12 @@ export function mountApp(root: HTMLElement): void {
       return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     }
     return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  function formatDistanceM(metres: number | null | undefined): string {
+    if (metres == null || !Number.isFinite(metres) || metres < 0) return '—';
+    if (metres < 1000) return `${Math.round(metres)} m`;
+    return `${(metres / 1000).toFixed(2)} km`;
   }
 
   async function exitStageFullscreen(): Promise<void> {
@@ -455,11 +474,29 @@ export function mountApp(root: HTMLElement): void {
       x: (s.t - now) / 60_000,
       y: s.speedMps * 3.6,
     }));
+    const s = loadSettings();
+    const boat = parseBoatClass(s.boatClass, s.deviceId, s.athleteId);
+    const bandPcts = [60, 70, 80, 90];
+    const prognosticBands = boat
+      ? bandPcts
+          .map((pct) => {
+            const mps = speedMpsForPrognostic(pct, boat);
+            return mps != null && Number.isFinite(mps)
+              ? { pct, yKmh: mps * 3.6 }
+              : null;
+          })
+          .filter((b): b is { pct: number; yKmh: number } => b != null)
+      : [];
+    const lastMps =
+      samples.length > 0 ? samples[samples.length - 1].speedMps : null;
+    const pct =
+      lastMps != null && boat ? prognosticPercent(lastMps, boat) : null;
     drawSpeedTimeChart(canvas, points, {
       title: 'Speed vs time (last 8 min)',
       yLabel: 'km/h',
       xLabel: 'min',
-      color: '#00e5ff',
+      color: speedChartColorForPrognostic(pct),
+      prognosticBands,
     });
   }
 
@@ -478,6 +515,31 @@ export function mountApp(root: HTMLElement): void {
       );
     });
     refreshFsPanels();
+    updatePaceFullscreenTheme();
+  }
+
+  function currentPacePrognosticPct(): number | null {
+    const avgMps = speedAvg.average();
+    if (avgMps == null || !Number.isFinite(avgMps) || avgMps < 0.15) return null;
+    const s = loadSettings();
+    const boat = parseBoatClass(s.boatClass, s.deviceId, s.athleteId);
+    if (!boat) return null;
+    return prognosticPercent(avgMps, boat);
+  }
+
+  /** Colour Metrics/Map fullscreen pages by pace prognostic; keep text readable. */
+  function updatePaceFullscreenTheme(): void {
+    const stage = root.querySelector('[data-session-stage]') as HTMLElement | null;
+    if (!stage) return;
+    const fsOn =
+      stage.classList.contains('session-stage--fullscreen') ||
+      document.fullscreenElement === stage;
+    const pacePage = fsOn && (fsTab === 'metrics' || fsTab === 'map');
+    const band: PaceBandId = pacePage
+      ? paceBandFromPrognostic(currentPacePrognosticPct())
+      : 'idle';
+    stage.dataset.pacePage = pacePage ? '1' : '0';
+    stage.dataset.paceBand = band;
   }
 
   function refreshFsPanels(): void {
@@ -506,6 +568,7 @@ export function mountApp(root: HTMLElement): void {
     setHudText('[data-hud-spm]', displaySpm);
 
     setHudText('[data-hud-hr]', stats?.lastHr != null ? String(stats.lastHr) : '—');
+    setHudText('[data-hud-distance]', formatDistanceM(stats?.distanceM));
 
     if (stats?.speedMps != null && stats.speedMps >= 0.15) {
       speedAvg.push(stats.speedMps);
@@ -589,6 +652,7 @@ export function mountApp(root: HTMLElement): void {
 
     if (fsTab === 'speed') refreshSpeedChart();
     if (fsTab === 'map' && sessionMap) updateSessionMapOverlay();
+    updatePaceFullscreenTheme();
   }
 
   function startHudTimer(): void {
@@ -747,6 +811,10 @@ export function mountApp(root: HTMLElement): void {
                   <span class="session-metric__value" data-hud-timer-metric>0:00</span>
                   <span class="session-metric__label">Time</span>
                 </div>
+                <div class="session-metric session-metric--distance">
+                  <span class="session-metric__value" data-hud-distance>—</span>
+                  <span class="session-metric__label">Distance</span>
+                </div>
                 <div class="session-metric session-metric--spm">
                   <span class="session-metric__value" data-hud-spm>—</span>
                   <span class="session-metric__label">Strokes /min</span>
@@ -760,6 +828,10 @@ export function mountApp(root: HTMLElement): void {
                 <div class="session-metric session-metric--timer">
                   <span class="session-metric__value" data-hud-timer-metric>0:00</span>
                   <span class="session-metric__label">Time</span>
+                </div>
+                <div class="session-metric session-metric--distance">
+                  <span class="session-metric__value" data-hud-distance>—</span>
+                  <span class="session-metric__label">Distance</span>
                 </div>
                 <div class="session-metric session-metric--spm">
                   <span class="session-metric__value" data-hud-spm>—</span>

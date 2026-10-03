@@ -506,7 +506,7 @@
 
 .session-live-hud__metrics {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 0.35rem 0.5rem;
 }
 
@@ -840,8 +840,8 @@
 }
 
 .session-live-hud__metrics--secondary {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  width: min(100%, 28rem);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: min(100%, 32rem);
   gap: 0.5rem 0.75rem;
 }
 
@@ -1001,7 +1001,7 @@
 
 .session-fs-panel--split .session-live-hud__metrics,
 .session-fs-metrics-side .session-live-hud__metrics {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 /* Fullscreen live dashboard */
