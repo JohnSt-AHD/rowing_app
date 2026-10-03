@@ -86,6 +86,11 @@ function formatClassShort(boatClass: string): string {
   return `${m[3]}${type}`;
 }
 
+/** Sync snapshot of last known coaches/boats (localStorage or built-in defaults). */
+export function getCachedFleetConfig(): FleetConfig {
+  return readCache() ?? defaultFleetConfig();
+}
+
 export async function fetchFleetConfig(force = false): Promise<FleetConfig> {
   if (!force) {
     const cached = readCache();

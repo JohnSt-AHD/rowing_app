@@ -72,9 +72,10 @@ export class MetricRollingAvg {
 export function updateSpectrumRail(
   el: HTMLElement | null,
   t: number | undefined,
-  idleColor = 'hsl(220, 22%, 18%)',
+  options?: { fillColor?: string; idleColor?: string },
 ): void {
   if (!el) return;
+  const idleColor = options?.idleColor ?? 'hsl(220, 22%, 18%)';
   const marker = el.querySelector('[data-rail-marker]') as HTMLElement | null;
   if (t == null) {
     el.style.backgroundColor = idleColor;
@@ -82,7 +83,7 @@ export function updateSpectrumRail(
     return;
   }
   const ct = clamp01(t);
-  el.style.backgroundColor = rainbowColor(ct);
+  el.style.backgroundColor = options?.fillColor ?? rainbowColor(ct);
   if (marker) {
     marker.style.opacity = '1';
     marker.style.top = `${railPositionFromT(ct)}%`;

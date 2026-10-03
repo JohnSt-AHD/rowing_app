@@ -813,7 +813,8 @@ export async function startRecorder(
     }),
     flush: () => pushBatch(),
     async connectHr() {
-      if (!settings.enableHr) return;
+      // Explicit Connect from the UI — enable HR even if the session started with it off.
+      settings.enableHr = true;
       if (hrMonitor) await hrMonitor.disconnect();
       hrMonitor = await connectHeartRate(
         (r) => {
@@ -835,6 +836,7 @@ export async function startRecorder(
         (m) => onLog(`HR: ${m}`),
       );
       if (hrMonitor) onLog(`Connected: ${hrMonitor.name}`);
+      else onLog('HR: no monitor selected.');
     },
     async stopForGeofenceStandby() {
       stopped = true;

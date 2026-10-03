@@ -366,10 +366,18 @@
   accent-color: var(--ahd-accent);
 }
 
-.check .form-hint {
+.check .form-hint,
+.fieldset .form-hint {
   font-weight: 400;
   font-size: 0.78rem;
   color: var(--ahd-muted);
+  margin: 0.35rem 0 0;
+  line-height: 1.35;
+}
+
+.fieldset .hub-btn[data-action='connect-hr'] {
+  margin-top: 0.65rem;
+  width: 100%;
 }
 
 .ahd-recorder-main .hub-panel,
@@ -651,17 +659,21 @@
   content: '';
   position: absolute;
   inset: 0;
+  /* Prognostic bands: top ≥90 red → 80–90 orange → 70–80 yellow → 60–70 green → <60 cyan */
   background: linear-gradient(
     to bottom,
-    hsl(300, 90%, 50%) 0%,
-    hsl(240, 90%, 50%) 18%,
-    hsl(180, 90%, 50%) 36%,
-    hsl(120, 90%, 50%) 52%,
-    hsl(60, 90%, 50%) 68%,
-    hsl(30, 90%, 50%) 84%,
-    hsl(0, 90%, 50%) 100%
+    #ef4444 0%,
+    #ef4444 10%,
+    #f97316 22%,
+    #f97316 34%,
+    #fbbf24 46%,
+    #fbbf24 58%,
+    #34d399 70%,
+    #34d399 82%,
+    #00e5ff 94%,
+    #00e5ff 100%
   );
-  opacity: 0.22;
+  opacity: 0.28;
 }
 
 .spectrum-rail--speed {
@@ -1017,195 +1029,29 @@
   background: #0a1628;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
     env(safe-area-inset-left);
-  transition: background-color 0.35s ease, color 0.25s ease;
 }
 
-/* Metrics / Map fullscreen: page colour = pace prognostic band (readable text) */
-.session-stage:fullscreen[data-pace-page='1'],
-.session-stage--fullscreen[data-pace-page='1'] {
-  background: var(--fs-pace-bg, #0a1628);
-  color: var(--fs-pace-text, #e8f4fc);
+/* Fullscreen: triple-width pace/HR spectrum rails */
+.session-stage:fullscreen .spectrum-rail,
+.session-stage--fullscreen .spectrum-rail {
+  width: 48px;
 }
 
-.session-stage:fullscreen[data-pace-page='1'][data-pace-band='blue'],
-.session-stage--fullscreen[data-pace-page='1'][data-pace-band='blue'] {
-  --fs-pace-bg: #00e5ff;
-  --fs-pace-text: #0a1628;
-  --fs-pace-muted: #155e75;
-  --fs-pace-accent: #0a1628;
-  --fs-pace-panel: rgba(10, 22, 40, 0.14);
-  --fs-pace-border: rgba(10, 22, 40, 0.3);
-  --fs-pace-chip-bg: rgba(10, 22, 40, 0.88);
-  --fs-pace-chip-text: #e8f4fc;
+.session-stage:fullscreen .spectrum-rail__marker,
+.session-stage--fullscreen .spectrum-rail__marker {
+  left: 3px;
+  right: 3px;
+  height: 12px;
+  border-radius: 4px;
 }
 
-.session-stage:fullscreen[data-pace-page='1'][data-pace-band='green'],
-.session-stage--fullscreen[data-pace-page='1'][data-pace-band='green'] {
-  --fs-pace-bg: #34d399;
-  --fs-pace-text: #0a1628;
-  --fs-pace-muted: #14532d;
-  --fs-pace-accent: #0a1628;
-  --fs-pace-panel: rgba(10, 22, 40, 0.14);
-  --fs-pace-border: rgba(10, 22, 40, 0.3);
-  --fs-pace-chip-bg: rgba(10, 22, 40, 0.88);
-  --fs-pace-chip-text: #e8f4fc;
-}
-
-.session-stage:fullscreen[data-pace-page='1'][data-pace-band='yellow'],
-.session-stage--fullscreen[data-pace-page='1'][data-pace-band='yellow'] {
-  --fs-pace-bg: #fbbf24;
-  --fs-pace-text: #0a1628;
-  --fs-pace-muted: #713f12;
-  --fs-pace-accent: #0a1628;
-  --fs-pace-panel: rgba(10, 22, 40, 0.14);
-  --fs-pace-border: rgba(10, 22, 40, 0.32);
-  --fs-pace-chip-bg: rgba(10, 22, 40, 0.9);
-  --fs-pace-chip-text: #f8fafc;
-}
-
-.session-stage:fullscreen[data-pace-page='1'][data-pace-band='orange'],
-.session-stage--fullscreen[data-pace-page='1'][data-pace-band='orange'] {
-  --fs-pace-bg: #f97316;
-  --fs-pace-text: #0a1628;
-  --fs-pace-muted: #7c2d12;
-  --fs-pace-accent: #0a1628;
-  --fs-pace-panel: rgba(10, 22, 40, 0.14);
-  --fs-pace-border: rgba(10, 22, 40, 0.32);
-  --fs-pace-chip-bg: rgba(10, 22, 40, 0.9);
-  --fs-pace-chip-text: #f8fafc;
-}
-
-.session-stage:fullscreen[data-pace-page='1'][data-pace-band='red'],
-.session-stage--fullscreen[data-pace-page='1'][data-pace-band='red'] {
-  --fs-pace-bg: #ef4444;
-  --fs-pace-text: #ffffff;
-  --fs-pace-muted: #fee2e2;
-  --fs-pace-accent: #ffffff;
-  --fs-pace-panel: rgba(10, 22, 40, 0.2);
-  --fs-pace-border: rgba(255, 255, 255, 0.35);
-  --fs-pace-chip-bg: rgba(10, 22, 40, 0.88);
-  --fs-pace-chip-text: #f8fafc;
-}
-
-.session-stage:fullscreen[data-pace-page='1'][data-pace-band='idle'],
-.session-stage--fullscreen[data-pace-page='1'][data-pace-band='idle'] {
-  --fs-pace-bg: #0a1628;
-  --fs-pace-text: #e8f4fc;
-  --fs-pace-muted: #94a3b8;
-  --fs-pace-accent: #00e5ff;
-  --fs-pace-panel: rgba(15, 35, 58, 0.96);
-  --fs-pace-border: rgba(56, 189, 248, 0.35);
-  --fs-pace-chip-bg: rgba(10, 22, 40, 0.88);
-  --fs-pace-chip-text: #e8f4fc;
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-live-hud,
-.session-stage--fullscreen[data-pace-page='1'] .session-live-hud {
-  background: transparent;
-  border-color: var(--fs-pace-border);
-  color: var(--fs-pace-text);
-  box-shadow: none;
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-fs-timer,
-.session-stage--fullscreen[data-pace-page='1'] .session-fs-timer,
-.session-stage:fullscreen[data-pace-page='1'] .session-metric__value,
-.session-stage--fullscreen[data-pace-page='1'] .session-metric__value,
-.session-stage:fullscreen[data-pace-page='1'] .session-metric--pace-hero .session-metric__value,
-.session-stage--fullscreen[data-pace-page='1'] .session-metric--pace-hero .session-metric__value,
-.session-stage:fullscreen[data-pace-page='1'] .session-metric--timer .session-metric__value,
-.session-stage--fullscreen[data-pace-page='1'] .session-metric--timer .session-metric__value,
-.session-stage:fullscreen[data-pace-page='1'] .session-metric--spm .session-metric__value,
-.session-stage--fullscreen[data-pace-page='1'] .session-metric--spm .session-metric__value {
-  color: var(--fs-pace-text);
-  -webkit-text-fill-color: var(--fs-pace-text);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-metric__label,
-.session-stage--fullscreen[data-pace-page='1'] .session-metric__label,
-.session-stage:fullscreen[data-pace-page='1'] .session-metric--pace-hero .session-metric__label,
-.session-stage--fullscreen[data-pace-page='1'] .session-metric--pace-hero .session-metric__label,
-.session-stage:fullscreen[data-pace-page='1'] .session-fs-tab,
-.session-stage--fullscreen[data-pace-page='1'] .session-fs-tab,
-.session-stage:fullscreen[data-pace-page='1'] .session-zone-badge__label,
-.session-stage--fullscreen[data-pace-page='1'] .session-zone-badge__label,
-.session-stage:fullscreen[data-pace-page='1'] .session-zone-badge__sub,
-.session-stage--fullscreen[data-pace-page='1'] .session-zone-badge__sub {
-  color: var(--fs-pace-muted);
-  -webkit-text-fill-color: var(--fs-pace-muted);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-fs-tab[aria-selected='true'],
-.session-stage--fullscreen[data-pace-page='1'] .session-fs-tab[aria-selected='true'] {
-  color: var(--fs-pace-accent);
-  -webkit-text-fill-color: var(--fs-pace-accent);
-  border-color: var(--fs-pace-border);
-  background: var(--fs-pace-panel);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-fs-chrome,
-.session-stage--fullscreen[data-pace-page='1'] .session-fs-chrome {
-  border-color: var(--fs-pace-border);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .hub-btn--ghost,
-.session-stage--fullscreen[data-pace-page='1'] .hub-btn--ghost,
-.session-stage:fullscreen[data-pace-page='1'] .session-map-follow,
-.session-stage--fullscreen[data-pace-page='1'] .session-map-follow {
-  color: var(--fs-pace-chip-text);
-  -webkit-text-fill-color: var(--fs-pace-chip-text);
-  background: var(--fs-pace-chip-bg);
-  border-color: var(--fs-pace-border);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-map-follow.is-active,
-.session-stage--fullscreen[data-pace-page='1'] .session-map-follow.is-active {
-  color: var(--fs-pace-text);
-  -webkit-text-fill-color: var(--fs-pace-text);
-  background: var(--fs-pace-panel);
-  border-color: var(--fs-pace-border);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-metrics-ticket,
-.session-stage--fullscreen[data-pace-page='1'] .session-metrics-ticket {
-  background: var(--fs-pace-chip-bg);
-  border-color: var(--fs-pace-border);
-  color: var(--fs-pace-chip-text);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-metrics-ticket .session-metric__value,
-.session-stage--fullscreen[data-pace-page='1'] .session-metrics-ticket .session-metric__value {
-  color: var(--fs-pace-chip-text);
-  -webkit-text-fill-color: var(--fs-pace-chip-text);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-metrics-ticket .session-metric__label,
-.session-stage--fullscreen[data-pace-page='1'] .session-metrics-ticket .session-metric__label {
-  color: rgba(248, 250, 252, 0.75);
-  -webkit-text-fill-color: rgba(248, 250, 252, 0.75);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-zone-badge,
-.session-stage--fullscreen[data-pace-page='1'] .session-zone-badge {
-  background: var(--fs-pace-panel);
-  border-color: var(--fs-pace-border);
-  color: var(--fs-pace-text);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-live-hud__regatta,
-.session-stage--fullscreen[data-pace-page='1'] .session-live-hud__regatta {
-  background: var(--fs-pace-panel);
-  border-color: var(--fs-pace-border);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-live-hud__regatta-label,
-.session-stage--fullscreen[data-pace-page='1'] .session-live-hud__regatta-label {
-  color: var(--fs-pace-muted);
-}
-
-.session-stage:fullscreen[data-pace-page='1'] .session-live-hud__regatta-text,
-.session-stage--fullscreen[data-pace-page='1'] .session-live-hud__regatta-text {
-  color: var(--fs-pace-text);
+.session-stage:fullscreen .spectrum-rail__legend,
+.session-stage:fullscreen .spectrum-rail__fast,
+.session-stage:fullscreen .spectrum-rail__slow,
+.session-stage--fullscreen .spectrum-rail__legend,
+.session-stage--fullscreen .spectrum-rail__fast,
+.session-stage--fullscreen .spectrum-rail__slow {
+  font-size: 0.85rem;
 }
 
 .session-stage:fullscreen .hub-topbar,
@@ -1228,8 +1074,8 @@
   min-width: 0;
   max-width: none;
   overflow: hidden;
-  padding-left: 22px;
-  padding-right: 22px;
+  padding-left: 56px;
+  padding-right: 56px;
 }
 
 .session-stage:fullscreen .ahd-recorder-shell,
@@ -1428,8 +1274,8 @@
 
   .session-stage:fullscreen .session-stage__inner,
   .session-stage--fullscreen .session-stage__inner {
-    padding-left: 28px;
-    padding-right: 28px;
+    padding-left: 68px;
+    padding-right: 68px;
   }
 
   .session-stage:fullscreen .session-fs-panel--map.is-active,
@@ -1507,6 +1353,11 @@
 
   .spectrum-rail {
     width: 20px;
+  }
+
+  .session-stage:fullscreen .spectrum-rail,
+  .session-stage--fullscreen .spectrum-rail {
+    width: 60px;
   }
 
   .session-stage__inner {

@@ -3,6 +3,7 @@ import {
   fetchFleetConfig,
   findBoat,
   findCoach,
+  getCachedFleetConfig,
   type FleetConfig,
 } from '../lib/fleet-config';
 import {
@@ -44,9 +45,7 @@ import {
 } from '../lib/session-speed-buffer';
 import {
   drawSpeedTimeChart,
-  paceBandFromPrognostic,
   speedChartColorForPrognostic,
-  type PaceBandId,
 } from '../lib/session-speed-chart';
 import {
   parseBoatClass,
@@ -100,7 +99,7 @@ function asset(path: string): string {
 
 export function mountApp(root: HTMLElement): void {
   let view: View = 'record';
-  let fleetConfigCache: FleetConfig | null = null;
+  let fleetConfigCache: FleetConfig | null = getCachedFleetConfig();
   let recording = false;
   let capsizeActive = false;
   let backgroundStatus: BackgroundStatus = 'foreground';
@@ -136,12 +135,10 @@ export function mountApp(root: HTMLElement): void {
       btn.textContent =
         document.fullscreenElement === stage ? 'Exit fullscreen' : 'Fullscreen';
     }
-    updatePaceFullscreenTheme();
     if (document.fullscreenElement === stage) {
       requestAnimationFrame(() => {
         refreshFsPanels();
         if (fsTab === 'map') invalidateSessionMap();
-        updatePaceFullscreenTheme();
       });
     }
   });
@@ -154,7 +151,6 @@ export function mountApp(root: HTMLElement): void {
     requestAnimationFrame(() => {
       refreshFsPanels();
       if (fsTab === 'map') invalidateSessionMap();
-      updatePaceFullscreenTheme();
     });
   };
   window.addEventListener('resize', onFsViewportChange);
@@ -169,7 +165,8 @@ export function mountApp(root: HTMLElement): void {
     const t = new Date().toLocaleTimeString();
     logLines.unshift(`[${t}] ${msg}`);
     if (logLines.length > 80) logLines.length = 80;
-    if (rerender) render();
+    // Full page rebuild wipes the Settings form (focus + unsaved edits).
+    if (rerender && view !== 'settings') render();
     else refreshLogPre();
   };
 
@@ -216,7 +213,7 @@ export function mountApp(root: HTMLElement): void {
       if (errors.length) {
         for (const err of errors.slice(0, 3)) pushLog(err, false);
         refreshLogPre();
-        render();
+        if (view !== 'settings') render();
         if (/failed to fetch|timed out/i.test(errors[0])) {
           pushLog('Tip: stop session, check signal, Settings → Test upload.');
         }
@@ -515,31 +512,6 @@ export function mountApp(root: HTMLElement): void {
       );
     });
     refreshFsPanels();
-    updatePaceFullscreenTheme();
-  }
-
-  function currentPacePrognosticPct(): number | null {
-    const avgMps = speedAvg.average();
-    if (avgMps == null || !Number.isFinite(avgMps) || avgMps < 0.15) return null;
-    const s = loadSettings();
-    const boat = parseBoatClass(s.boatClass, s.deviceId, s.athleteId);
-    if (!boat) return null;
-    return prognosticPercent(avgMps, boat);
-  }
-
-  /** Colour Metrics/Map fullscreen pages by pace prognostic; keep text readable. */
-  function updatePaceFullscreenTheme(): void {
-    const stage = root.querySelector('[data-session-stage]') as HTMLElement | null;
-    if (!stage) return;
-    const fsOn =
-      stage.classList.contains('session-stage--fullscreen') ||
-      document.fullscreenElement === stage;
-    const pacePage = fsOn && (fsTab === 'metrics' || fsTab === 'map');
-    const band: PaceBandId = pacePage
-      ? paceBandFromPrognostic(currentPacePrognosticPct())
-      : 'idle';
-    stage.dataset.pacePage = pacePage ? '1' : '0';
-    stage.dataset.paceBand = band;
   }
 
   function refreshFsPanels(): void {
@@ -590,15 +562,30 @@ export function mountApp(root: HTMLElement): void {
       });
     }
 
+    const boat = parseBoatClass(s.boatClass, s.deviceId, s.athleteId);
+    const paceProgPct =
+      avgMps != null && boat ? prognosticPercent(avgMps, boat) : null;
     const splitSec = splitSecFromMps(avgMps);
     updateSpectrumRail(
       root.querySelector('[data-rail-speed]') as HTMLElement | null,
       splitSec != null ? splitSecToT(splitSec) : undefined,
+      {
+        fillColor:
+          paceProgPct != null
+            ? speedChartColorForPrognostic(paceProgPct)
+            : undefined,
+      },
     );
     const hr = stats?.lastHr;
+    const hrT = hr != null && hr > 0 ? hrToT(hr) : undefined;
     updateSpectrumRail(
       root.querySelector('[data-rail-hr]') as HTMLElement | null,
-      hr != null && hr > 0 ? hrToT(hr) : undefined,
+      hrT,
+      {
+        // Same band thresholds as pace prognostic: 60–70 green … ≥90 red.
+        fillColor:
+          hrT != null ? speedChartColorForPrognostic(hrT * 100) : undefined,
+      },
     );
 
     const capsizeEl = root.querySelector('[data-hud-capsize]');
@@ -652,7 +639,6 @@ export function mountApp(root: HTMLElement): void {
 
     if (fsTab === 'speed') refreshSpeedChart();
     if (fsTab === 'map' && sessionMap) updateSessionMapOverlay();
-    updatePaceFullscreenTheme();
   }
 
   function startHudTimer(): void {
@@ -668,6 +654,94 @@ export function mountApp(root: HTMLElement): void {
     if (recording && view === 'record') {
       updateLiveHud();
       refreshFsPanels();
+    }
+  }
+
+  /** Rebuild UI unless Settings is open (avoids wiping form focus / edits). */
+  function renderUnlessSettings(): void {
+    if (view === 'settings') {
+      refreshLogPre();
+      void updatePending();
+      return;
+    }
+    render();
+  }
+
+  function fleetOptionsEqual(a: FleetConfig, b: FleetConfig): boolean {
+    if (a.coaches.length !== b.coaches.length || a.boats.length !== b.boats.length) {
+      return false;
+    }
+    for (let i = 0; i < a.coaches.length; i++) {
+      if (a.coaches[i].id !== b.coaches[i].id || a.coaches[i].name !== b.coaches[i].name) {
+        return false;
+      }
+    }
+    for (let i = 0; i < a.boats.length; i++) {
+      if (
+        a.boats[i].id !== b.boats[i].id ||
+        a.boats[i].label !== b.boats[i].label ||
+        a.boats[i].boatClass !== b.boats[i].boatClass
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Refresh coach/boat dropdowns in place after a background fleet-config fetch. */
+  function patchFleetSelects(config: FleetConfig): void {
+    if (view !== 'settings') return;
+    const form = root.querySelector('[data-settings-form]') as HTMLFormElement | null;
+    if (!form) return;
+    const coachSel = form.querySelector('[name="coachId"]') as HTMLSelectElement | null;
+    const boatSel = form.querySelector('[name="boatId"]') as HTMLSelectElement | null;
+    const coachName = form.querySelector('[name="coachName"]') as HTMLInputElement | null;
+    const boatClass = form.querySelector('[name="boatClass"]') as HTMLInputElement | null;
+    const keepCoach = coachSel?.value ?? '';
+    const keepBoat = boatSel?.value ?? '';
+
+    if (coachSel) {
+      coachSel.innerHTML =
+        `<option value="">— select coach —</option>` +
+        config.coaches
+          .map(
+            (c) =>
+              `<option value="${esc(c.id)}" data-name="${esc(c.name)}"${keepCoach === c.id ? ' selected' : ''}>${esc(c.name)}</option>`,
+          )
+          .join('');
+      if (keepCoach && [...coachSel.options].some((o) => o.value === keepCoach)) {
+        coachSel.value = keepCoach;
+      }
+    }
+    if (boatSel) {
+      boatSel.innerHTML =
+        `<option value="">— select boat —</option>` +
+        config.boats
+          .map(
+            (b) =>
+              `<option value="${esc(b.id)}" data-class="${esc(b.boatClass)}"${keepBoat === b.id ? ' selected' : ''}>${esc(b.label)}</option>`,
+          )
+          .join('');
+      if (keepBoat && [...boatSel.options].some((o) => o.value === keepBoat)) {
+        boatSel.value = keepBoat;
+      }
+    }
+    if (coachSel && coachName) {
+      const opt = coachSel.selectedOptions[0];
+      coachName.value = opt?.dataset.name || opt?.textContent?.trim() || coachName.value;
+    }
+    if (boatSel && boatClass) {
+      const opt = boatSel.selectedOptions[0];
+      if (opt?.dataset.class) boatClass.value = opt.dataset.class;
+    }
+  }
+
+  async function refreshFleetConfigInBackground(): Promise<void> {
+    const prev = fleetConfigCache ?? getCachedFleetConfig();
+    const next = await fetchFleetConfig(true);
+    fleetConfigCache = next;
+    if (view === 'settings' && !fleetOptionsEqual(prev, next)) {
+      patchFleetSelects(next);
     }
   }
 
@@ -941,6 +1015,7 @@ export function mountApp(root: HTMLElement): void {
     return `
       <section class="hub-panel actions actions--recording session-actions-panel">
         <button type="button" class="hub-btn hub-btn--danger hub-btn-lg" data-action="stop">Stop session</button>
+        <button type="button" class="hub-btn" data-action="connect-hr">Connect HR monitor</button>
       </section>
     `;
   }
@@ -1056,7 +1131,22 @@ export function mountApp(root: HTMLElement): void {
               <legend>Sensors</legend>
               <label class="check"><input type="checkbox" name="enableGps" ${s.enableGps ? 'checked' : ''} /> GPS</label>
               <label class="check"><input type="checkbox" name="enableMotion" ${s.enableMotion ? 'checked' : ''} /> Accelerometer</label>
-              <label class="check"><input type="checkbox" name="enableHr" ${s.enableHr ? 'checked' : ''} /> Heart rate (BLE)</label>
+            </fieldset>
+            <fieldset class="fieldset checks">
+              <legend class="fieldset-legend-with-info">
+                Heart rate
+                <button type="button" class="info-btn" data-info-toggle aria-label="About heart rate">i</button>
+              </legend>
+              <p class="info-help" hidden>${esc(
+                'Put on a Bluetooth heart-rate strap, start a session, then tap Connect HR monitor and pick the strap from the list. On Android this uses Bluetooth LE; in a browser it needs Web Bluetooth (Chrome).',
+              )}</p>
+              <label class="check"><input type="checkbox" name="enableHr" ${s.enableHr ? 'checked' : ''} /> Enable heart rate</label>
+              <button type="button" class="hub-btn hub-btn--primary" data-action="connect-hr">Connect HR monitor</button>
+              <p class="form-hint">${
+                recording
+                  ? 'Session running — tap Connect to pair your strap now.'
+                  : 'Start a session on Record first, then Connect (button also appears while recording).'
+              }</p>
             </fieldset>
             <fieldset class="fieldset checks">
               <legend>Background recording</legend>
@@ -1082,6 +1172,44 @@ export function mountApp(root: HTMLElement): void {
         ${hubFooter()}
       </div>
     `;
+  }
+
+  async function connectHrMonitor(): Promise<void> {
+    const form = root.querySelector('[data-settings-form]') as HTMLFormElement | null;
+    const hrCheck = form?.querySelector('[name="enableHr"]') as HTMLInputElement | null;
+    if (hrCheck) hrCheck.checked = true;
+
+    const next = { ...loadSettings(), enableHr: true };
+    saveSettings(next);
+    settings = next;
+
+    if (!recording || !controller) {
+      pushLog(
+        'Heart rate enabled. Start a session on Record, then tap Connect HR monitor.',
+        false,
+      );
+      pushLog(
+        'Tip: Connect HR also appears under Stop while a session is running.',
+        false,
+      );
+      if (view === 'settings') {
+        view = 'record';
+        render();
+      } else {
+        refreshLogPre();
+      }
+      return;
+    }
+
+    pushLog('Looking for a Bluetooth heart-rate strap…', false);
+    try {
+      await controller.connectHr();
+    } catch (e) {
+      pushLog(
+        `HR connect failed: ${e instanceof Error ? e.message : String(e)}`,
+        false,
+      );
+    }
   }
 
   function clearStandbyUi(): void {
@@ -1174,7 +1302,7 @@ export function mountApp(root: HTMLElement): void {
           clearInterval(nativeStandbyPollTimer);
           nativeStandbyPollTimer = null;
           standbyStatus = null;
-          render();
+          renderUnlessSettings();
         }
       })();
     }, 2000);
@@ -1420,11 +1548,13 @@ export function mountApp(root: HTMLElement): void {
       onLog: pushLog,
       onStatus: (status) => {
         backgroundStatus = status;
-        render();
+        renderUnlessSettings();
       },
     });
 
-    if (s.enableHr) pushLog('Use Connect HR strap when ready.');
+    if (s.enableHr) {
+      pushLog('Heart rate on — tap Connect HR monitor to pair your strap.', false);
+    }
     const batchMs = s.enableMotion ? Math.max(s.uploadBatchMs, 8000) : s.uploadBatchMs;
     const syncInterval = Math.max(4000, Math.min(batchMs, 12000));
     syncTimer = setInterval(() => void runSync(false), syncInterval);
@@ -1548,11 +1678,10 @@ export function mountApp(root: HTMLElement): void {
     });
 
     root.querySelector('[data-nav="settings"]')?.addEventListener('click', () => {
-      void (async () => {
-        fleetConfigCache = await fetchFleetConfig(true);
-        view = 'settings';
-        render();
-      })();
+      fleetConfigCache = fleetConfigCache ?? getCachedFleetConfig();
+      view = 'settings';
+      render();
+      void refreshFleetConfigInBackground();
     });
 
     const syncFleetFormFields = () => {
@@ -1591,8 +1720,8 @@ export function mountApp(root: HTMLElement): void {
       if (coach) next.athleteId = coach.name;
       saveSettings(next);
       settings = next;
-      pushLog('Settings saved.');
       view = 'record';
+      pushLog('Settings saved.', false);
       render();
     });
 
@@ -1607,14 +1736,24 @@ export function mountApp(root: HTMLElement): void {
         const setup = await prepareNativeRecordingSetup();
         if (setup) {
           for (const line of recordingSetupLogLines(setup)) {
-            pushLog(line);
+            pushLog(line, false);
           }
+          refreshLogPre();
         } else {
-          pushLog('Phone setup is only available in the Android app.');
+          pushLog('Phone setup is only available in the Android app.', false);
         }
       } catch (e) {
-        pushLog(`Phone setup error: ${e instanceof Error ? e.message : String(e)}`);
+        pushLog(
+          `Phone setup error: ${e instanceof Error ? e.message : String(e)}`,
+          false,
+        );
       }
+    });
+
+    root.querySelectorAll('[data-action="connect-hr"]').forEach((el) => {
+      el.addEventListener('click', () => {
+        void connectHrMonitor();
+      });
     });
 
     root.querySelector('[data-action="start"]')?.addEventListener('click', () => {
@@ -1690,6 +1829,7 @@ export function mountApp(root: HTMLElement): void {
   }
 
   render();
+  void refreshFleetConfigInBackground();
   void repairOversizedPendingOutbox().then((n) => {
     if (n > 0) pushLog(`Split ${n} oversized queued batch(es) for upload.`);
   });
