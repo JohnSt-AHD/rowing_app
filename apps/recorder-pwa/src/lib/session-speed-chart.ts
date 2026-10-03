@@ -45,7 +45,7 @@ export function paceBandFromPrognostic(pct: number | null | undefined): PaceBand
   return 'red';
 }
 
-/** Line/fill colour from prognostic % of the latest sample. */
+/** Line/fill colour for a prognostic % band (rails / fullscreen palette). */
 export function speedChartColorForPrognostic(pct: number | null | undefined): string {
   switch (paceBandFromPrognostic(pct)) {
     case 'blue':
@@ -61,6 +61,87 @@ export function speedChartColorForPrognostic(pct: number | null | undefined): st
     default:
       return '#00e5ff';
   }
+}
+
+/**
+ * Colour for a speed (km/h) from horizontal prognostic band thresholds.
+ * Bands are expected at 60 / 70 / 80 / 90% (y in km/h). Below the lowest → blue.
+ */
+export function speedChartColorForSpeedKmh(
+  yKmh: number,
+  bands: Array<{ pct: number; yKmh: number }>,
+): string {
+  if (!bands.length || !Number.isFinite(yKmh)) return speedChartColorForPrognostic(null);
+  const sorted = [...bands].sort((a, b) => a.yKmh - b.yKmh);
+  let floorPct = 0;
+  for (const b of sorted) {
+    if (yKmh >= b.yKmh) floorPct = b.pct;
+    else break;
+  }
+  return speedChartColorForPrognostic(floorPct);
+}
+
+/**
+ * Split the polyline so each piece stays inside one prognostic zone.
+ * Crossings of band y-thresholds become vertices so colour changes on the zone edge.
+ */
+function segmentPolylineByBands(
+  points: SpeedChartPoint[],
+  bands: Array<{ pct: number; yKmh: number }>,
+): Array<{ color: string; points: SpeedChartPoint[] }> {
+  if (points.length < 2) return [];
+  const thresholds = [...new Set(bands.map((b) => b.yKmh))]
+    .filter((y) => Number.isFinite(y) && y > 0)
+    .sort((a, b) => a - b);
+
+  const colorAt = (y: number) => speedChartColorForSpeedKmh(y, bands);
+
+  // Build a densified path with band-boundary vertices inserted.
+  const path: SpeedChartPoint[] = [{ ...points[0] }];
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    if (thresholds.length && Number.isFinite(a.y) && Number.isFinite(b.y) && a.y !== b.y) {
+      const lo = Math.min(a.y, b.y);
+      const hi = Math.max(a.y, b.y);
+      const crossings: SpeedChartPoint[] = [];
+      for (const ty of thresholds) {
+        if (ty <= lo || ty >= hi) continue;
+        const t = (ty - a.y) / (b.y - a.y);
+        if (t > 0 && t < 1) crossings.push({ x: a.x + t * (b.x - a.x), y: ty });
+      }
+      crossings.sort((p, q) => (a.y < b.y ? p.y - q.y : q.y - p.y));
+      for (const c of crossings) path.push(c);
+    }
+    path.push({ ...b });
+  }
+
+  const out: Array<{ color: string; points: SpeedChartPoint[] }> = [];
+  let curColor = colorAt(path[0].y);
+  let curPts: SpeedChartPoint[] = [path[0]];
+
+  for (let i = 1; i < path.length; i++) {
+    const prev = path[i - 1];
+    const next = path[i];
+    // Sample just inside the destination side so a vertex on a threshold
+    // picks the colour of the zone being entered.
+    const rising = next.y >= prev.y;
+    const sampleY = thresholds.some((ty) => Math.abs(next.y - ty) < 1e-9)
+      ? next.y + (rising ? 1e-6 : -1e-6)
+      : next.y;
+    const nextColor = colorAt(sampleY);
+
+    if (nextColor !== curColor) {
+      curPts.push(next);
+      if (curPts.length >= 2) out.push({ color: curColor, points: curPts });
+      curColor = nextColor;
+      curPts = [next];
+    } else {
+      curPts.push(next);
+    }
+  }
+  if (curPts.length >= 2) out.push({ color: curColor, points: curPts });
+  return out;
 }
 
 function niceTicks(min: number, max: number, count: number): number[] {
@@ -131,7 +212,11 @@ export function drawSpeedTimeChart(
   }
 
   const end = points[points.length - 1];
-  const lineColor = opts.color || '#00e5ff';
+  const useBandColors = bands.length > 0;
+  const endColor = useBandColors
+    ? speedChartColorForSpeedKmh(end.y, bands)
+    : opts.color || '#00e5ff';
+  const lineColor = endColor;
   const rgb = parseHexColor(lineColor);
 
   let minX = Math.min(...points.map((p) => p.x));
@@ -218,27 +303,47 @@ export function drawSpeedTimeChart(
   ctx.fillStyle = area;
   ctx.fill();
 
-  // Line
-  ctx.beginPath();
-  points.forEach((p, i) => {
-    const px = sx(p.x);
-    const py = sy(p.y);
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  });
-  ctx.strokeStyle = lineColor;
+  // Line — colour each section by the prognostic zone it sits in
   ctx.lineWidth = 2.5;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  ctx.shadowColor = rgba(rgb, 0.45);
-  ctx.shadowBlur = 8;
-  ctx.stroke();
-  ctx.shadowBlur = 0;
+  if (useBandColors) {
+    const segs = segmentPolylineByBands(points, bands);
+    for (const seg of segs) {
+      if (seg.points.length < 2) continue;
+      const segRgb = parseHexColor(seg.color);
+      ctx.beginPath();
+      seg.points.forEach((p, i) => {
+        const px = sx(p.x);
+        const py = sy(p.y);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.strokeStyle = seg.color;
+      ctx.shadowColor = rgba(segRgb, 0.45);
+      ctx.shadowBlur = 8;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+  } else {
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      const px = sx(p.x);
+      const py = sy(p.y);
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.strokeStyle = lineColor;
+    ctx.shadowColor = rgba(rgb, 0.45);
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
 
   // End marker
   ctx.beginPath();
   ctx.arc(sx(end.x), sy(end.y), 4, 0, Math.PI * 2);
-  ctx.fillStyle = lineColor;
+  ctx.fillStyle = endColor;
   ctx.fill();
   ctx.strokeStyle = '#0a1628';
   ctx.lineWidth = 1.5;
