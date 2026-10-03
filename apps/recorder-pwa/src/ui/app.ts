@@ -137,16 +137,16 @@ export function mountApp(root: HTMLElement): void {
   document.addEventListener('fullscreenchange', () => {
     const stage = root.querySelector('[data-session-stage]');
     if (!stage) return;
-    stage.classList.toggle(
-      'session-stage--fullscreen',
-      document.fullscreenElement === stage,
-    );
-    const btn = root.querySelector('[data-action="toggle-fullscreen"]');
-    if (btn) {
-      btn.textContent =
-        document.fullscreenElement === stage ? 'Exit fullscreen' : 'Fullscreen';
+    // Recording always uses the immersive layout; browser FS is optional chrome-hide.
+    if (recording) {
+      stage.classList.add('session-stage--fullscreen');
+    } else {
+      stage.classList.toggle(
+        'session-stage--fullscreen',
+        document.fullscreenElement === stage,
+      );
     }
-    if (document.fullscreenElement === stage) {
+    if (document.fullscreenElement === stage || recording) {
       requestAnimationFrame(() => {
         refreshFsPanels();
         if (fsTab === 'map') invalidateSessionMap();
@@ -154,15 +154,26 @@ export function mountApp(root: HTMLElement): void {
     }
   });
 
-  const onFsViewportChange = () => {
-    const stage = root.querySelector('[data-session-stage]');
-    if (!stage?.classList.contains('session-stage--fullscreen') && document.fullscreenElement !== stage) {
+  const isLandscapeOrientation = (): boolean =>
+    window.matchMedia('(orientation: landscape)').matches;
+
+  function syncSessionViewForOrientation(): void {
+    const landscape = isLandscapeOrientation();
+    const tabs = root.querySelector('.session-fs-tabs') as HTMLElement | null;
+    if (tabs) tabs.hidden = !landscape;
+    if (!landscape && fsTab !== 'metrics') {
+      setFsTab('metrics');
       return;
     }
     requestAnimationFrame(() => {
       refreshFsPanels();
       if (fsTab === 'map') invalidateSessionMap();
     });
+  }
+
+  const onFsViewportChange = () => {
+    if (!recording) return;
+    syncSessionViewForOrientation();
   };
   window.addEventListener('resize', onFsViewportChange);
   window.addEventListener('orientationchange', onFsViewportChange);
@@ -308,6 +319,18 @@ export function mountApp(root: HTMLElement): void {
     if (metres == null || !Number.isFinite(metres) || metres < 0) return '—';
     if (metres < 1000) return `${Math.round(metres)} m`;
     return `${(metres / 1000).toFixed(2)} km`;
+  }
+
+  async function enterStageFullscreen(): Promise<void> {
+    const stage = root.querySelector('[data-session-stage]') as HTMLElement | null;
+    if (!stage) return;
+    stage.classList.add('session-stage--fullscreen');
+    if (document.fullscreenElement === stage) return;
+    try {
+      await stage.requestFullscreen();
+    } catch {
+      /* Immersive CSS layout still applies without browser fullscreen. */
+    }
   }
 
   async function exitStageFullscreen(): Promise<void> {
@@ -530,17 +553,19 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function setFsTab(tab: FsTab): void {
-    fsTab = tab;
+    // Portrait only supports fullscreen metrics; graph/map are landscape-only.
+    const next = !isLandscapeOrientation() && tab !== 'metrics' ? 'metrics' : tab;
+    fsTab = next;
     root.querySelectorAll('[data-fs-tab]').forEach((btn) => {
       btn.setAttribute(
         'aria-selected',
-        btn.getAttribute('data-fs-tab') === tab ? 'true' : 'false',
+        btn.getAttribute('data-fs-tab') === next ? 'true' : 'false',
       );
     });
     root.querySelectorAll('[data-fs-panel]').forEach((panel) => {
       panel.classList.toggle(
         'is-active',
-        panel.getAttribute('data-fs-panel') === tab,
+        panel.getAttribute('data-fs-panel') === next,
       );
     });
     refreshFsPanels();
@@ -968,18 +993,19 @@ export function mountApp(root: HTMLElement): void {
 
   function liveHudHtml(): string {
     const regattaText = controller?.getStats()?.regattaMessage?.text?.trim() || '';
+    const landscape = isLandscapeOrientation();
+    if (!landscape && fsTab !== 'metrics') fsTab = 'metrics';
     return `
       <section class="session-live-hud" aria-live="polite">
         <div class="session-fs-chrome">
           <span class="session-fs-timer" data-hud-timer>0:00</span>
-          <nav class="session-fs-tabs" aria-label="Fullscreen view">
+          <nav class="session-fs-tabs" aria-label="Session view" ${landscape ? '' : 'hidden'}>
             <button type="button" class="session-fs-tab" data-fs-tab="metrics" aria-selected="${fsTab === 'metrics' ? 'true' : 'false'}">Metrics</button>
-            <button type="button" class="session-fs-tab" data-fs-tab="speed" aria-selected="${fsTab === 'speed' ? 'true' : 'false'}">Speed</button>
+            <button type="button" class="session-fs-tab" data-fs-tab="speed" aria-selected="${fsTab === 'speed' ? 'true' : 'false'}">Graph</button>
             <button type="button" class="session-fs-tab" data-fs-tab="map" aria-selected="${fsTab === 'map' ? 'true' : 'false'}">Map</button>
           </nav>
           <div class="session-fs-chrome__actions">
             <button type="button" class="hub-btn hub-btn--danger session-fs-chrome__stop" data-action="stop">Stop</button>
-            <button type="button" class="hub-btn hub-btn--ghost session-live-hud__fs" data-action="toggle-fullscreen">Fullscreen</button>
           </div>
         </div>
         <div class="session-live-hud__alert" data-hud-capsize ${capsizeActive ? '' : 'hidden'} role="alert">
@@ -1020,7 +1046,7 @@ export function mountApp(root: HTMLElement): void {
 
   function wrapRecordingStage(body: string): string {
     return `
-      <div class="session-stage" data-session-stage>
+      <div class="session-stage session-stage--fullscreen" data-session-stage>
         ${spectrumRailsHtml()}
         <div class="session-stage__inner">${body}</div>
       </div>
@@ -1629,6 +1655,7 @@ export function mountApp(root: HTMLElement): void {
     void runSync(false);
     render();
     startHudTimer();
+    await enterStageFullscreen();
   }
 
   async function tryAutoResume(reason?: string): Promise<void> {
@@ -1871,20 +1898,6 @@ export function mountApp(root: HTMLElement): void {
         const tab = btn.getAttribute('data-fs-tab') as FsTab | null;
         if (tab === 'metrics' || tab === 'speed' || tab === 'map') setFsTab(tab);
       });
-    });
-
-    root.querySelector('[data-action="toggle-fullscreen"]')?.addEventListener('click', async () => {
-      const stage = root.querySelector('[data-session-stage]') as HTMLElement | null;
-      if (!stage) return;
-      try {
-        if (document.fullscreenElement === stage) {
-          await document.exitFullscreen();
-        } else {
-          await stage.requestFullscreen();
-        }
-      } catch {
-        pushLog('Fullscreen not supported on this device.');
-      }
     });
 
     root.querySelectorAll('[data-action="clear-session"]').forEach((el) => {
