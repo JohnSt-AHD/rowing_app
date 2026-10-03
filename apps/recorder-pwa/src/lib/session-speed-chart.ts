@@ -7,7 +7,61 @@ export type SpeedChartOptions = {
   yLabel?: string;
   xLabel?: string;
   color?: string;
+  /** Horizontal prognostic band lines (y in km/h). */
+  prognosticBands?: Array<{ pct: number; yKmh: number }>;
 };
+
+type Rgba = { r: number; g: number; b: number };
+
+function parseHexColor(hex: string): Rgba {
+  const h = hex.replace('#', '');
+  const full =
+    h.length === 3
+      ? h
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : h;
+  return {
+    r: parseInt(full.slice(0, 2), 16),
+    g: parseInt(full.slice(2, 4), 16),
+    b: parseInt(full.slice(4, 6), 16),
+  };
+}
+
+function rgba(c: Rgba, a: number): string {
+  return `rgba(${c.r}, ${c.g}, ${c.b}, ${a})`;
+}
+
+export type PaceBandId = 'idle' | 'blue' | 'green' | 'yellow' | 'orange' | 'red';
+
+/** Band id from prognostic % of the current pace. */
+export function paceBandFromPrognostic(pct: number | null | undefined): PaceBandId {
+  if (pct == null || !Number.isFinite(pct)) return 'idle';
+  if (pct < 60) return 'blue';
+  if (pct < 70) return 'green';
+  if (pct < 80) return 'yellow';
+  if (pct < 90) return 'orange';
+  return 'red';
+}
+
+/** Line/fill colour from prognostic % of the latest sample. */
+export function speedChartColorForPrognostic(pct: number | null | undefined): string {
+  switch (paceBandFromPrognostic(pct)) {
+    case 'blue':
+      return '#00e5ff';
+    case 'green':
+      return '#34d399';
+    case 'yellow':
+      return '#fbbf24';
+    case 'orange':
+      return '#f97316';
+    case 'red':
+      return '#ef4444';
+    default:
+      return '#00e5ff';
+  }
+}
 
 function niceTicks(min: number, max: number, count: number): number[] {
   if (max <= min) return [min];
@@ -42,12 +96,14 @@ export function drawSpeedTimeChart(
   const w = cssW;
   const h = cssH;
   const padL = 42;
-  const padR = 14;
+  const padR = 36;
   const padT = 36;
   const padB = 28;
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
-  const lineColor = opts.color || '#00e5ff';
+  const bands = (opts.prognosticBands || []).filter(
+    (b) => Number.isFinite(b.yKmh) && b.yKmh > 0,
+  );
   const title = opts.title || 'Speed vs time (last 8 min)';
 
   ctx.clearRect(0, 0, w, h);
@@ -74,10 +130,18 @@ export function drawSpeedTimeChart(
     return;
   }
 
+  const end = points[points.length - 1];
+  const lineColor = opts.color || '#00e5ff';
+  const rgb = parseHexColor(lineColor);
+
   let minX = Math.min(...points.map((p) => p.x));
   let maxX = Math.max(...points.map((p) => p.x));
   let minY = Math.min(...points.map((p) => p.y));
   let maxY = Math.max(...points.map((p) => p.y));
+  for (const b of bands) {
+    minY = Math.min(minY, b.yKmh);
+    maxY = Math.max(maxY, b.yKmh);
+  }
   if (maxX - minX < 1e-6) maxX = minX + 1;
   if (maxY - minY < 1e-6) {
     minY = Math.max(0, minY - 1);
@@ -114,6 +178,27 @@ export function drawSpeedTimeChart(
     ctx.fillText(String(Math.round(tx * 10) / 10), px, h - 9);
   }
 
+  // Prognostic horizontal bands (60 / 70 / 80 / 90%)
+  for (const band of bands) {
+    const py = sy(band.yKmh);
+    if (py < padT || py > padT + plotH) continue;
+    const bandColor = speedChartColorForPrognostic(band.pct);
+    const bandRgb = parseHexColor(bandColor);
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = rgba(bandRgb, 0.55);
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.moveTo(padL, py);
+    ctx.lineTo(padL + plotW, py);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = rgba(bandRgb, 0.9);
+    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${band.pct}%`, padL + plotW + 4, py + 3);
+  }
+
   // Area under curve
   ctx.beginPath();
   points.forEach((p, i) => {
@@ -128,8 +213,8 @@ export function drawSpeedTimeChart(
   ctx.lineTo(sx(first.x), padT + plotH);
   ctx.closePath();
   const area = ctx.createLinearGradient(0, padT, 0, padT + plotH);
-  area.addColorStop(0, 'rgba(0, 229, 255, 0.28)');
-  area.addColorStop(1, 'rgba(0, 229, 255, 0.02)');
+  area.addColorStop(0, rgba(rgb, 0.28));
+  area.addColorStop(1, rgba(rgb, 0.02));
   ctx.fillStyle = area;
   ctx.fill();
 
@@ -145,13 +230,12 @@ export function drawSpeedTimeChart(
   ctx.lineWidth = 2.5;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  ctx.shadowColor = 'rgba(0, 229, 255, 0.45)';
+  ctx.shadowColor = rgba(rgb, 0.45);
   ctx.shadowBlur = 8;
   ctx.stroke();
   ctx.shadowBlur = 0;
 
   // End marker
-  const end = points[points.length - 1];
   ctx.beginPath();
   ctx.arc(sx(end.x), sy(end.y), 4, 0, Math.PI * 2);
   ctx.fillStyle = lineColor;

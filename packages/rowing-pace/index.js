@@ -185,6 +185,20 @@ export function prognosticPercent(speedMps, boatClass) {
 }
 
 /**
+ * Speed (m/s) that equals a prognostic % for the boat class.
+ * @param {number} percent e.g. 60, 70, 80, 90
+ * @param {string|null} boatClass
+ * @returns {number|null}
+ */
+export function speedMpsForPrognostic(percent, boatClass) {
+  const refSec = reference2kSec(boatClass);
+  const pct = Number(percent);
+  if (refSec == null || !Number.isFinite(pct) || pct <= 0) return null;
+  // pct = (refSec / (2000 / speedMps)) * 100  →  speedMps = 20 * pct / refSec
+  return (20 * pct) / refSec;
+}
+
+/**
  * @param {number} speedMps
  * @param {string|null} boatClass
  * @returns {string|null}
