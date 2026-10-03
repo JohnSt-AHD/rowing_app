@@ -20,6 +20,7 @@ import {
   formatSplitSec,
   hrVsTimeSeries,
   maxDistance,
+  resolveTrackBoatClass,
   speedVsDistanceSeries,
   speedVsTimeSeries,
   strokeRateSeries,
@@ -106,11 +107,15 @@ const REVIEW_HTML = `
         </div>
       </div>
       <div class="history-swipe__footer" data-swipe-footer hidden>
-        <div class="history-swipe__dots" data-swipe-dots role="tablist" aria-label="Review displays">
-          ${PANES.map(
-            (p, i) =>
-              `<button type="button" class="history-swipe__dot${i === 0 ? ' is-active' : ''}" data-dot="${p.id}" role="tab" aria-selected="${i === 0 ? 'true' : 'false'}" aria-label="${p.label}"></button>`,
-          ).join('')}
+        <div class="history-swipe__nav">
+          <button type="button" class="history-swipe__nav-btn" data-pane-prev aria-label="Previous view">←</button>
+          <div class="history-swipe__dots" data-swipe-dots role="tablist" aria-label="Review displays">
+            ${PANES.map(
+              (p, i) =>
+                `<button type="button" class="history-swipe__dot${i === 0 ? ' is-active' : ''}" data-dot="${p.id}" role="tab" aria-selected="${i === 0 ? 'true' : 'false'}" aria-label="${p.label}"></button>`,
+            ).join('')}
+          </div>
+          <button type="button" class="history-swipe__nav-btn" data-pane-next aria-label="Next view">→</button>
         </div>
         <p class="history-swipe__label" data-pane-label>Metrics</p>
       </div>
@@ -187,15 +192,14 @@ export class HistoryPanel {
         this.scrollToPane(id);
       });
     });
+    host.querySelector('[data-pane-prev]')?.addEventListener('click', () => this.stepPane(-1));
+    host.querySelector('[data-pane-next]')?.addEventListener('click', () => this.stepPane(1));
 
     host.tabIndex = 0;
     host.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-      const idx = this.paneIndex(this.activePane);
-      const next = e.key === 'ArrowRight' ? idx + 1 : idx - 1;
-      if (next < 0 || next >= PANES.length) return;
       e.preventDefault();
-      this.scrollToPane(PANES[next].id);
+      this.stepPane(e.key === 'ArrowRight' ? 1 : -1);
     });
 
     const tlMount = this.q<HTMLElement>('[data-timeline-mount]');
@@ -452,9 +456,17 @@ export class HistoryPanel {
         : sessions
             .map(
               (s: SessionSummary) =>
-                `<option value="${esc(s.session_id)}" data-from="${esc(s.started_at)}" data-to="${esc(s.ended_at ?? '')}" ${s.session_id === selectedId ? 'selected' : ''}>${esc(formatSessionLabel(s.started_at))}</option>`,
+                `<option value="${esc(s.session_id)}" data-from="${esc(s.started_at)}" data-to="${esc(s.ended_at ?? '')}" data-boat-class="${esc(s.boat_class ?? '')}" data-athlete-id="${esc(s.athlete_id ?? '')}" ${s.session_id === selectedId ? 'selected' : ''}>${esc(formatSessionLabel(s.started_at))}</option>`,
             )
             .join('');
+  }
+
+  private selectedSessionMeta(): { boatClass: string | null; athleteId: string | null } {
+    const sel = this.q<HTMLSelectElement>('[data-session-select]');
+    const opt = sel?.selectedOptions[0];
+    const boatClass = String(opt?.dataset.boatClass ?? '').trim() || null;
+    const athleteId = String(opt?.dataset.athleteId ?? '').trim() || null;
+    return { boatClass, athleteId };
   }
 
   private restoreSessionSelect(): void {
@@ -522,11 +534,18 @@ export class HistoryPanel {
     try {
       const loaded: DeviceTrack[] = [];
 
+      const sessionMeta = this.selectedSessionMeta();
+
       if (sessionId && devices.length === 1) {
         this.setLoading(true, `Loading session for ${devices[0]}…`);
         const dash = await loadSessionDashboard(settings, sessionId);
         if (token !== this.autoLoadToken) return;
-        loaded.push(buildDeviceTrack(devices[0], colorForDevice(0), dash.track ?? []));
+        loaded.push(
+          buildDeviceTrack(devices[0], colorForDevice(0), dash.track ?? [], {
+            boatClass: dash.boatClass ?? sessionMeta.boatClass,
+            athleteId: dash.athleteId ?? sessionMeta.athleteId,
+          }),
+        );
         if (dash.from && dash.to) fromTo = { from: dash.from, to: dash.to };
         else if ((dash.track ?? []).length) {
           const tr = dash.track!;
@@ -549,7 +568,12 @@ export class HistoryPanel {
           this.setLoading(true, `Loading ${deviceId} (${i + 1}/${devices.length})…`);
           const payload = await loadDeviceHistoryRange(settings, deviceId, fromTo.from, fromTo.to);
           if (token !== this.autoLoadToken) return;
-          loaded.push(buildDeviceTrack(deviceId, colorForDevice(i), payload.track ?? []));
+          loaded.push(
+            buildDeviceTrack(deviceId, colorForDevice(i), payload.track ?? [], {
+              boatClass: payload.boatClass ?? (deviceId === this.primaryDeviceId() ? sessionMeta.boatClass : null),
+              athleteId: payload.athleteId ?? (deviceId === this.primaryDeviceId() ? sessionMeta.athleteId : null),
+            }),
+          );
         }
       }
 
@@ -584,6 +608,13 @@ export class HistoryPanel {
 
   private paneIndex(id: PaneId): number {
     return PANES.findIndex((p) => p.id === id);
+  }
+
+  private stepPane(delta: number): void {
+    const idx = this.paneIndex(this.activePane);
+    const next = idx + delta;
+    if (next < 0 || next >= PANES.length) return;
+    this.scrollToPane(PANES[next].id);
   }
 
   private scrollToPane(id: PaneId): void {
@@ -638,6 +669,11 @@ export class HistoryPanel {
       btn.classList.toggle('is-active', active);
       btn.setAttribute('aria-selected', active ? 'true' : 'false');
     });
+    const idx = this.paneIndex(this.activePane);
+    const prevBtn = this.q<HTMLButtonElement>('[data-pane-prev]');
+    const nextBtn = this.q<HTMLButtonElement>('[data-pane-next]');
+    if (prevBtn) prevBtn.disabled = idx <= 0;
+    if (nextBtn) nextBtn.disabled = idx >= PANES.length - 1;
   }
 
   private refreshViews(): void {
@@ -738,10 +774,14 @@ export class HistoryPanel {
   private renderCharts(): void {
     if (!this.selection) return;
     const sel = this.selection;
-    const boatClass = this.tracks[0]
-      ? computeDeviceStats(this.tracks, sel)[0]?.boatClass ?? null
-      : null;
+    const boatClass =
+      this.tracks.map((t) => resolveTrackBoatClass(t)).find((b) => b != null) ?? null;
     const bands = prognosticBandsKmh(boatClass);
+    const bandNote = bands.length
+      ? undefined
+      : boatClass
+        ? `No prognostic bands for ${boatClass}`
+        : 'No boat class on session — prognostic bands unavailable';
 
     const speedTime = this.q<HTMLCanvasElement>('[data-chart-speed-time]');
     const speedDist = this.q<HTMLCanvasElement>('[data-chart-speed-dist]');
@@ -757,6 +797,7 @@ export class HistoryPanel {
         theme: 'recorder',
         prognosticBands: bands,
         colorByPrognostic: bands.length > 0,
+        subtitle: bandNote,
       });
     }
     if (speedDist) {
@@ -768,6 +809,7 @@ export class HistoryPanel {
         theme: 'recorder',
         prognosticBands: bands,
         colorByPrognostic: bands.length > 0,
+        subtitle: bandNote,
       });
     }
     if (spm) {

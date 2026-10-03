@@ -749,10 +749,10 @@ export function mountApp(root: HTMLElement): void {
       ? d.noGps
         ? 'No GPS · logbook check-in'
         : d.telemetryStale
-          ? `Stale · seen ${d.lastSeenAgoSec ?? '?'}s ago`
+          ? `Stale · seen ${formatRelativeAgo(d.lastSeenAgoSec)}`
           : gpsStatusLabel(d.gpsAgeSec ?? resolveGpsDisplayAge(d, d.mapPosition))
       : d.lastSeenAgoSec != null
-        ? `Last seen ${d.lastSeenAgoSec}s ago`
+        ? `Last seen ${formatRelativeAgo(d.lastSeenAgoSec)}`
         : 'Offline';
     const crewLine = deviceCrewDetailLine(d);
     return (
@@ -1192,6 +1192,16 @@ function esc(s: unknown): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/"/g, '&quot;');
+}
+
+/** Relative age for Home “last seen”: s < 60s, m < 60min, h < 24h, else days. */
+function formatRelativeAgo(sec: number | null | undefined): string {
+  if (sec == null || !Number.isFinite(sec) || sec < 0) return '?';
+  const s = Math.round(sec);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }
 
 function settingsField(label: string, info: string, inputHtml: string): string {

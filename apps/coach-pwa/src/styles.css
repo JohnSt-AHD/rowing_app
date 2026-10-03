@@ -13,7 +13,7 @@
   padding-top: env(safe-area-inset-top, 0px);
   box-sizing: border-box;
   background: var(--hub-canvas, #e6e7e8);
-  color: var(--ahd-text);
+  color: #1a1b1d;
 }
 
 .coach-topbar {
@@ -188,7 +188,8 @@
 }
 
 .coach-monitor-bar .status-line.on {
-  color: var(--ahd-safety);
+  color: #15803d;
+  -webkit-text-fill-color: #15803d;
 }
 
 .coach-monitor-bar > .info-help {
@@ -548,7 +549,8 @@
   margin: 0 0 0.5rem;
   font-size: 0.95rem;
   font-weight: 700;
-  color: var(--ahd-text);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
 }
 
 .live-devices__count {
@@ -561,7 +563,8 @@
   margin-left: 0.35rem;
   border-radius: 999px;
   background: rgba(31, 107, 74, 0.14);
-  color: var(--ahd-safety);
+  color: #15803d;
+  -webkit-text-fill-color: #15803d;
   font-size: 0.75rem;
   font-weight: 700;
 }
@@ -571,7 +574,7 @@
 }
 
 .device-card {
-  background: var(--ahd-bg-card);
+  background: #ffffff;
   border: 1px solid var(--coach-border);
   border-radius: 12px;
   overflow: hidden;
@@ -660,7 +663,8 @@
 }
 
 .device-card--stale .device-card__stat-value {
-  color: var(--ahd-muted);
+  color: #64748b;
+  -webkit-text-fill-color: #64748b;
 }
 
 .device-card__head-stats {
@@ -721,7 +725,8 @@
 }
 
 .device-card__meta {
-  color: var(--ahd-muted);
+  color: #3f4349;
+  -webkit-text-fill-color: #3f4349;
   font-size: 0.85rem;
 }
 
@@ -1285,11 +1290,45 @@
   padding: 0.15rem 0 0.1rem;
 }
 
+.history-swipe__nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  width: 100%;
+  max-width: 22rem;
+  padding: 0 0.25rem;
+  box-sizing: border-box;
+}
+
+.history-swipe__nav-btn {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid rgba(17, 17, 17, 0.28);
+  background: #ffffff;
+  color: #111111;
+  -webkit-text-fill-color: #111111;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.history-swipe__nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .history-swipe__dots {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.4rem;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .history-swipe__dot {
@@ -1313,6 +1352,7 @@
   font-weight: 700;
   letter-spacing: 0.02em;
   color: #3f4349;
+  -webkit-text-fill-color: #3f4349;
 }
 
 .history-map-wrap {
@@ -1544,7 +1584,8 @@
   align-items: center;
   gap: 0.75rem;
   font-size: 13px;
-  color: var(--ahd-text);
+  color: #1a1b1d;
+  -webkit-text-fill-color: #1a1b1d;
 }
 
 .history-timeline__check,
@@ -1560,7 +1601,8 @@
   border-radius: 4px;
   border: 1px solid var(--coach-border);
   background: #f4f4f5;
-  color: var(--ahd-text);
+  color: #111111;
+  -webkit-text-fill-color: #111111;
 }
 
 .history-timeline__dist-row {
@@ -1658,7 +1700,8 @@ button.coach-btn.coach-btn--ghost {
 }
 
 .coach-dash-pill--water strong {
-  color: var(--ahd-safety);
+  color: #15803d;
+  -webkit-text-fill-color: #15803d;
 }
 
 .coach-ticket-section__title {
@@ -1773,7 +1816,8 @@ button.coach-btn.coach-btn--ghost {
 
 .crew-ticket__badge--water {
   background: rgba(31, 107, 74, 0.12);
-  color: var(--ahd-safety);
+  color: #15803d;
+  -webkit-text-fill-color: #15803d;
 }
 
 .crew-ticket__badge--ashore {
@@ -2076,6 +2120,17 @@ button.coach-btn.coach-btn--ghost {
   .history-swipe__footer {
     padding: 0.05rem 0;
     gap: 0.1rem;
+  }
+
+  .history-swipe__nav {
+    gap: 0.4rem;
+    max-width: none;
+  }
+
+  .history-swipe__nav-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 0.95rem;
   }
 
   .coach-tabs--bottom {

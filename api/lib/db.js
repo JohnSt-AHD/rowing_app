@@ -2441,7 +2441,7 @@ async function listSessions(orgId, uniqueId, limit = 100) {
   const sql = await getSql();
   const rows = uniqueId
     ? await sql`
-        SELECT session_id, unique_id, athlete_id, started_at, ended_at, updated_at,
+        SELECT session_id, unique_id, athlete_id, boat_class, started_at, ended_at, updated_at,
           (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = rnz_sessions.session_id AND org_id = ${orgId}) AS sample_count
         FROM rnz_sessions
         WHERE org_id = ${orgId} AND unique_id = ${uniqueId}
@@ -2449,7 +2449,7 @@ async function listSessions(orgId, uniqueId, limit = 100) {
         LIMIT ${limit}
       `
     : await sql`
-        SELECT session_id, unique_id, athlete_id, started_at, ended_at, updated_at,
+        SELECT session_id, unique_id, athlete_id, boat_class, started_at, ended_at, updated_at,
           (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = rnz_sessions.session_id AND org_id = ${orgId}) AS sample_count
         FROM rnz_sessions
         WHERE org_id = ${orgId}
@@ -2771,8 +2771,23 @@ async function getDashboardHistory(orgId, uniqueId, fromIso, toIso) {
     LIMIT 50000
   `;
 
+  const sess = await sql`
+    SELECT boat_class, athlete_id
+    FROM rnz_sessions
+    WHERE org_id = ${orgId}
+      AND unique_id = ${String(uniqueId)}
+      AND started_at <= ${new Date(toMs)}
+      AND (ended_at IS NULL OR ended_at >= ${new Date(fromMs)})
+    ORDER BY started_at DESC
+    LIMIT 1
+  `;
+  const sessRow = sess.rows[0];
+  const boatClass = String(sessRow?.boat_class || '').trim() || null;
+
   return buildDashboardHistoryFromRows(rows.rows, {
     uniqueId: String(uniqueId),
+    athleteId: sessRow?.athlete_id || null,
+    boatClass,
     from: new Date(fromMs).toISOString(),
     to: new Date(toMs).toISOString(),
   });
@@ -2783,7 +2798,7 @@ async function getDashboardHistoryBySession(orgId, sessionId) {
   const sql = await getSql();
   await ensureOrgsBootstrapped();
   const meta = await sql`
-    SELECT session_id, unique_id, athlete_id, started_at, ended_at
+    SELECT session_id, unique_id, athlete_id, boat_class, started_at, ended_at
     FROM rnz_sessions
     WHERE org_id = ${orgId} AND session_id = ${String(sessionId)}
     LIMIT 1
@@ -2804,11 +2819,13 @@ async function getDashboardHistoryBySession(orgId, sessionId) {
   const toMs = samples.rows.length
     ? Number(samples.rows[samples.rows.length - 1].t_ms)
     : new Date(row.ended_at || row.started_at).getTime();
+  const boatClass = String(row.boat_class || '').trim() || null;
 
   return buildDashboardHistoryFromRows(samples.rows, {
     sessionId: row.session_id,
     uniqueId: row.unique_id,
     athleteId: row.athlete_id || null,
+    boatClass,
     from: new Date(fromMs).toISOString(),
     to: new Date(toMs).toISOString(),
   });

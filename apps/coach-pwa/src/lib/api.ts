@@ -149,6 +149,8 @@ export type SessionSummary = {
   started_at: string;
   ended_at?: string | null;
   sample_count?: number;
+  boat_class?: string | null;
+  athlete_id?: string | null;
 };
 
 export type HistoryDevice = {
@@ -193,6 +195,8 @@ export type DashboardHistoryPayload = {
   from?: string;
   to?: string;
   uniqueId?: string;
+  athleteId?: string | null;
+  boatClass?: string | null;
 };
 
 export async function loadDeviceHistoryRange(

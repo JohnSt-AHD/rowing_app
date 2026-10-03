@@ -21,6 +21,9 @@ export type DeviceTrack = {
   tMin: number;
   tMax: number;
   totalDistanceM: number;
+  /** Session boat class when known (e.g. M1x) — required for prognostic bands. */
+  boatClass?: string | null;
+  athleteId?: string | null;
 };
 
 export type EnrichedPoint = HistoryPoint & {
@@ -96,12 +99,31 @@ export function enrichTrack(deviceId: string, points: HistoryPoint[]): EnrichedP
   return out;
 }
 
-export function buildDeviceTrack(deviceId: string, color: string, points: HistoryPoint[]): DeviceTrack {
+export function buildDeviceTrack(
+  deviceId: string,
+  color: string,
+  points: HistoryPoint[],
+  meta?: { boatClass?: string | null; athleteId?: string | null },
+): DeviceTrack {
   const enriched = enrichTrack(deviceId, points);
   const tMin = enriched.length ? enriched[0].t : 0;
   const tMax = enriched.length ? enriched[enriched.length - 1].t : 0;
   const totalDistanceM = enriched.length ? enriched[enriched.length - 1].cumDistM : 0;
-  return { deviceId, color, points: enriched, tMin, tMax, totalDistanceM };
+  return {
+    deviceId,
+    color,
+    points: enriched,
+    tMin,
+    tMax,
+    totalDistanceM,
+    boatClass: meta?.boatClass ?? null,
+    athleteId: meta?.athleteId ?? null,
+  };
+}
+
+/** Resolve boat class the same way as the recorder speed chart. */
+export function resolveTrackBoatClass(track: DeviceTrack): string | null {
+  return parseBoatClass(track.boatClass, track.athleteId, track.deviceId);
 }
 
 export function defaultSelection(tracks: DeviceTrack[]): HistorySelection {
@@ -164,7 +186,7 @@ export function computeDeviceStats(tracks: DeviceTrack[], sel: HistorySelection)
         : durationSec > 0
           ? distanceM / durationSec
           : 0;
-    const boatClass = parseBoatClass(track.deviceId);
+    const boatClass = resolveTrackBoatClass(track);
     const splits = speeds
       .map((s) => splitSecFromMps(s))
       .filter((v): v is number => v != null);

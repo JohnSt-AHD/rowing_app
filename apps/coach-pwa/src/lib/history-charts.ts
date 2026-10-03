@@ -6,6 +6,8 @@ export type ChartOptions = {
   xLabel: string;
   yLabel: string;
   yFormat?: (v: number) => string;
+  /** Optional note under the title (e.g. missing boat class). */
+  subtitle?: string;
   /** Dark CrewSight recorder theme (prognostic bands + segment colours). */
   theme?: 'light' | 'recorder';
   /** Horizontal prognostic band lines (y in chart units, usually km/h). */
@@ -185,7 +187,7 @@ export function drawMultiSeriesChart(
   const compact = h < 180;
   const padL = compact ? 36 : 44;
   const padR = bands.length && isRecorder ? (compact ? 28 : 36) : 12;
-  const padT = compact ? 24 : 36;
+  const padT = opts.subtitle ? (compact ? 34 : 44) : compact ? 24 : 36;
   // Leave room for axis ticks + legend so they do not collide
   const padB = compact ? 38 : 36;
   const axisY = h - (compact ? 8 : 10);
@@ -216,6 +218,12 @@ export function drawMultiSeriesChart(
   ctx.font = compact ? '600 11px system-ui, sans-serif' : '600 13px system-ui, sans-serif';
   ctx.textAlign = 'left';
   ctx.fillText(opts.title, padL, compact ? 14 : 20);
+  if (opts.subtitle) {
+    ctx.font = compact ? '500 9px system-ui, sans-serif' : '500 10px system-ui, sans-serif';
+    ctx.fillStyle = isRecorder ? '#94a3b8' : '#3f4349';
+    ctx.fillText(opts.subtitle, padL, compact ? 26 : 34);
+    ctx.fillStyle = isRecorder ? '#e8f4fc' : '#1a1b1d';
+  }
 
   const plotted = series.filter((s) => s.points.length >= 2);
   const allPts = plotted.flatMap((s) => s.points);
