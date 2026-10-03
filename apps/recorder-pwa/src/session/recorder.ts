@@ -5,14 +5,19 @@ import type {
   TelemetrySample,
 } from '@rowing/telemetry-types';
 import {
-  connectHeartRate,
   kickNativeAccelerometer,
   pollNativeAccelerometerReading,
   startGpsWatcher,
   startMotionWatcher,
-  type HeartRateMonitor,
 } from '@rowing/sensor-adapters';
 import type { MotionReading } from '@rowing/sensor-adapters/types';
+import {
+  disconnectHeartRate,
+  getHrConnectionStatus,
+  pairHeartRate,
+  setHrSessionSink,
+  tryReconnectSavedHr,
+} from '../lib/hr-connection';
 import {
   clearCapsizeAlertNotification,
   ensureCapsizeAlertReady,
@@ -399,7 +404,6 @@ export async function startRecorder(
   });
 
   const stoppers: Array<() => void | Promise<void>> = [];
-  let hrMonitor: HeartRateMonitor | null = null;
   let stopped = false;
 
   geofenceRefreshTimer = setInterval(() => {
@@ -488,6 +492,40 @@ export async function startRecorder(
     }
     queueSample(sample);
   };
+
+  const onHrReading = (r: { t: number; bpm: number; contact?: boolean }) => {
+    if (stopped) return;
+    stats.hrCount++;
+    stats.lastHr = r.bpm;
+    latestHr = { bpm: r.bpm, contact: r.contact };
+    if (!settings.enableGps) {
+      queueSample(
+        telemetrySample(r.t, {
+          hr: latestHr,
+          motion: latestMotion,
+          derived: latestDerived,
+        }),
+      );
+    }
+    emit();
+  };
+  setHrSessionSink(onHrReading);
+  stoppers.push(() => {
+    setHrSessionSink(null);
+  });
+  {
+    const hrStatus = getHrConnectionStatus();
+    if (hrStatus.connected && hrStatus.lastBpm != null) {
+      stats.lastHr = hrStatus.lastBpm;
+      latestHr = { bpm: hrStatus.lastBpm };
+      emit();
+      onLog(`Using paired HR strap (${hrStatus.name || 'HR monitor'}).`);
+    } else if (settings.enableHr) {
+      void tryReconnectSavedHr((m) => onLog(`HR: ${m}`)).then((ok) => {
+        if (ok) onLog('Heart-rate strap reconnected.');
+      });
+    }
+  }
 
   batchTimer = setInterval(() => void pushBatch(), batchIntervalMs);
 
@@ -815,35 +853,15 @@ export async function startRecorder(
     async connectHr() {
       // Explicit Connect from the UI — enable HR even if the session started with it off.
       settings.enableHr = true;
-      if (hrMonitor) await hrMonitor.disconnect();
-      hrMonitor = await connectHeartRate(
-        (r) => {
-          if (stopped) return;
-          stats.hrCount++;
-          stats.lastHr = r.bpm;
-          latestHr = { bpm: r.bpm, contact: r.contact };
-          if (!settings.enableGps) {
-            queueSample(
-              telemetrySample(r.t, {
-                hr: latestHr,
-                motion: latestMotion,
-                derived: latestDerived,
-              }),
-            );
-          }
-          emit();
-        },
-        (m) => onLog(`HR: ${m}`),
-      );
-      if (hrMonitor) onLog(`Connected: ${hrMonitor.name}`);
-      else onLog('HR: no monitor selected.');
+      setHrSessionSink(onHrReading);
+      await pairHeartRate((m) => onLog(m.startsWith('HR:') ? m : `HR: ${m}`));
     },
     async stopForGeofenceStandby() {
       stopped = true;
       if (batchTimer) clearInterval(batchTimer);
       await pushBatch();
       for (const s of stoppers) await s();
-      if (hrMonitor) await hrMonitor.disconnect();
+      await disconnectHeartRate();
       meta.endedAt = Date.now();
       await saveSession(meta);
       try {
@@ -867,7 +885,7 @@ export async function startRecorder(
       if (batchTimer) clearInterval(batchTimer);
       await pushBatch();
       for (const s of stoppers) await s();
-      if (hrMonitor) await hrMonitor.disconnect();
+      await disconnectHeartRate();
       meta.endedAt = Date.now();
       await saveSession(meta);
       try {

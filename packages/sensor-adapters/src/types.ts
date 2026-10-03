@@ -9,7 +9,15 @@ export type MotionWatcher = { stop: () => void | Promise<void> };
 
 export type HeartRateMonitor = {
   name: string;
+  /** Platform device id for reconnect (Capacitor BLE / Web Bluetooth). */
+  deviceId?: string;
   disconnect: () => Promise<void>;
+};
+
+export type ConnectHeartRateOptions = {
+  /** Try reconnecting to a previously paired device before showing the picker. */
+  deviceId?: string | null;
+  name?: string | null;
 };
 
 export type SensorAdapters = {
@@ -28,6 +36,7 @@ export type SensorAdapters = {
   connectHeartRate: (
     onReading: (r: HrReading) => void,
     onError?: (msg: string) => void,
+    options?: ConnectHeartRateOptions,
   ) => Promise<HeartRateMonitor | null>;
   requestNativePermissions?: () => Promise<void>;
 };

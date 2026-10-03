@@ -55,6 +55,11 @@ import {
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { resolveResumeCandidate } from '../lib/session-resume';
+import {
+  getHrConnectionStatus,
+  pairHeartRate,
+  subscribeHrConnection,
+} from '../lib/hr-connection';
 import { startRecorder, type RecorderController } from '../session/recorder';
 import {
   startGeofenceStandby,
@@ -66,7 +71,8 @@ import { flushOutbox } from '../upload/sync';
 import { postSessionEnd } from '../upload/telemetry-api';
 import { repairOversizedPendingOutbox } from '../session/store';
 import {
-  formatPaceWithPrognostic,
+  formatPrognostic,
+  formatSplit500m,
   hrToT,
   MetricRollingAvg,
   SPEED_AVG_WINDOW_MS,
@@ -547,9 +553,11 @@ export function mountApp(root: HTMLElement): void {
     }
     const avgMps = speedAvg.average();
     const s = loadSettings();
+    const boat = parseBoatClass(s.boatClass, s.deviceId, s.athleteId);
+    setHudText('[data-hud-split]', formatSplit500m(avgMps));
     setHudText(
-      '[data-hud-split]',
-      formatPaceWithPrognostic(avgMps, s.boatClass || s.deviceId, s.athleteId),
+      '[data-hud-prog]',
+      avgMps != null && boat ? formatPrognostic(avgMps, boat) ?? '—' : '—',
     );
 
     if (stats?.speedMps != null && stats.speedMps >= 0) {
@@ -562,7 +570,6 @@ export function mountApp(root: HTMLElement): void {
       });
     }
 
-    const boat = parseBoatClass(s.boatClass, s.deviceId, s.athleteId);
     const paceProgPct =
       avgMps != null && boat ? prognosticPercent(avgMps, boat) : null;
     const splitSec = splitSecFromMps(avgMps);
@@ -639,6 +646,7 @@ export function mountApp(root: HTMLElement): void {
 
     if (fsTab === 'speed') refreshSpeedChart();
     if (fsTab === 'map' && sessionMap) updateSessionMapOverlay();
+    updateHrIndicator();
   }
 
   function startHudTimer(): void {
@@ -878,6 +886,7 @@ export function mountApp(root: HTMLElement): void {
           variant === 'hero'
             ? `<div class="session-metric session-metric--pace-hero">
                 <span class="session-metric__value" data-hud-split>—</span>
+                <span class="session-metric__prog" data-hud-prog>—</span>
                 <span class="session-metric__label">Pace /500m <span class="session-metric__sub">10s avg</span></span>
               </div>
               <div class="session-live-hud__metrics session-live-hud__metrics--secondary">
@@ -893,9 +902,9 @@ export function mountApp(root: HTMLElement): void {
                   <span class="session-metric__value" data-hud-spm>—</span>
                   <span class="session-metric__label">Strokes /min</span>
                 </div>
-                <div class="session-metric">
+                <div class="session-metric session-metric--hr">
                   <span class="session-metric__value" data-hud-hr>—</span>
-                  <span class="session-metric__label">HR</span>
+                  <span class="session-metric__label">HR <span class="hr-indicator hr-indicator--inline" data-hr-indicator data-connected="0" title="HR not connected"><span class="hr-indicator__dot" aria-hidden="true"></span></span></span>
                 </div>
               </div>`
             : `<div class="session-live-hud__metrics">
@@ -911,12 +920,13 @@ export function mountApp(root: HTMLElement): void {
                   <span class="session-metric__value" data-hud-spm>—</span>
                   <span class="session-metric__label">Strokes /min</span>
                 </div>
-                <div class="session-metric">
+                <div class="session-metric session-metric--hr">
                   <span class="session-metric__value" data-hud-hr>—</span>
-                  <span class="session-metric__label">HR</span>
+                  <span class="session-metric__label">HR <span class="hr-indicator hr-indicator--inline" data-hr-indicator data-connected="0" title="HR not connected"><span class="hr-indicator__dot" aria-hidden="true"></span></span></span>
                 </div>
                 <div class="session-metric session-metric--pace">
                   <span class="session-metric__value" data-hud-split>—</span>
+                  <span class="session-metric__prog" data-hud-prog>—</span>
                   <span class="session-metric__label">Pace /500m</span>
                 </div>
               </div>`
@@ -1015,7 +1025,13 @@ export function mountApp(root: HTMLElement): void {
     return `
       <section class="hub-panel actions actions--recording session-actions-panel">
         <button type="button" class="hub-btn hub-btn--danger hub-btn-lg" data-action="stop">Stop session</button>
-        <button type="button" class="hub-btn" data-action="connect-hr">Connect HR monitor</button>
+        <div class="hr-connect-row">
+          <button type="button" class="hub-btn" data-action="connect-hr">Connect HR monitor</button>
+          <span class="hr-indicator" data-hr-indicator data-connected="0" title="HR not connected">
+            <span class="hr-indicator__dot" aria-hidden="true"></span>
+            <span data-hr-indicator-text>HR off</span>
+          </span>
+        </div>
       </section>
     `;
   }
@@ -1138,15 +1154,17 @@ export function mountApp(root: HTMLElement): void {
                 <button type="button" class="info-btn" data-info-toggle aria-label="About heart rate">i</button>
               </legend>
               <p class="info-help" hidden>${esc(
-                'Put on a Bluetooth heart-rate strap, start a session, then tap Connect HR monitor and pick the strap from the list. On Android this uses Bluetooth LE; in a browser it needs Web Bluetooth (Chrome).',
+                'Put on a Bluetooth heart-rate strap and tap Connect HR monitor to pick it from the list. The last strap is remembered so later Connect / session start can reconnect without picking again (Android). You can pair here before starting a session.',
               )}</p>
               <label class="check"><input type="checkbox" name="enableHr" ${s.enableHr ? 'checked' : ''} /> Enable heart rate</label>
-              <button type="button" class="hub-btn hub-btn--primary" data-action="connect-hr">Connect HR monitor</button>
-              <p class="form-hint">${
-                recording
-                  ? 'Session running — tap Connect to pair your strap now.'
-                  : 'Start a session on Record first, then Connect (button also appears while recording).'
-              }</p>
+              <div class="hr-connect-row">
+                <button type="button" class="hub-btn hub-btn--primary" data-action="connect-hr">Connect HR monitor</button>
+                <span class="hr-indicator" data-hr-indicator data-connected="0" title="HR not connected">
+                  <span class="hr-indicator__dot" aria-hidden="true"></span>
+                  <span data-hr-indicator-text>HR off</span>
+                </span>
+              </div>
+              <p class="form-hint">Tap Connect to pair now — works before or during a session. Last strap is remembered on this phone.</p>
             </fieldset>
             <fieldset class="fieldset checks">
               <legend>Background recording</legend>
@@ -1174,6 +1192,31 @@ export function mountApp(root: HTMLElement): void {
     `;
   }
 
+  function updateHrIndicator(): void {
+    const st = getHrConnectionStatus();
+    root.querySelectorAll('[data-hr-indicator]').forEach((el) => {
+      el.setAttribute('data-connected', st.connected ? '1' : '0');
+      const label = st.connected
+        ? `HR connected${st.name ? `: ${st.name}` : ''}${st.lastBpm != null ? ` · ${st.lastBpm}` : ''}`
+        : st.savedDevice
+          ? `HR not connected (remembered: ${st.savedDevice.name})`
+          : 'HR not connected';
+      el.setAttribute('title', label);
+      el.setAttribute('aria-label', label);
+      const text = el.querySelector('[data-hr-indicator-text]');
+      if (text) {
+        text.textContent = st.connected
+          ? st.lastBpm != null
+            ? `HR ${st.lastBpm}`
+            : 'HR on'
+          : 'HR off';
+      }
+    });
+    if (st.connected && st.lastBpm != null) {
+      setHudText('[data-hud-hr]', String(st.lastBpm));
+    }
+  }
+
   async function connectHrMonitor(): Promise<void> {
     const form = root.querySelector('[data-settings-form]') as HTMLFormElement | null;
     const hrCheck = form?.querySelector('[name="enableHr"]') as HTMLInputElement | null;
@@ -1183,33 +1226,21 @@ export function mountApp(root: HTMLElement): void {
     saveSettings(next);
     settings = next;
 
-    if (!recording || !controller) {
-      pushLog(
-        'Heart rate enabled. Start a session on Record, then tap Connect HR monitor.',
-        false,
-      );
-      pushLog(
-        'Tip: Connect HR also appears under Stop while a session is running.',
-        false,
-      );
-      if (view === 'settings') {
-        view = 'record';
-        render();
-      } else {
-        refreshLogPre();
-      }
-      return;
-    }
-
-    pushLog('Looking for a Bluetooth heart-rate strap…', false);
+    // Open the BLE picker immediately (must stay in the user-gesture chain).
     try {
-      await controller.connectHr();
+      if (recording && controller) {
+        await controller.connectHr();
+      } else {
+        await pairHeartRate((m) => pushLog(m, false));
+      }
     } catch (e) {
       pushLog(
         `HR connect failed: ${e instanceof Error ? e.message : String(e)}`,
         false,
       );
     }
+    updateHrIndicator();
+    refreshLogPre();
   }
 
   function clearStandbyUi(): void {
@@ -1553,7 +1584,13 @@ export function mountApp(root: HTMLElement): void {
     });
 
     if (s.enableHr) {
-      pushLog('Heart rate on — tap Connect HR monitor to pair your strap.', false);
+      const hr = getHrConnectionStatus();
+      pushLog(
+        hr.connected
+          ? `Heart rate linked (${hr.name || 'strap'}).`
+          : 'Heart rate on — tap Connect HR monitor to pair your strap.',
+        false,
+      );
     }
     const batchMs = s.enableMotion ? Math.max(s.uploadBatchMs, 8000) : s.uploadBatchMs;
     const syncInterval = Math.max(4000, Math.min(batchMs, 12000));
@@ -1826,7 +1863,12 @@ export function mountApp(root: HTMLElement): void {
     });
 
     void updatePending();
+    updateHrIndicator();
   }
+
+  subscribeHrConnection(() => {
+    updateHrIndicator();
+  });
 
   render();
   void refreshFleetConfigInBackground();

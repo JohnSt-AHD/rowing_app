@@ -3,6 +3,7 @@
 export {
   MIN_SPEED_MPS,
   formatSplit500m,
+  formatPrognostic,
   splitSecFromMps,
   parseBoatClass,
   formatPaceWithPrognostic,

@@ -1,4 +1,8 @@
-import type { HeartRateMonitor, HrReading } from '../types';
+import type {
+  ConnectHeartRateOptions,
+  HeartRateMonitor,
+  HrReading,
+} from '../types';
 
 function parseHr(data: DataView): HrReading {
   const flags = data.getUint8(0);
@@ -15,31 +19,56 @@ function parseHr(data: DataView): HrReading {
 
 let bleInitialized = false;
 
+async function ensureBle(): Promise<
+  typeof import('@capacitor-community/bluetooth-le')
+> {
+  const mod = await import('@capacitor-community/bluetooth-le');
+  if (!bleInitialized) {
+    await mod.BleClient.initialize({ androidNeverForLocation: false });
+    bleInitialized = true;
+  }
+  return mod;
+}
+
 export async function connectHeartRate(
   onReading: (r: HrReading) => void,
   onError?: (msg: string) => void,
+  options?: ConnectHeartRateOptions,
 ): Promise<HeartRateMonitor | null> {
   try {
-    const { BleClient, numberToUUID } = await import('@capacitor-community/bluetooth-le');
+    const { BleClient, numberToUUID } = await ensureBle();
     const HR_SERVICE = numberToUUID(0x180d);
     const HR_MEASUREMENT = numberToUUID(0x2a37);
 
-    if (!bleInitialized) {
-      await BleClient.initialize({ androidNeverForLocation: false });
-      bleInitialized = true;
+    let deviceId = options?.deviceId?.trim() || '';
+    let name = options?.name?.trim() || 'HR monitor';
+    let usedPicker = false;
+
+    if (deviceId) {
+      try {
+        await BleClient.connect(deviceId, () => {
+          onError?.('Heart rate monitor disconnected');
+        });
+      } catch {
+        deviceId = '';
+      }
     }
 
-    const device = await BleClient.requestDevice({
-      services: [HR_SERVICE],
-      optionalServices: [HR_SERVICE],
-    });
-
-    await BleClient.connect(device.deviceId, () => {
-      onError?.('Heart rate monitor disconnected');
-    });
+    if (!deviceId) {
+      const device = await BleClient.requestDevice({
+        services: [HR_SERVICE],
+        optionalServices: [HR_SERVICE],
+      });
+      deviceId = device.deviceId;
+      name = device.name || 'HR monitor';
+      usedPicker = true;
+      await BleClient.connect(deviceId, () => {
+        onError?.('Heart rate monitor disconnected');
+      });
+    }
 
     await BleClient.startNotifications(
-      device.deviceId,
+      deviceId,
       HR_SERVICE,
       HR_MEASUREMENT,
       (value) => {
@@ -47,16 +76,21 @@ export async function connectHeartRate(
       },
     );
 
+    if (!usedPicker && options?.deviceId) {
+      // Reconnected silently to a remembered strap.
+    }
+
     return {
-      name: device.name || 'HR monitor',
+      name,
+      deviceId,
       disconnect: async () => {
         try {
-          await BleClient.stopNotifications(device.deviceId, HR_SERVICE, HR_MEASUREMENT);
+          await BleClient.stopNotifications(deviceId, HR_SERVICE, HR_MEASUREMENT);
         } catch {
           /* ignore */
         }
         try {
-          await BleClient.disconnect(device.deviceId);
+          await BleClient.disconnect(deviceId);
         } catch {
           /* ignore */
         }
