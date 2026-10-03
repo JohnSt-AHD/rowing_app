@@ -944,11 +944,6 @@ export function mountApp(root: HTMLElement): void {
       historyPanel = new HistoryPanel(
         () => loadSettings(),
         (msg, err) => setStatus(msg, err),
-        () => {
-          historyPanel?.prepareForRender('history');
-          tab = 'history';
-          render();
-        },
       );
     }
     return historyPanel;
@@ -974,6 +969,21 @@ export function mountApp(root: HTMLElement): void {
               ${topbarMonitoringBadge()}
             </div>
           </div>
+          <nav class="coach-topbar__nav" aria-label="Settings">
+            <button
+              type="button"
+              class="coach-topbar__nav-btn ${tab === 'settings' ? 'is-active' : ''}"
+              data-tab="settings"
+              aria-pressed="${tab === 'settings' ? 'true' : 'false'}"
+              aria-label="Settings"
+              title="Settings"
+            >
+              <svg class="coach-topbar__nav-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"/>
+              </svg>
+              <span class="coach-topbar__nav-label">Settings</span>
+            </button>
+          </nav>
         </header>
         <div class="coach-sticky-chrome">
           <div
@@ -1023,9 +1033,7 @@ export function mountApp(root: HTMLElement): void {
           <div class="race-panel-root" data-race-root></div>
         </section>
         <section class="coach-panel coach-panel--history" data-panel="history" ${tab === 'history' ? '' : 'hidden'}>
-          <h2 class="coach-section-title">Session review</h2>
-          <div class="history-setup" data-history-setup-root></div>
-          <div class="history-panel" data-history-track-root></div>
+          <div class="history-panel" data-history-root></div>
         </section>
         <section class="coach-panel" data-panel="settings" ${tab === 'settings' ? '' : 'hidden'}>
           <h2 class="coach-section-title">Connection</h2>
@@ -1042,23 +1050,13 @@ export function mountApp(root: HTMLElement): void {
           <div class="coach-settings-actions">
             <button type="button" class="coach-btn coach-btn--primary" data-save-settings>Save settings</button>
           </div>
-          <div class="coach-heading-with-info">
-            <div class="coach-section-title-row">
-              <h2 class="coach-section-title">Session history</h2>
-              <button type="button" class="info-btn" data-info-toggle aria-label="About Session history" aria-expanded="false">i</button>
-            </div>
-            <p class="info-help" hidden>GPS track review for a single outing (separate from the daily logbook).</p>
-          </div>
-          <div class="coach-settings-actions">
-            <button type="button" class="coach-btn coach-btn--ghost" data-open-history>Open session review</button>
-          </div>
         </section>
         <nav class="coach-tabs coach-tabs--bottom" aria-label="Manager sections">
           <button type="button" class="coach-tab coach-tab--home ${tab === 'dashboard' ? 'active' : ''}" data-tab="dashboard">Home</button>
           <button type="button" class="coach-tab ${tab === 'map' ? 'active' : ''}" data-tab="map">Map</button>
           <button type="button" class="coach-tab ${tab === 'logbook' ? 'active' : ''}" data-tab="logbook">Logbook</button>
           <button type="button" class="coach-tab ${tab === 'race' ? 'active' : ''}" data-tab="race">Race</button>
-          <button type="button" class="coach-tab ${tab === 'settings' || tab === 'history' ? 'active' : ''}" data-tab="settings">Settings</button>
+          <button type="button" class="coach-tab ${tab === 'history' ? 'active' : ''}" data-tab="history">History</button>
         </nav>
       </div>`;
 
@@ -1073,11 +1071,6 @@ export function mountApp(root: HTMLElement): void {
     root.querySelector('[data-start-monitor]')?.addEventListener('click', () => void onStartMonitoring());
     root.querySelector('[data-stop-monitor]')?.addEventListener('click', () => void onStopMonitoring());
     root.querySelector('[data-capsize-clear]')?.addEventListener('click', () => void acknowledgeCapsizeAlerts());
-    root.querySelector('[data-open-history]')?.addEventListener('click', () => {
-      historyPanel?.prepareForRender('history');
-      tab = 'history';
-      render();
-    });
     root.querySelectorAll('[data-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const next = (btn as HTMLElement).dataset.tab as Tab;
@@ -1101,6 +1094,9 @@ export function mountApp(root: HTMLElement): void {
         }
         if (tab === 'logbook') {
           void ensureLogbookPanel().onTabShown();
+        }
+        if (tab === 'history') {
+          ensureHistoryPanel().onHistoryTabShown();
         }
       });
     });
@@ -1127,12 +1123,10 @@ export function mountApp(root: HTMLElement): void {
     }
 
     if (tab === 'history') {
-      const setupRoot = root.querySelector('[data-history-setup-root]') as HTMLElement | null;
-      const trackRoot = root.querySelector('[data-history-track-root]') as HTMLElement | null;
+      const historyRoot = root.querySelector('[data-history-root]') as HTMLElement | null;
       const panel = ensureHistoryPanel();
-      if (setupRoot) panel.mountSetup(setupRoot);
-      if (trackRoot) {
-        panel.mountTrack(trackRoot);
+      if (historyRoot) {
+        panel.mount(historyRoot);
         panel.onHistoryTabShown();
       }
     }

@@ -7,7 +7,7 @@ import {
   type CoachSettings,
   type SessionSummary,
 } from '../lib/api';
-import { drawMultiSeriesChart } from '../lib/history-charts';
+import { drawMultiSeriesChart, prognosticBandsKmh } from '../lib/history-charts';
 import {
   buildDeviceTrack,
   colorForDevice,
@@ -18,6 +18,7 @@ import {
   formatPrognosticPct,
   formatSpeedKmh,
   formatSplitSec,
+  hrVsTimeSeries,
   maxDistance,
   speedVsDistanceSeries,
   speedVsTimeSeries,
@@ -30,77 +31,116 @@ import { bindInfoToggles } from '../lib/info-toggle';
 
 type StatusFn = (msg: string, err?: boolean) => void;
 
-const SETUP_HTML = `
-  <fieldset class="history-devices-field">
-    <legend class="fieldset-legend-with-info">
-      Devices
-      <button type="button" class="info-btn" data-info-toggle aria-label="About Devices" aria-expanded="false">i</button>
-    </legend>
-    <p class="info-help" hidden>Select one or more devices. Load the device list or type IDs below.</p>
-    <div class="history-device-list" data-device-list>
-      <p class="poll-line">Load device list or type IDs below.</p>
-    </div>
-    <label class="coach-field history-device-add">
-      Add device ID
-      <input type="text" data-device-add placeholder="e.g. A2" />
-    </label>
-    <button type="button" class="coach-btn coach-btn--ghost" data-load-devices>Refresh device list</button>
-  </fieldset>
-  <button type="button" class="coach-btn coach-btn--ghost" data-load-sessions>Load sessions (first device)</button>
-  <label class="coach-field">Session
-    <select data-session-select><option value="">— load sessions first —</option></select>
-  </label>
-  <button type="button" class="coach-btn coach-btn--primary" data-load-track>Load trace &amp; charts</button>
-  <p class="history-load-status" data-setup-load-status hidden aria-live="polite"></p>`;
+const PANES = [
+  { id: 'metrics', label: 'Metrics' },
+  { id: 'map', label: 'Map' },
+  { id: 'speed-time', label: 'Speed / time' },
+  { id: 'speed-dist', label: 'Speed / dist' },
+  { id: 'spm', label: 'Stroke rate' },
+  { id: 'hr', label: 'HR' },
+] as const;
 
-const TRACK_HTML = `
-  <div class="history-main" data-history-main>
-    <p class="poll-line history-main__hint" data-track-hint>Choose devices above, then load a session to review the trace.</p>
+type PaneId = (typeof PANES)[number]['id'];
+
+const REVIEW_HTML = `
+  <div class="history-review" data-history-review>
+    <div class="history-select-bar" data-select-bar>
+      <div class="history-select-bar__row">
+        <label class="history-select-bar__field history-select-bar__field--device">
+          <span>Device</span>
+          <select data-device-select aria-label="Device">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+        <label class="history-select-bar__field history-select-bar__field--session">
+          <span>Session</span>
+          <select data-session-select aria-label="Session">
+            <option value="">— pick device —</option>
+          </select>
+        </label>
+        <button type="button" class="coach-btn coach-btn--ghost history-select-bar__more" data-toggle-devices aria-expanded="false" title="More devices">+</button>
+      </div>
+      <div class="history-select-bar__extra" data-device-extra hidden>
+        <div class="history-device-list" data-device-list></div>
+        <label class="coach-field history-device-add">
+          Add device ID
+          <input type="text" data-device-add placeholder="e.g. A2" />
+        </label>
+        <button type="button" class="coach-btn coach-btn--ghost" data-load-devices>Refresh devices</button>
+      </div>
+      <p class="history-select-bar__status" data-setup-load-status hidden aria-live="polite"></p>
+    </div>
+
     <div class="history-loading" data-history-loading hidden aria-live="polite">
       <div class="history-loading__bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
         <div class="history-loading__fill"></div>
       </div>
       <p class="history-loading__text" data-loading-text>Loading session data…</p>
     </div>
-    <div data-timeline-mount hidden></div>
-    <div class="history-stats" data-history-stats hidden></div>
-    <div class="history-map-wrap" hidden>
-      <div class="history-map" data-history-map></div>
-    </div>
-    <div class="history-charts" hidden>
-      <canvas class="history-chart" data-chart-speed-time height="200"></canvas>
-      <canvas class="history-chart" data-chart-speed-dist height="200"></canvas>
-      <canvas class="history-chart" data-chart-spm height="200"></canvas>
+
+    <div class="history-review__body" data-review-body>
+      <p class="poll-line history-main__hint" data-track-hint>Pick a device and session to review the outing.</p>
+      <div class="history-review__timeline" data-timeline-mount hidden></div>
+      <div class="history-swipe" data-swipe hidden>
+        <div class="history-swipe__track" data-swipe-track>
+          <section class="history-pane" data-pane="metrics" aria-label="Metrics">
+            <div class="history-stats" data-history-stats></div>
+          </section>
+          <section class="history-pane" data-pane="map" aria-label="Map">
+            <div class="history-map-wrap">
+              <div class="history-map" data-history-map></div>
+            </div>
+          </section>
+          <section class="history-pane" data-pane="speed-time" aria-label="Speed versus time">
+            <canvas class="history-chart history-chart--fill" data-chart-speed-time></canvas>
+          </section>
+          <section class="history-pane" data-pane="speed-dist" aria-label="Speed versus distance">
+            <canvas class="history-chart history-chart--fill" data-chart-speed-dist></canvas>
+          </section>
+          <section class="history-pane" data-pane="spm" aria-label="Stroke rate versus time">
+            <canvas class="history-chart history-chart--fill" data-chart-spm></canvas>
+          </section>
+          <section class="history-pane" data-pane="hr" aria-label="Heart rate versus time">
+            <canvas class="history-chart history-chart--fill" data-chart-hr></canvas>
+          </section>
+        </div>
+      </div>
+      <div class="history-swipe__footer" data-swipe-footer hidden>
+        <div class="history-swipe__dots" data-swipe-dots role="tablist" aria-label="Review displays">
+          ${PANES.map(
+            (p, i) =>
+              `<button type="button" class="history-swipe__dot${i === 0 ? ' is-active' : ''}" data-dot="${p.id}" role="tab" aria-selected="${i === 0 ? 'true' : 'false'}" aria-label="${p.label}"></button>`,
+          ).join('')}
+        </div>
+        <p class="history-swipe__label" data-pane-label>Metrics</p>
+      </div>
     </div>
   </div>`;
 
 export class HistoryPanel {
   private getSettings: () => CoachSettings;
   private onStatus: StatusFn;
-  private onTracksLoaded?: () => void;
-  private setupHost: HTMLElement | null = null;
-  private trackHost: HTMLElement | null = null;
+  private host: HTMLElement | null = null;
   private tracks: DeviceTrack[] = [];
   private selection: HistorySelection | null = null;
   private timeline: HistoryTimeline | null = null;
   private historyMap: L.Map | null = null;
   private historyLines = new Map<string, L.Polyline>();
   private knownDevices: string[] = [];
-  private sessionMeta: { from: string; to: string } | null = null;
   private devicesLoaded = false;
   private loading = false;
   private loadingMessage = '';
   private chartResizeObserver: ResizeObserver | null = null;
   private refreshScheduled = false;
+  private activePane: PaneId = 'metrics';
+  private swipeEl: HTMLElement | null = null;
+  private sessionsCache: SessionSummary[] = [];
+  private lastSessionId = '';
+  private autoLoadToken = 0;
 
-  constructor(
-    getSettings: () => CoachSettings,
-    onStatus: StatusFn,
-    onTracksLoaded?: () => void,
-  ) {
+  constructor(getSettings: () => CoachSettings, onStatus: StatusFn) {
     this.getSettings = getSettings;
     this.onStatus = onStatus;
-    this.onTracksLoaded = onTracksLoaded;
   }
 
   /** Call before app re-render clears host elements. */
@@ -109,39 +149,55 @@ export class HistoryPanel {
       this.teardownMap();
       this.teardownChartObserver();
       this.timeline = null;
-      this.trackHost = null;
-      this.setupHost = null;
+      this.swipeEl = null;
+      this.host = null;
     }
   }
 
   /** Call after History tab is shown — fixes map/chart sizing when panel was hidden. */
   onHistoryTabShown(): void {
     if (this.tracks.length) this.scheduleRefreshViews();
+    this.syncSwipeUi();
   }
 
-  mountSetup(host: HTMLElement): void {
-    this.setupHost = host;
-    host.innerHTML = SETUP_HTML;
+  mount(host: HTMLElement): void {
+    this.host = host;
+    host.innerHTML = REVIEW_HTML;
     bindInfoToggles(host);
+
+    this.swipeEl = this.q<HTMLElement>('[data-swipe]');
+    this.swipeEl?.addEventListener('scroll', () => this.onSwipeScroll(), { passive: true });
+
     host.querySelector('[data-load-devices]')?.addEventListener('click', () => void this.loadDeviceList());
-    host.querySelector('[data-load-sessions]')?.addEventListener('click', () => void this.loadSessions());
-    host.querySelector('[data-load-track]')?.addEventListener('click', () => void this.loadTracks());
+    host.querySelector('[data-toggle-devices]')?.addEventListener('click', () => this.toggleDeviceExtra());
+    host.querySelector('[data-device-select]')?.addEventListener('change', () => {
+      void this.onPrimaryDeviceChange();
+    });
+    host.querySelector('[data-session-select]')?.addEventListener('change', () => {
+      void this.onSessionChange();
+    });
     host.querySelector('[data-device-add]')?.addEventListener('keydown', (e) => {
       if ((e as KeyboardEvent).key === 'Enter') this.addDeviceFromInput();
     });
     host.querySelector('[data-device-add]')?.addEventListener('blur', () => this.addDeviceFromInput());
-    this.syncLoadingUi();
-    if (!this.devicesLoaded) {
-      this.devicesLoaded = true;
-      void this.loadDeviceList();
-    } else {
-      this.renderDeviceCheckboxes();
-    }
-  }
 
-  mountTrack(host: HTMLElement): void {
-    this.trackHost = host;
-    host.innerHTML = TRACK_HTML;
+    host.querySelectorAll<HTMLButtonElement>('[data-dot]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.dot as PaneId;
+        this.scrollToPane(id);
+      });
+    });
+
+    host.tabIndex = 0;
+    host.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const idx = this.paneIndex(this.activePane);
+      const next = e.key === 'ArrowRight' ? idx + 1 : idx - 1;
+      if (next < 0 || next >= PANES.length) return;
+      e.preventDefault();
+      this.scrollToPane(PANES[next].id);
+    });
+
     const tlMount = this.q<HTMLElement>('[data-timeline-mount]');
     if (tlMount) {
       this.timeline = new HistoryTimeline(tlMount, {
@@ -160,9 +216,21 @@ export class HistoryPanel {
         });
       }
     }
+
     this.bindChartResizeObserver();
     this.updateTrackHint();
     this.syncLoadingUi();
+    this.syncSwipeUi();
+
+    if (!this.devicesLoaded) {
+      this.devicesLoaded = true;
+      void this.loadDeviceList();
+    } else {
+      this.renderDeviceSelect();
+      this.renderDeviceCheckboxes();
+      this.restoreSessionSelect();
+    }
+
     if (this.tracks.length) this.scheduleRefreshViews();
   }
 
@@ -170,8 +238,8 @@ export class HistoryPanel {
     this.teardownMap();
     this.teardownChartObserver();
     this.timeline = null;
-    this.setupHost = null;
-    this.trackHost = null;
+    this.swipeEl = null;
+    this.host = null;
     this.devicesLoaded = false;
     this.tracks = [];
     this.selection = null;
@@ -180,9 +248,17 @@ export class HistoryPanel {
   }
 
   private q<T extends Element>(sel: string): T | null {
-    return (this.setupHost?.querySelector(sel) ??
-      this.trackHost?.querySelector(sel) ??
-      null) as T | null;
+    return (this.host?.querySelector(sel) ?? null) as T | null;
+  }
+
+  private toggleDeviceExtra(): void {
+    const extra = this.q<HTMLElement>('[data-device-extra]');
+    const btn = this.q<HTMLButtonElement>('[data-toggle-devices]');
+    if (!extra || !btn) return;
+    const open = extra.hasAttribute('hidden');
+    extra.toggleAttribute('hidden', !open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.textContent = open ? '−' : '+';
   }
 
   private setLoading(active: boolean, message = 'Loading session data…'): void {
@@ -192,15 +268,17 @@ export class HistoryPanel {
   }
 
   private syncLoadingUi(): void {
-    const loadBtn = this.q<HTMLButtonElement>('[data-load-track]');
     const setupStatus = this.q<HTMLElement>('[data-setup-load-status]');
     const overlay = this.q<HTMLElement>('[data-history-loading]');
     const overlayText = this.q<HTMLElement>('[data-loading-text]');
+    const selects = this.host?.querySelectorAll<HTMLSelectElement>(
+      '[data-device-select], [data-session-select]',
+    );
 
-    if (loadBtn) {
-      loadBtn.disabled = this.loading;
-      loadBtn.textContent = this.loading ? 'Loading…' : 'Load trace & charts';
-    }
+    selects?.forEach((el) => {
+      el.disabled = this.loading;
+    });
+
     if (setupStatus) {
       setupStatus.hidden = !this.loading;
       setupStatus.textContent = this.loading ? this.loadingMessage : '';
@@ -227,12 +305,15 @@ export class HistoryPanel {
 
   private bindChartResizeObserver(): void {
     this.teardownChartObserver();
-    const charts = this.q<HTMLElement>('.history-charts');
-    if (!charts || typeof ResizeObserver === 'undefined') return;
+    const swipe = this.q<HTMLElement>('[data-swipe]');
+    if (!swipe || typeof ResizeObserver === 'undefined') return;
     this.chartResizeObserver = new ResizeObserver(() => {
       if (this.tracks.length && this.selection) this.renderCharts();
+      if (this.historyMap) {
+        window.setTimeout(() => this.historyMap?.invalidateSize(), 40);
+      }
     });
-    this.chartResizeObserver.observe(charts);
+    this.chartResizeObserver.observe(swipe);
   }
 
   private teardownChartObserver(): void {
@@ -253,9 +334,8 @@ export class HistoryPanel {
     const hasTracks = this.tracks.length > 0;
     if (hint) hint.hidden = hasTracks || this.loading;
     this.q('[data-timeline-mount]')?.toggleAttribute('hidden', !hasTracks);
-    this.q('[data-history-stats]')?.toggleAttribute('hidden', !hasTracks);
-    this.q('.history-map-wrap')?.toggleAttribute('hidden', !hasTracks);
-    this.q('.history-charts')?.toggleAttribute('hidden', !hasTracks);
+    this.q('[data-swipe]')?.toggleAttribute('hidden', !hasTracks);
+    this.q('[data-swipe-footer]')?.toggleAttribute('hidden', !hasTracks);
     if (hasTracks && !this.loading) {
       const overlay = this.q<HTMLElement>('[data-history-loading]');
       if (overlay) {
@@ -267,24 +347,58 @@ export class HistoryPanel {
   }
 
   private selectedDeviceIds(): string[] {
-    const boxes = this.setupHost?.querySelectorAll<HTMLInputElement>('[data-device-id]:checked') ?? [];
-    return [...boxes].map((b) => b.value);
+    const boxes = this.host?.querySelectorAll<HTMLInputElement>('[data-device-id]:checked') ?? [];
+    const fromBoxes = [...boxes].map((b) => b.value);
+    if (fromBoxes.length) return fromBoxes;
+    const primary = this.q<HTMLSelectElement>('[data-device-select]')?.value ?? '';
+    return primary ? [primary] : [];
+  }
+
+  private primaryDeviceId(): string {
+    return this.q<HTMLSelectElement>('[data-device-select]')?.value ?? '';
+  }
+
+  private renderDeviceSelect(): void {
+    const sel = this.q<HTMLSelectElement>('[data-device-select]');
+    if (!sel) return;
+    const current = sel.value || this.knownDevices[0] || '';
+    if (!this.knownDevices.length) {
+      sel.innerHTML = '<option value="">No devices</option>';
+      return;
+    }
+    sel.innerHTML = this.knownDevices
+      .map((id) => `<option value="${esc(id)}" ${id === current ? 'selected' : ''}>${esc(id)}</option>`)
+      .join('');
   }
 
   private renderDeviceCheckboxes(): void {
     const list = this.q<HTMLElement>('[data-device-list]');
     if (!list) return;
     const selected = new Set(this.selectedDeviceIds());
+    const primary = this.primaryDeviceId();
     if (!this.knownDevices.length) {
       list.innerHTML = '<p class="poll-line">No devices — add IDs manually.</p>';
       return;
     }
     list.innerHTML = this.knownDevices
       .map(
-        (id, i) =>
-          `<label class="history-device-chip"><input type="checkbox" data-device-id value="${esc(id)}" ${selected.has(id) || (selected.size === 0 && i === 0) ? 'checked' : ''} /> ${esc(id)}</label>`,
+        (id) =>
+          `<label class="history-device-chip"><input type="checkbox" data-device-id value="${esc(id)}" ${selected.has(id) || id === primary ? 'checked' : ''} /> ${esc(id)}</label>`,
       )
       .join('');
+
+    list.querySelectorAll<HTMLInputElement>('[data-device-id]').forEach((box) => {
+      box.addEventListener('change', () => {
+        const ids = this.selectedDeviceIds();
+        if (ids.length && !ids.includes(this.primaryDeviceId())) {
+          const sel = this.q<HTMLSelectElement>('[data-device-select]');
+          if (sel) {
+            sel.value = ids[0];
+            void this.onPrimaryDeviceChange();
+          }
+        }
+      });
+    });
   }
 
   private addDeviceFromInput(): void {
@@ -294,11 +408,11 @@ export class HistoryPanel {
     if (!this.knownDevices.includes(id)) {
       this.knownDevices.push(id);
       this.knownDevices.sort();
+      this.renderDeviceSelect();
       this.renderDeviceCheckboxes();
-      const box = this.setupHost?.querySelector(
-        `[data-device-id][value="${CSS.escape(id)}"]`,
-      ) as HTMLInputElement | null;
-      if (box) box.checked = true;
+      const sel = this.q<HTMLSelectElement>('[data-device-select]');
+      if (sel) sel.value = id;
+      void this.onPrimaryDeviceChange();
     }
     if (input) input.value = '';
   }
@@ -309,37 +423,78 @@ export class HistoryPanel {
       const devices = await listHistoryDevices(settings);
       const ids = devices.map((d) => String(d.uniqueId ?? d.unique_id ?? d.deviceId ?? '')).filter(Boolean);
       this.knownDevices = [...new Set([...this.knownDevices, ...ids])].sort();
+      this.renderDeviceSelect();
       this.renderDeviceCheckboxes();
       this.onStatus(`${this.knownDevices.length} device(s) available`);
+      if (this.primaryDeviceId()) {
+        await this.loadSessionsForPrimary();
+      }
     } catch (e) {
       this.onStatus(e instanceof Error ? e.message : String(e), true);
+      const sel = this.q<HTMLSelectElement>('[data-device-select]');
+      if (sel && !this.knownDevices.length) {
+        sel.innerHTML = '<option value="">Set API in Settings</option>';
+      }
     }
   }
 
-  private async loadSessions(): Promise<void> {
-    const devices = this.selectedDeviceIds();
-    if (!devices.length) {
-      this.onStatus('Select at least one device', true);
+  private async onPrimaryDeviceChange(): Promise<void> {
+    this.renderDeviceCheckboxes();
+    await this.loadSessionsForPrimary();
+  }
+
+  private fillSessionSelect(sessions: SessionSummary[], selectedId = ''): void {
+    const sel = this.q<HTMLSelectElement>('[data-session-select]');
+    if (!sel) return;
+    sel.innerHTML =
+      sessions.length === 0
+        ? '<option value="">No sessions</option>'
+        : sessions
+            .map(
+              (s: SessionSummary) =>
+                `<option value="${esc(s.session_id)}" data-from="${esc(s.started_at)}" data-to="${esc(s.ended_at ?? '')}" ${s.session_id === selectedId ? 'selected' : ''}>${esc(formatSessionLabel(s.started_at))}</option>`,
+            )
+            .join('');
+  }
+
+  private restoreSessionSelect(): void {
+    if (!this.sessionsCache.length) {
+      const sel = this.q<HTMLSelectElement>('[data-session-select]');
+      if (sel) sel.innerHTML = '<option value="">— pick device —</option>';
+      return;
+    }
+    this.fillSessionSelect(this.sessionsCache, this.lastSessionId);
+  }
+
+  private async loadSessionsForPrimary(): Promise<void> {
+    const deviceId = this.primaryDeviceId();
+    const sel = this.q<HTMLSelectElement>('[data-session-select]');
+    if (!sel) return;
+    if (!deviceId) {
+      sel.innerHTML = '<option value="">— pick device —</option>';
+      this.sessionsCache = [];
       return;
     }
     try {
       const settings = this.getSettings();
-      const sessions = await listSessions(settings, devices[0]);
-      const sel = this.q<HTMLSelectElement>('[data-session-select]');
-      if (!sel) return;
-      sel.innerHTML =
-        sessions.length === 0
-          ? '<option value="">No sessions</option>'
-          : sessions
-              .map(
-                (s: SessionSummary) =>
-                  `<option value="${esc(s.session_id)}" data-from="${esc(s.started_at)}" data-to="${esc(s.ended_at ?? '')}">${esc(formatSessionLabel(s.started_at))}</option>`,
-              )
-              .join('');
-      this.onStatus(`${sessions.length} session(s) for ${devices[0]}`);
+      const sessions = await listSessions(settings, deviceId);
+      this.sessionsCache = sessions;
+      this.fillSessionSelect(sessions);
+      this.onStatus(`${sessions.length} session(s) for ${deviceId}`);
+      if (sessions.length) {
+        void this.onSessionChange();
+      }
     } catch (e) {
       this.onStatus(e instanceof Error ? e.message : String(e), true);
+      sel.innerHTML = '<option value="">Failed to load</option>';
     }
+  }
+
+  private async onSessionChange(): Promise<void> {
+    const sessionId = this.q<HTMLSelectElement>('[data-session-select]')?.value ?? '';
+    if (!sessionId) return;
+    this.lastSessionId = sessionId;
+    await this.loadTracks();
   }
 
   private sessionTimeRange(): { from: string; to: string } | null {
@@ -361,6 +516,7 @@ export class HistoryPanel {
     const settings = this.getSettings();
     const sessionId = this.q<HTMLSelectElement>('[data-session-select]')?.value ?? '';
     let fromTo = this.sessionTimeRange();
+    const token = ++this.autoLoadToken;
 
     this.setLoading(true, 'Fetching GPS tracks…');
     try {
@@ -369,6 +525,7 @@ export class HistoryPanel {
       if (sessionId && devices.length === 1) {
         this.setLoading(true, `Loading session for ${devices[0]}…`);
         const dash = await loadSessionDashboard(settings, sessionId);
+        if (token !== this.autoLoadToken) return;
         loaded.push(buildDeviceTrack(devices[0], colorForDevice(0), dash.track ?? []));
         if (dash.from && dash.to) fromTo = { from: dash.from, to: dash.to };
         else if ((dash.track ?? []).length) {
@@ -391,6 +548,7 @@ export class HistoryPanel {
           if (loaded.some((t) => t.deviceId === deviceId)) continue;
           this.setLoading(true, `Loading ${deviceId} (${i + 1}/${devices.length})…`);
           const payload = await loadDeviceHistoryRange(settings, deviceId, fromTo.from, fromTo.to);
+          if (token !== this.autoLoadToken) return;
           loaded.push(buildDeviceTrack(deviceId, colorForDevice(i), payload.track ?? []));
         }
       }
@@ -398,10 +556,10 @@ export class HistoryPanel {
       this.tracks = loaded.filter((t) => t.points.length > 0);
       if (!this.tracks.length) {
         this.onStatus('No GPS data for selection', true);
+        this.updateTrackHint();
         return;
       }
 
-      this.sessionMeta = fromTo;
       this.selection = defaultSelection(this.tracks);
       const tMin = Math.min(...this.tracks.map((t) => t.tMin));
       const tMax = Math.max(...this.tracks.map((t) => t.tMax));
@@ -415,13 +573,71 @@ export class HistoryPanel {
         `Loaded ${this.tracks.length} device(s) · ${this.tracks.reduce((n, t) => n + t.points.length, 0)} points`,
       );
       this.setLoading(false);
-      this.onTracksLoaded?.();
-      if (this.trackHost) this.scheduleRefreshViews();
+      this.scrollToPane(this.activePane);
+      this.scheduleRefreshViews();
     } catch (e) {
       this.onStatus(e instanceof Error ? e.message : String(e), true);
     } finally {
-      this.setLoading(false);
+      if (token === this.autoLoadToken) this.setLoading(false);
     }
+  }
+
+  private paneIndex(id: PaneId): number {
+    return PANES.findIndex((p) => p.id === id);
+  }
+
+  private scrollToPane(id: PaneId): void {
+    const track = this.q<HTMLElement>('[data-swipe-track]');
+    const swipe = this.swipeEl;
+    if (!track || !swipe) return;
+    const idx = this.paneIndex(id);
+    if (idx < 0) return;
+    const pane = track.children[idx] as HTMLElement | undefined;
+    if (!pane) return;
+    swipe.scrollTo({ left: pane.offsetLeft, behavior: 'smooth' });
+    this.activePane = id;
+    this.syncSwipeUi();
+    if (id === 'map') {
+      window.setTimeout(() => this.historyMap?.invalidateSize(), 80);
+      window.setTimeout(() => this.historyMap?.invalidateSize(), 280);
+    }
+    if (id === 'speed-time' || id === 'speed-dist' || id === 'spm' || id === 'hr') {
+      this.renderCharts();
+    }
+  }
+
+  private onSwipeScroll(): void {
+    const swipe = this.swipeEl;
+    if (!swipe) return;
+    const w = swipe.clientWidth || 1;
+    const idx = Math.round(swipe.scrollLeft / w);
+    const pane = PANES[Math.max(0, Math.min(PANES.length - 1, idx))];
+    if (pane && pane.id !== this.activePane) {
+      this.activePane = pane.id;
+      this.syncSwipeUi();
+      if (pane.id === 'map') {
+        window.setTimeout(() => this.historyMap?.invalidateSize(), 50);
+      }
+      if (
+        pane.id === 'speed-time' ||
+        pane.id === 'speed-dist' ||
+        pane.id === 'spm' ||
+        pane.id === 'hr'
+      ) {
+        this.renderCharts();
+      }
+    }
+  }
+
+  private syncSwipeUi(): void {
+    const label = this.q<HTMLElement>('[data-pane-label]');
+    const pane = PANES.find((p) => p.id === this.activePane) ?? PANES[0];
+    if (label) label.textContent = pane.label;
+    this.host?.querySelectorAll<HTMLButtonElement>('[data-dot]').forEach((btn) => {
+      const active = btn.dataset.dot === this.activePane;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
   }
 
   private refreshViews(): void {
@@ -444,12 +660,15 @@ export class HistoryPanel {
       : `${formatDuration((this.selection.t1 - this.selection.t0) / 1000)} selected`;
 
     host.innerHTML = `
-      <h2 class="history-stats__title">Session stats <span class="history-hint">(${esc(rangeLabel)})</span></h2>
+      <div class="history-stats__bar">
+        <h2 class="history-stats__title">Session stats</h2>
+        <span class="history-stats__range">${esc(rangeLabel)}</span>
+      </div>
       <div class="history-stats__grid">
         ${stats
           .map(
             (s) => `
-          <article class="history-stats__card" style="border-left-color: ${esc(s.color)}">
+          <article class="history-stats__card" style="--device-color: ${esc(s.color)}; border-left-color: ${esc(s.color)}">
             <h3 class="history-stats__device">${esc(s.deviceId)}${s.boatClass ? ` <span class="history-hint">${esc(s.boatClass)}</span>` : ''}</h3>
             <dl class="history-stats__dl">
               <div><dt>Duration</dt><dd>${esc(formatDuration(s.durationSec))}</dd></div>
@@ -460,6 +679,7 @@ export class HistoryPanel {
               <div><dt>Max speed</dt><dd>${esc(formatSpeedKmh(s.maxSpeedMps))}</dd></div>
               <div><dt>Avg prognostic</dt><dd>${esc(formatPrognosticPct(s.avgPrognosticPct))}</dd></div>
               <div><dt>Avg stroke</dt><dd>${s.avgStrokeRate != null ? `${s.avgStrokeRate.toFixed(1)} spm` : '—'}</dd></div>
+              <div><dt>Avg HR</dt><dd>${s.avgHrBpm != null ? `${Math.round(s.avgHrBpm)} bpm` : '—'}</dd></div>
               <div><dt>GPS points</dt><dd>${s.pointCount}</dd></div>
             </dl>
           </article>`,
@@ -518,10 +738,15 @@ export class HistoryPanel {
   private renderCharts(): void {
     if (!this.selection) return;
     const sel = this.selection;
+    const boatClass = this.tracks[0]
+      ? computeDeviceStats(this.tracks, sel)[0]?.boatClass ?? null
+      : null;
+    const bands = prognosticBandsKmh(boatClass);
 
     const speedTime = this.q<HTMLCanvasElement>('[data-chart-speed-time]');
     const speedDist = this.q<HTMLCanvasElement>('[data-chart-speed-dist]');
     const spm = this.q<HTMLCanvasElement>('[data-chart-spm]');
+    const hr = this.q<HTMLCanvasElement>('[data-chart-hr]');
 
     if (speedTime) {
       drawMultiSeriesChart(speedTime, speedVsTimeSeries(this.tracks, sel), {
@@ -529,6 +754,9 @@ export class HistoryPanel {
         xLabel: 'seconds',
         yLabel: 'km/h',
         yFormat: (v) => `${v.toFixed(0)}`,
+        theme: 'recorder',
+        prognosticBands: bands,
+        colorByPrognostic: bands.length > 0,
       });
     }
     if (speedDist) {
@@ -537,6 +765,9 @@ export class HistoryPanel {
         xLabel: 'metres',
         yLabel: 'km/h',
         yFormat: (v) => `${v.toFixed(0)}`,
+        theme: 'recorder',
+        prognosticBands: bands,
+        colorByPrognostic: bands.length > 0,
       });
     }
     if (spm) {
@@ -545,6 +776,16 @@ export class HistoryPanel {
         xLabel: 'seconds',
         yLabel: 'spm',
         yFormat: (v) => `${v.toFixed(0)}`,
+        theme: 'recorder',
+      });
+    }
+    if (hr) {
+      drawMultiSeriesChart(hr, hrVsTimeSeries(this.tracks, sel), {
+        title: 'HR vs time',
+        xLabel: 'seconds',
+        yLabel: 'bpm',
+        yFormat: (v) => `${v.toFixed(0)}`,
+        theme: 'recorder',
       });
     }
   }

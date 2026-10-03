@@ -44,6 +44,7 @@ export type DeviceStats = {
   avgSpeedMps: number;
   maxSpeedMps: number;
   avgStrokeRate: number | null;
+  avgHrBpm: number | null;
   avgSplitSec: number | null;
   bestSplitSec: number | null;
   avgPrognosticPct: number | null;
@@ -146,6 +147,9 @@ export function computeDeviceStats(tracks: DeviceTrack[], sel: HistorySelection)
     const spm = pts
       .map((p) => p.strokeRate)
       .filter((v): v is number => v != null && v >= 15 && v <= 50);
+    const hrs = pts
+      .map((p) => p.hr)
+      .filter((v): v is number => v != null && Number.isFinite(v) && v >= 30 && v <= 240);
     const durationSec =
       pts.length >= 2
         ? Math.max(0, (pts[pts.length - 1].t - pts[0].t) / 1000)
@@ -175,6 +179,7 @@ export function computeDeviceStats(tracks: DeviceTrack[], sel: HistorySelection)
       avgSpeedMps,
       maxSpeedMps: speeds.length ? Math.max(...speeds) : 0,
       avgStrokeRate: spm.length ? spm.reduce((a, b) => a + b, 0) / spm.length : null,
+      avgHrBpm: hrs.length ? hrs.reduce((a, b) => a + b, 0) / hrs.length : null,
       avgSplitSec: splits.length ? splits.reduce((a, b) => a + b, 0) / splits.length : null,
       bestSplitSec: splits.length ? Math.min(...splits) : null,
       avgPrognosticPct: prognostics.length
@@ -261,6 +266,18 @@ export function strokeRateSeries(tracks: DeviceTrack[], sel: HistorySelection): 
     points: track.points
       .filter((p) => p.strokeRate != null && p.strokeRate >= 15 && p.strokeRate <= 50)
       .map((p) => ({ x: (p.t - sel.t0) / 1000, y: p.strokeRate! })),
+  }));
+}
+
+export function hrVsTimeSeries(tracks: DeviceTrack[], sel: HistorySelection): ChartSeries[] {
+  const filtered = filterTracks(tracks, sel);
+  return filtered.map((track) => ({
+    id: track.deviceId,
+    label: track.deviceId,
+    color: track.color,
+    points: track.points
+      .filter((p) => p.hr != null && Number.isFinite(p.hr) && p.hr! >= 30 && p.hr! <= 240)
+      .map((p) => ({ x: (p.t - sel.t0) / 1000, y: p.hr! })),
   }));
 }
 

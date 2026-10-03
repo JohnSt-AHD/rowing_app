@@ -183,6 +183,7 @@ export type HistoryPoint = {
   lat?: number;
   lon?: number;
   speed?: number;
+  hr?: number | null;
   strokeRate?: number;
   capsize?: boolean;
 };
