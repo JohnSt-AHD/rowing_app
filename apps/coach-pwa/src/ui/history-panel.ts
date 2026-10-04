@@ -1,5 +1,6 @@
 import L from 'leaflet';
 import {
+  fetchDevices,
   listHistoryDevices,
   listSessions,
   loadDeviceHistoryRange,
@@ -142,6 +143,9 @@ export class HistoryPanel {
   private sessionsCache: SessionSummary[] = [];
   private lastSessionId = '';
   private autoLoadToken = 0;
+  /** Latest fleet boatClass by deviceId — fallback when history rows omit class. */
+  private fleetBoatClassByDevice = new Map<string, string>();
+  private fleetAthleteIdByDevice = new Map<string, string>();
 
   constructor(getSettings: () => CoachSettings, onStatus: StatusFn) {
     this.getSettings = getSettings;
@@ -424,7 +428,10 @@ export class HistoryPanel {
   private async loadDeviceList(): Promise<void> {
     try {
       const settings = this.getSettings();
-      const devices = await listHistoryDevices(settings);
+      const [devices] = await Promise.all([
+        listHistoryDevices(settings),
+        this.refreshFleetBoatClassCache(),
+      ]);
       const ids = devices.map((d) => String(d.uniqueId ?? d.unique_id ?? d.deviceId ?? '')).filter(Boolean);
       this.knownDevices = [...new Set([...this.knownDevices, ...ids])].sort();
       this.renderDeviceSelect();
@@ -456,7 +463,7 @@ export class HistoryPanel {
         : sessions
             .map(
               (s: SessionSummary) =>
-                `<option value="${esc(s.session_id)}" data-from="${esc(s.started_at)}" data-to="${esc(s.ended_at ?? '')}" data-boat-class="${esc(s.boat_class ?? '')}" data-athlete-id="${esc(s.athlete_id ?? '')}" ${s.session_id === selectedId ? 'selected' : ''}>${esc(formatSessionLabel(s.started_at))}</option>`,
+                `<option value="${esc(s.session_id)}" data-from="${esc(s.started_at)}" data-to="${esc(s.ended_at ?? '')}" data-boat-class="${esc(s.boat_class ?? s.boatClass ?? '')}" data-athlete-id="${esc(s.athlete_id ?? s.athleteId ?? '')}" ${s.session_id === selectedId ? 'selected' : ''}>${esc(formatSessionLabel(s.started_at))}</option>`,
             )
             .join('');
   }
@@ -467,6 +474,34 @@ export class HistoryPanel {
     const boatClass = String(opt?.dataset.boatClass ?? '').trim() || null;
     const athleteId = String(opt?.dataset.athleteId ?? '').trim() || null;
     return { boatClass, athleteId };
+  }
+
+  private boatClassFallback(deviceId: string): string | null {
+    return this.fleetBoatClassByDevice.get(deviceId) ?? null;
+  }
+
+  private athleteIdFallback(deviceId: string): string | null {
+    return this.fleetAthleteIdByDevice.get(deviceId) ?? null;
+  }
+
+  private async refreshFleetBoatClassCache(): Promise<void> {
+    try {
+      const devices = await fetchDevices(this.getSettings());
+      const nextBoat = new Map<string, string>();
+      const nextAthlete = new Map<string, string>();
+      for (const d of devices) {
+        const id = String(d.deviceId ?? '').trim();
+        if (!id) continue;
+        const boat = String(d.boatClass ?? '').trim();
+        if (boat) nextBoat.set(id, boat);
+        const athlete = String(d.coach ?? d.athleteId ?? '').trim();
+        if (athlete) nextAthlete.set(id, athlete);
+      }
+      this.fleetBoatClassByDevice = nextBoat;
+      this.fleetAthleteIdByDevice = nextAthlete;
+    } catch {
+      /* fleet fallback is best-effort — history API remains primary */
+    }
   }
 
   private restoreSessionSelect(): void {
@@ -535,15 +570,22 @@ export class HistoryPanel {
       const loaded: DeviceTrack[] = [];
 
       const sessionMeta = this.selectedSessionMeta();
+      if (!this.fleetBoatClassByDevice.size) {
+        await this.refreshFleetBoatClassCache();
+        if (token !== this.autoLoadToken) return;
+      }
 
       if (sessionId && devices.length === 1) {
         this.setLoading(true, `Loading session for ${devices[0]}…`);
         const dash = await loadSessionDashboard(settings, sessionId);
         if (token !== this.autoLoadToken) return;
+        const deviceId = devices[0];
         loaded.push(
-          buildDeviceTrack(devices[0], colorForDevice(0), dash.track ?? [], {
-            boatClass: dash.boatClass ?? sessionMeta.boatClass,
-            athleteId: dash.athleteId ?? sessionMeta.athleteId,
+          buildDeviceTrack(deviceId, colorForDevice(0), dash.track ?? [], {
+            boatClass:
+              dash.boatClass ?? sessionMeta.boatClass ?? this.boatClassFallback(deviceId),
+            athleteId:
+              dash.athleteId ?? sessionMeta.athleteId ?? this.athleteIdFallback(deviceId),
           }),
         );
         if (dash.from && dash.to) fromTo = { from: dash.from, to: dash.to };
@@ -570,8 +612,14 @@ export class HistoryPanel {
           if (token !== this.autoLoadToken) return;
           loaded.push(
             buildDeviceTrack(deviceId, colorForDevice(i), payload.track ?? [], {
-              boatClass: payload.boatClass ?? (deviceId === this.primaryDeviceId() ? sessionMeta.boatClass : null),
-              athleteId: payload.athleteId ?? (deviceId === this.primaryDeviceId() ? sessionMeta.athleteId : null),
+              boatClass:
+                payload.boatClass ??
+                (deviceId === this.primaryDeviceId() ? sessionMeta.boatClass : null) ??
+                this.boatClassFallback(deviceId),
+              athleteId:
+                payload.athleteId ??
+                (deviceId === this.primaryDeviceId() ? sessionMeta.athleteId : null) ??
+                this.athleteIdFallback(deviceId),
             }),
           );
         }

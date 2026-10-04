@@ -150,8 +150,30 @@ export type SessionSummary = {
   ended_at?: string | null;
   sample_count?: number;
   boat_class?: string | null;
+  boatClass?: string | null;
   athlete_id?: string | null;
+  athleteId?: string | null;
 };
+
+function pickTrimmed(...vals: unknown[]): string | null {
+  for (const v of vals) {
+    const s = String(v ?? '').trim();
+    if (s) return s;
+  }
+  return null;
+}
+
+function normalizeSessionSummary(raw: SessionSummary): SessionSummary {
+  const boatClass = pickTrimmed(raw.boat_class, raw.boatClass);
+  const athleteId = pickTrimmed(raw.athlete_id, raw.athleteId);
+  return {
+    ...raw,
+    boat_class: boatClass,
+    boatClass,
+    athlete_id: athleteId,
+    athleteId,
+  };
+}
 
 export type HistoryDevice = {
   uniqueId?: string;
@@ -177,7 +199,7 @@ export async function listSessions(
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) throw new Error(`Sessions ${res.status}`);
   const data = (await res.json()) as { sessions?: SessionSummary[] };
-  return data.sessions ?? [];
+  return (data.sessions ?? []).map(normalizeSessionSummary);
 }
 
 export type HistoryPoint = {
@@ -197,7 +219,17 @@ export type DashboardHistoryPayload = {
   uniqueId?: string;
   athleteId?: string | null;
   boatClass?: string | null;
+  boat_class?: string | null;
+  athlete_id?: string | null;
 };
+
+function normalizeDashboardPayload(raw: DashboardHistoryPayload): DashboardHistoryPayload {
+  return {
+    ...raw,
+    boatClass: pickTrimmed(raw.boatClass, raw.boat_class),
+    athleteId: pickTrimmed(raw.athleteId, raw.athlete_id),
+  };
+}
 
 export async function loadDeviceHistoryRange(
   settings: CoachSettings,
@@ -213,7 +245,7 @@ export async function loadDeviceHistoryRange(
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) throw new Error(`History ${deviceId} ${res.status}`);
   const data = (await res.json()) as DashboardHistoryPayload;
-  return data;
+  return normalizeDashboardPayload(data);
 }
 
 export async function loadSessionTrack(
@@ -231,7 +263,7 @@ export async function loadSessionDashboard(
   const url = `${apiBase(settings)}/api/history?format=dashboard&sessionId=${encodeURIComponent(sessionId)}`;
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) throw new Error(`History ${res.status}`);
-  return (await res.json()) as DashboardHistoryPayload;
+  return normalizeDashboardPayload((await res.json()) as DashboardHistoryPayload);
 }
 
 export type LogbookSession = {

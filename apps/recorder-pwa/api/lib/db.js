@@ -979,10 +979,24 @@ async function upsertSession(orgId, sessionId, deviceRef, uniqueId, athleteId, b
     boatMeta.boatId != null && Number.isFinite(Number(boatMeta.boatId))
       ? Number(boatMeta.boatId)
       : null;
-  const boatClass =
+  let boatClass =
     typeof boatMeta.boatClass === 'string' && boatMeta.boatClass.trim()
       ? boatMeta.boatClass.trim().slice(0, 16)
       : null;
+  // Older recorders may send boatId without boatClass — resolve from fleet boats.
+  if (!boatClass && boatId != null) {
+    try {
+      const boatRows = await sql`
+        SELECT boat_class FROM rnz_boats
+        WHERE org_id = ${orgId} AND id = ${boatId}
+        LIMIT 1
+      `;
+      const fromBoat = String(boatRows.rows[0]?.boat_class || '').trim();
+      if (fromBoat) boatClass = fromBoat.slice(0, 16);
+    } catch {
+      /* ignore lookup failures */
+    }
+  }
   await sql`
     INSERT INTO rnz_sessions (org_id, session_id, device_ref, unique_id, athlete_id, boat_id, boat_class, started_at, updated_at)
     VALUES (${orgId}, ${sessionId}, ${deviceRef}, ${uniqueId}, ${athleteId || null}, ${boatId}, ${boatClass}, NOW(), NOW())
@@ -2151,7 +2165,7 @@ async function getLatestSessionCrewMetaByDevice(orgId) {
       s.athlete_id,
       s.rower_name,
       s.boat_id,
-      s.boat_class,
+      COALESCE(NULLIF(TRIM(s.boat_class), ''), NULLIF(TRIM(b.boat_class), '')) AS boat_class,
       s.source,
       b.name AS boat_name
     FROM rnz_sessions s
@@ -2439,21 +2453,28 @@ async function getTraccarSnapshot(orgId, onlineMs = 120000) {
 
 async function listSessions(orgId, uniqueId, limit = 100) {
   const sql = await getSql();
+  // Resolve boat_class from fleet boats when session row only stored boat_id.
   const rows = uniqueId
     ? await sql`
-        SELECT session_id, unique_id, athlete_id, boat_class, started_at, ended_at, updated_at,
-          (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = rnz_sessions.session_id AND org_id = ${orgId}) AS sample_count
-        FROM rnz_sessions
-        WHERE org_id = ${orgId} AND unique_id = ${uniqueId}
-        ORDER BY started_at DESC
+        SELECT s.session_id, s.unique_id, s.athlete_id,
+          COALESCE(NULLIF(TRIM(s.boat_class), ''), NULLIF(TRIM(b.boat_class), '')) AS boat_class,
+          s.started_at, s.ended_at, s.updated_at,
+          (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = s.session_id AND org_id = ${orgId}) AS sample_count
+        FROM rnz_sessions s
+        LEFT JOIN rnz_boats b ON b.org_id = s.org_id AND b.id = s.boat_id
+        WHERE s.org_id = ${orgId} AND s.unique_id = ${uniqueId}
+        ORDER BY s.started_at DESC
         LIMIT ${limit}
       `
     : await sql`
-        SELECT session_id, unique_id, athlete_id, boat_class, started_at, ended_at, updated_at,
-          (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = rnz_sessions.session_id AND org_id = ${orgId}) AS sample_count
-        FROM rnz_sessions
-        WHERE org_id = ${orgId}
-        ORDER BY started_at DESC
+        SELECT s.session_id, s.unique_id, s.athlete_id,
+          COALESCE(NULLIF(TRIM(s.boat_class), ''), NULLIF(TRIM(b.boat_class), '')) AS boat_class,
+          s.started_at, s.ended_at, s.updated_at,
+          (SELECT COUNT(*)::int FROM rnz_samples WHERE session_id = s.session_id AND org_id = ${orgId}) AS sample_count
+        FROM rnz_sessions s
+        LEFT JOIN rnz_boats b ON b.org_id = s.org_id AND b.id = s.boat_id
+        WHERE s.org_id = ${orgId}
+        ORDER BY s.started_at DESC
         LIMIT ${limit}
       `;
   return rows.rows;
@@ -2772,13 +2793,16 @@ async function getDashboardHistory(orgId, uniqueId, fromIso, toIso) {
   `;
 
   const sess = await sql`
-    SELECT boat_class, athlete_id
-    FROM rnz_sessions
-    WHERE org_id = ${orgId}
-      AND unique_id = ${String(uniqueId)}
-      AND started_at <= ${new Date(toMs)}
-      AND (ended_at IS NULL OR ended_at >= ${new Date(fromMs)})
-    ORDER BY started_at DESC
+    SELECT
+      COALESCE(NULLIF(TRIM(s.boat_class), ''), NULLIF(TRIM(b.boat_class), '')) AS boat_class,
+      s.athlete_id
+    FROM rnz_sessions s
+    LEFT JOIN rnz_boats b ON b.org_id = s.org_id AND b.id = s.boat_id
+    WHERE s.org_id = ${orgId}
+      AND s.unique_id = ${String(uniqueId)}
+      AND s.started_at <= ${new Date(toMs)}
+      AND (s.ended_at IS NULL OR s.ended_at >= ${new Date(fromMs)})
+    ORDER BY s.started_at DESC
     LIMIT 1
   `;
   const sessRow = sess.rows[0];
@@ -2798,9 +2822,12 @@ async function getDashboardHistoryBySession(orgId, sessionId) {
   const sql = await getSql();
   await ensureOrgsBootstrapped();
   const meta = await sql`
-    SELECT session_id, unique_id, athlete_id, boat_class, started_at, ended_at
-    FROM rnz_sessions
-    WHERE org_id = ${orgId} AND session_id = ${String(sessionId)}
+    SELECT s.session_id, s.unique_id, s.athlete_id,
+      COALESCE(NULLIF(TRIM(s.boat_class), ''), NULLIF(TRIM(b.boat_class), '')) AS boat_class,
+      s.started_at, s.ended_at
+    FROM rnz_sessions s
+    LEFT JOIN rnz_boats b ON b.org_id = s.org_id AND b.id = s.boat_id
+    WHERE s.org_id = ${orgId} AND s.session_id = ${String(sessionId)}
     LIMIT 1
   `;
   if (!meta.rows[0]) return null;

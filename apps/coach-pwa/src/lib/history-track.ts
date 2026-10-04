@@ -1,6 +1,11 @@
 import type { HistoryPoint } from './api';
 import { smoothChartSeriesByTime } from './chart-smooth';
-import { parseBoatClass, prognosticPercent, splitSecFromMps } from '@rowing/rowing-pace';
+import {
+  normalizeBoatClassCode,
+  parseBoatClass,
+  prognosticPercent,
+  splitSecFromMps,
+} from '@rowing/rowing-pace';
 
 /** Saturated palette for light Manager backgrounds (charts, tickets, map dots). */
 export const DEVICE_COLORS = [
@@ -121,9 +126,16 @@ export function buildDeviceTrack(
   };
 }
 
-/** Resolve boat class the same way as the recorder speed chart. */
+/**
+ * Resolve boat class for prognostic bands.
+ * Prefer an explicit session/fleet class (incl. short forms like 1X), then parse
+ * device/athlete labels the same way as the recorder speed chart.
+ */
 export function resolveTrackBoatClass(track: DeviceTrack): string | null {
-  return parseBoatClass(track.boatClass, track.athleteId, track.deviceId);
+  return (
+    normalizeBoatClassCode(track.boatClass) ||
+    parseBoatClass(track.boatClass, track.athleteId, track.deviceId)
+  );
 }
 
 export function defaultSelection(tracks: DeviceTrack[]): HistorySelection {
