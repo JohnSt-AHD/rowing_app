@@ -80,6 +80,36 @@ expectSpm(
 );
 expectSpm('Legacy pulse 24spm', synthLegacyPulse(24, 8, 20), 24);
 
+/** Emphasize finish dip so naive valley counting would ~double SPM. */
+function synthStrongFinishDip(spm, seconds, hz) {
+  const intervalMs = 60000 / spm;
+  const samples = [];
+  const n = Math.floor(seconds * hz);
+  for (let i = 0; i < n; i++) {
+    const t = i * (1000 / hz);
+    const phase = (t % intervalMs) / intervalMs;
+    let surge = 0;
+    if (phase < 0.08) {
+      surge = -2.6 * Math.sin((phase / 0.08) * Math.PI);
+    } else if (phase < 0.5) {
+      const p = (phase - 0.08) / 0.42;
+      surge = 1.8 * Math.sin(p * Math.PI);
+    } else if (phase < 0.62) {
+      // Strong finish dip — previously counted as a second stroke.
+      const p = (phase - 0.5) / 0.12;
+      surge = -1.7 * Math.sin(p * Math.PI);
+    } else {
+      const p = (phase - 0.62) / 0.38;
+      surge = 0.5 * Math.sin(p * Math.PI);
+    }
+    samples.push({ t, motion: { ax: surge, ay: 0.05, az: 9.81 } });
+  }
+  return samples;
+}
+
+expectSpm('Strong finish-dip 22spm', synthStrongFinishDip(22, 12, 25), 22, 3.5);
+expectSpm('Strong finish-dip 28spm', synthStrongFinishDip(28, 12, 25), 28, 3.5);
+
 // Capsize uses a slow gravity EMA — hold inverted long enough for gz to flip.
 const capsize = new MotionAnalyzer();
 for (let i = 0; i < 80; i++) {

@@ -4,9 +4,6 @@
 const MIN_SPM = 15;
 const MAX_SPM = 50;
 
-const MIN_PEAK_INTERVAL_MS = 60000 / MAX_SPM;
-const MAX_PEAK_INTERVAL_MS = 60000 / MIN_SPM;
-
 const DEFAULTS = {
   bufferMs: 8000,
   gravityAlpha: 0.04,
@@ -52,6 +49,12 @@ function stdDev(values) {
   return Math.sqrt(varSum / values.length);
 }
 
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
 function movingAverage(values, centerIdx, radius) {
   let sum = 0;
   let n = 0;
@@ -87,9 +90,7 @@ function collectExtrema(hp, times, minProminence, minIntervalMs, kind) {
 
     const last = out[out.length - 1];
     if (last && times[i] - last.t < minIntervalMs) {
-      // Keep stronger extremum in the refractory window.
-      const stronger =
-        kind === 'peak' ? v > last.v : v < last.v;
+      const stronger = kind === 'peak' ? v > last.v : v < last.v;
       if (stronger) out[out.length - 1] = { t: times[i], v };
       continue;
     }
@@ -99,7 +100,70 @@ function collectExtrema(hp, times, minProminence, minIntervalMs, kind) {
 }
 
 /**
+ * Drop finish-dip / secondary markers that sit at ~half a stroke.
+ * When consecutive intervals look like catch→finish→catch, keep the deeper of each pair.
+ * @param {{ t: number, v: number }[]} events
+ * @param {'peak'|'valley'} kind
+ */
+function thinHalfStrokeMarkers(events, kind) {
+  if (events.length < 4) return events;
+  /** @type {number[]} */
+  const dts = [];
+  for (let i = 1; i < events.length; i++) dts.push(events[i].t - events[i - 1].t);
+  const med = median(dts);
+  if (med == null || med <= 0) return events;
+
+  /** @type {number[]} */
+  const paired = [];
+  for (let i = 2; i < events.length; i++) paired.push(events[i].t - events[i - 2].t);
+  const medPair = median(paired);
+  if (medPair == null) return events;
+
+  // Half-stroke pattern: pair gap ≈ 2× consecutive gap.
+  if (!(medPair > med * 1.55 && medPair < med * 2.6)) return events;
+
+  /** @type {{ t: number, v: number }[]} */
+  const out = [];
+  for (let i = 0; i < events.length; ) {
+    if (i + 1 >= events.length) {
+      out.push(events[i]);
+      break;
+    }
+    const a = events[i];
+    const b = events[i + 1];
+    const gap = b.t - a.t;
+    // Only collapse pairs that look like intra-stroke (near the short median).
+    if (gap < med * 1.35) {
+      const deeper = kind === 'valley' ? (a.v <= b.v ? a : b) : a.v >= b.v ? a : b;
+      out.push(deeper);
+      i += 2;
+    } else {
+      out.push(a);
+      i += 1;
+    }
+  }
+  return out.length >= 3 ? out : events;
+}
+
+/**
+ * Keep only deep extrema (catch-scale), dropping shallow finish dips.
+ * @param {{ t: number, v: number }[]} events
+ * @param {'peak'|'valley'} kind
+ */
+function filterByRelativeDepth(events, kind) {
+  if (events.length < 3) return events;
+  const depths = events.map((e) => Math.abs(e.v));
+  const maxDepth = Math.max(...depths);
+  if (maxDepth < 1e-6) return events;
+  // Finish dips are typically < ~45% of catch depth on hull surge.
+  const minDepth = maxDepth * 0.5;
+  const kept = events.filter((e) => Math.abs(e.v) >= minDepth);
+  return kept.length >= 3 ? kept : events;
+}
+
+/**
  * Score a candidate stroke-marker series: prefer valid SPM intervals with low spread.
+ * Do not reward raw event count — that preferred drive double-peaks / finish dips.
  * @param {{ t: number, v: number }[]} events
  * @param {number} minIntervalMs
  * @param {number} maxIntervalMs
@@ -117,18 +181,18 @@ function scoreStrokeEvents(events, minIntervalMs, maxIntervalMs, minSpm, maxSpm)
   }
   if (intervals.length < 2) return { score: -1, spm: null, intervals };
 
-  const sorted = [...intervals].sort((a, b) => a - b);
-  const medianMs = sorted[Math.floor(sorted.length / 2)];
+  const medianMs = median(intervals);
+  if (medianMs == null) return { score: -1, spm: null, intervals };
   const spm = Math.round((60000 / medianMs) * 10) / 10;
   if (spm < minSpm || spm > maxSpm) return { score: -1, spm: null, intervals };
 
   const mean = intervals.reduce((s, v) => s + v, 0) / intervals.length;
   const spread =
     intervals.reduce((s, v) => s + Math.abs(v - mean), 0) / intervals.length / mean;
-  // Stronger mean catch depth + more intervals + lower relative spread wins.
   const meanDepth =
     events.reduce((s, e) => s + Math.abs(e.v), 0) / Math.max(1, events.length);
-  const score = intervals.length * 2 + meanDepth * 3 - spread * 8;
+  // Depth + consistency; small bonus for having enough intervals (capped).
+  const score = meanDepth * 5 - spread * 12 + Math.min(intervals.length, 5) * 0.4;
   return { score, spm, intervals };
 }
 
@@ -261,6 +325,18 @@ class MotionAnalyzer {
     }
   }
 
+  _prepareMarkers(hp, times, minProminence, kind) {
+    const raw = collectExtrema(
+      hp,
+      times,
+      minProminence,
+      this.minPeakIntervalMs,
+      kind,
+    );
+    const deep = filterByRelativeDepth(raw, kind);
+    return thinHalfStrokeMarkers(deep, kind);
+  }
+
   _updateStrokeRate() {
     if (this.buffer.length < 30) {
       this.strokeRate = null;
@@ -289,31 +365,18 @@ class MotionAnalyzer {
     const hp = raw.map((v, i) => v - movingAverage(raw, i, radius));
 
     const rms = Math.sqrt(hp.reduce((s, v) => s + v * v, 0) / hp.length);
-    // Catch check is typically the deepest surge feature; require a bit more prominence
-    // so recovery/finish micro-dips are ignored.
-    const minProminence = Math.max(0.12, rms * 0.45);
+    // Stronger prominence so shallow finish dips are ignored.
+    const minProminence = Math.max(0.2, rms * 0.55);
 
     /*
      * Rowing hull longitudinal accel has ~one catch check per stroke (strong negative
      * surge at front reversal) plus a drive double-peak and often a finish dip
-     * (Kleshnev 2010; Holt et al. 2021; Accrow). Counting positive peaks roughly
-     * doubles SPM. Prefer catch valleys; also score positive peaks in case the phone
-     * axis is flipped so catch appears positive.
+     * (Kleshnev 2010; Holt et al. 2021; Accrow). Counting peaks or catch+finish
+     * roughly doubles SPM. Prefer deep catch valleys; peaks only if valleys fail
+     * (flipped phone axis).
      */
-    const valleys = collectExtrema(
-      hp,
-      times,
-      minProminence,
-      this.minPeakIntervalMs,
-      'valley',
-    );
-    const peaks = collectExtrema(
-      hp,
-      times,
-      minProminence,
-      this.minPeakIntervalMs,
-      'peak',
-    );
+    const valleys = this._prepareMarkers(hp, times, minProminence, 'valley');
+    const peaks = this._prepareMarkers(hp, times, minProminence, 'peak');
 
     const valleyScore = scoreStrokeEvents(
       valleys,
@@ -330,10 +393,24 @@ class MotionAnalyzer {
       this.maxSpm,
     );
 
-    // Prefer valleys (catch) unless peaks clearly score better (flipped axis).
-    const usePeaks = peakScore.score > valleyScore.score + 1.5;
-    const chosen = usePeaks ? peakScore : valleyScore;
-    this.peaks = usePeaks ? peaks : valleys;
+    let chosen = valleyScore;
+    let chosenEvents = valleys;
+    // Peaks only as flipped-axis fallback when valleys cannot form a rate,
+    // or when peaks are clearly better and not ~2× the valley rate.
+    if (valleyScore.spm == null && peakScore.spm != null) {
+      chosen = peakScore;
+      chosenEvents = peaks;
+    } else if (
+      valleyScore.spm != null &&
+      peakScore.spm != null &&
+      peakScore.score > valleyScore.score + 3 &&
+      peakScore.spm < valleyScore.spm * 1.35
+    ) {
+      chosen = peakScore;
+      chosenEvents = peaks;
+    }
+
+    this.peaks = chosenEvents;
     this.strokeRate = chosen.spm;
   }
 
