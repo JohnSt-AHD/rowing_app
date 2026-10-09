@@ -86,8 +86,9 @@ import {
   splitSecToT,
   updateSpectrumRail,
 } from './session-display';
+import { HistoryPanel } from './history-panel';
 
-type View = 'record' | 'settings';
+type View = 'record' | 'history' | 'settings';
 type FsTab = 'metrics' | 'speed' | 'map';
 
 const IS_NATIVE = import.meta.env.VITE_PLATFORM === 'native';
@@ -110,6 +111,7 @@ function asset(path: string): string {
 
 export function mountApp(root: HTMLElement): void {
   let view: View = 'record';
+  let historyPanel: HistoryPanel | null = null;
   let fleetConfigCache: FleetConfig | null = getCachedFleetConfig();
   let recording = false;
   let capsizeActive = false;
@@ -711,20 +713,48 @@ export function mountApp(root: HTMLElement): void {
     hudTickTimer = setInterval(() => updateLiveHud(), 1000);
   }
 
+  function ensureHistoryPanel(): HistoryPanel {
+    if (!historyPanel) {
+      historyPanel = new HistoryPanel(
+        () => loadSettings(),
+        (msg, err) => pushLog(msg, Boolean(err)),
+      );
+    }
+    return historyPanel;
+  }
+
   function render() {
     destroySessionMap();
-    root.innerHTML = view === 'settings' ? settingsHtml() : recordHtml();
+    historyPanel?.prepareForRender(view);
+    if (view === 'settings') {
+      root.innerHTML = settingsHtml();
+    } else if (view === 'history') {
+      root.innerHTML = historyHtml();
+    } else {
+      root.innerHTML = recordHtml();
+    }
     bind();
+    if (view === 'history') {
+      const historyRoot = root.querySelector('[data-history-root]') as HTMLElement | null;
+      if (historyRoot) {
+        ensureHistoryPanel().mount(historyRoot);
+        ensureHistoryPanel().onHistoryTabShown();
+      }
+    }
     if (recording && view === 'record') {
       updateLiveHud();
       refreshFsPanels();
     }
   }
 
-  /** Rebuild UI unless Settings is open (avoids wiping form focus / edits). */
+  /** Rebuild UI unless Settings/History is open (avoids wiping form focus / map). */
   function renderUnlessSettings(): void {
     if (view === 'settings') {
       refreshLogPre();
+      void updatePending();
+      return;
+    }
+    if (view === 'history') {
       void updatePending();
       return;
     }
@@ -822,6 +852,19 @@ export function mountApp(root: HTMLElement): void {
     `;
   }
 
+  function mainNavHtml(): string {
+    if (recording) return '';
+    const item = (id: View, label: string) =>
+      `<button type="button" class="recorder-tab ${view === id ? 'active' : ''}" data-nav="${id}">${label}</button>`;
+    return `
+      <nav class="recorder-tabs" aria-label="Main">
+        ${item('record', 'Record')}
+        ${item('history', 'History')}
+        ${item('settings', 'Settings')}
+      </nav>
+    `;
+  }
+
   function hubFooter(): string {
     const version = buildVersionLabel();
     return `
@@ -832,6 +875,7 @@ export function mountApp(root: HTMLElement): void {
           <a href="${asset('dashboard.html')}" target="_blank" rel="noopener">CrewSight Manager</a>
         </p>
         ${version ? `<p class="ahd-footer__version">${esc(version)}</p>` : ''}
+        ${mainNavHtml()}
       </footer>
     `;
   }
@@ -1102,8 +1146,25 @@ export function mountApp(root: HTMLElement): void {
         }
         ${standbyLine ? `<p class="poll-line session-standby-hint">${esc(standbyLine)}</p>` : '<p class="poll-line session-standby-hint" hidden></p>'}
         <button type="button" class="hub-btn hub-btn--ghost" data-action="clear-session">Clear session</button>
-        <button type="button" class="hub-btn" data-nav="settings">Settings</button>
       </section>
+    `;
+  }
+
+  function historyHtml(): string {
+    const s = loadSettings();
+    const name = s.deviceId?.trim() || '—';
+    return `
+      <div class="ahd-recorder-shell ahd-recorder-shell--history">
+        ${hubHeader()}
+        <div class="hub-stats-bar" aria-live="polite">
+          <div class="hub-stats-item"><span class="hub-stats-label">Name</span><strong>${esc(name)}</strong></div>
+          <div class="hub-stats-item"><span class="hub-stats-label">History</span><strong>This phone only</strong></div>
+        </div>
+        <div class="ahd-recorder-main ahd-recorder-main--history">
+          <div class="history-panel" data-history-root></div>
+        </div>
+        ${hubFooter()}
+      </div>
     `;
   }
 
@@ -1801,11 +1862,25 @@ export function mountApp(root: HTMLElement): void {
       });
     });
 
-    root.querySelector('[data-nav="settings"]')?.addEventListener('click', () => {
-      fleetConfigCache = fleetConfigCache ?? getCachedFleetConfig();
-      view = 'settings';
+    const goNav = (next: View) => {
+      if (recording && next !== 'record') {
+        pushLog('Stop the session before leaving Record.', false);
+        return;
+      }
+      if (next === 'settings') {
+        fleetConfigCache = fleetConfigCache ?? getCachedFleetConfig();
+      }
+      historyPanel?.prepareForRender(next);
+      view = next;
       render();
-      void refreshFleetConfigInBackground();
+      if (next === 'settings') void refreshFleetConfigInBackground();
+    };
+
+    root.querySelectorAll<HTMLButtonElement>('[data-nav]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.nav as View | undefined;
+        if (next === 'record' || next === 'history' || next === 'settings') goNav(next);
+      });
     });
 
     const syncFleetFormFields = () => {
@@ -1827,10 +1902,6 @@ export function mountApp(root: HTMLElement): void {
 
     root.querySelector('[name="coachId"]')?.addEventListener('change', syncFleetFormFields);
     root.querySelector('[name="boatId"]')?.addEventListener('change', syncFleetFormFields);
-    root.querySelector('[data-nav="record"]')?.addEventListener('click', () => {
-      view = 'record';
-      render();
-    });
 
     root.querySelector('[data-settings-form]')?.addEventListener('submit', (e) => {
       e.preventDefault();
