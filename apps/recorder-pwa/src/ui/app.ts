@@ -928,14 +928,44 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function metricsBlockHtml(
-    variant: 'hero' | 'column' | 'ticket',
+    variant: 'hero' | 'column' | 'ticket' | 'overlay',
   ): string {
     const wrapClass =
       variant === 'hero'
         ? 'session-metrics-block session-metrics-block--hero'
         : variant === 'ticket'
           ? 'session-metrics-block session-metrics-block--ticket'
-          : 'session-metrics-block session-metrics-block--column';
+          : variant === 'overlay'
+            ? 'session-metrics-block session-metrics-block--overlay'
+            : 'session-metrics-block session-metrics-block--column';
+    if (variant === 'overlay') {
+      return `
+      <div class="${wrapClass}">
+        <div class="session-metric session-metric--pace-overlay">
+          <span class="session-metric__value" data-hud-split>—</span>
+          <span class="session-metric__sep" aria-hidden="true">–</span>
+          <span class="session-metric__prog" data-hud-prog>—</span>
+        </div>
+        <div class="session-live-hud__metrics session-live-hud__metrics--overlay">
+          <div class="session-metric session-metric--timer">
+            <span class="session-metric__value" data-hud-timer-metric>0:00</span>
+            <span class="session-metric__label">Time</span>
+          </div>
+          <div class="session-metric session-metric--spm">
+            <span class="session-metric__value" data-hud-spm>—</span>
+            <span class="session-metric__label">SPM</span>
+          </div>
+          <div class="session-metric session-metric--hr">
+            <span class="session-metric__value" data-hud-hr>—</span>
+            <span class="session-metric__label">HR <span class="hr-indicator hr-indicator--inline" data-hr-indicator data-connected="0" title="HR not connected"><span class="hr-indicator__dot" aria-hidden="true"></span></span></span>
+          </div>
+          <div class="session-metric session-metric--distance">
+            <span class="session-metric__value" data-hud-distance>—</span>
+            <span class="session-metric__label">Dist</span>
+          </div>
+        </div>
+      </div>`;
+    }
     return `
       <div class="${wrapClass}">
         ${
@@ -1022,22 +1052,21 @@ export function mountApp(root: HTMLElement): void {
           </div>
           ${metricsBlockHtml('hero')}
         </div>
-        <div class="session-fs-panel session-fs-panel--split ${fsTab === 'speed' ? 'is-active' : ''}" data-fs-panel="speed">
-          ${metricsBlockHtml('column')}
+        <div class="session-fs-panel session-fs-panel--split session-fs-panel--media ${fsTab === 'speed' ? 'is-active' : ''}" data-fs-panel="speed">
           <div class="session-speed-chart-wrap">
             <canvas data-speed-chart aria-label="Speed versus time last 8 minutes"></canvas>
           </div>
+          <div class="session-metrics-overlay" aria-label="Session metrics">
+            ${metricsBlockHtml('overlay')}
+          </div>
         </div>
-        <div class="session-fs-panel session-fs-panel--map ${fsTab === 'map' ? 'is-active' : ''}" data-fs-panel="map">
+        <div class="session-fs-panel session-fs-panel--map session-fs-panel--media ${fsTab === 'map' ? 'is-active' : ''}" data-fs-panel="map">
           <div class="session-map-stage">
             <div class="session-map-wrap" data-session-map></div>
             <button type="button" class="session-map-follow ${sessionMapFollow ? 'is-active' : ''}" data-map-follow aria-pressed="${sessionMapFollow ? 'true' : 'false'}">${sessionMapFollow ? 'Following' : 'Follow'}</button>
-            <div class="session-metrics-ticket" aria-label="Session metrics">
-              ${metricsBlockHtml('ticket')}
+            <div class="session-metrics-overlay" aria-label="Session metrics">
+              ${metricsBlockHtml('overlay')}
             </div>
-          </div>
-          <div class="session-fs-metrics-side">
-            ${metricsBlockHtml('column')}
           </div>
         </div>
       </section>
