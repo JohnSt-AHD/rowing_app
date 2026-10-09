@@ -44,10 +44,11 @@ import {
 } from '../lib/geofence';
 import {
   clearSessionSpeedBuffer,
-  getSessionSpeedSamples,
+  getSessionSpeedSamplesSmoothed,
   getSessionTrailLatLon,
   pushSessionSpeedSample,
 } from '../lib/session-speed-buffer';
+
 import {
   drawSpeedTimeChart,
   speedChartColorForPrognostic,
@@ -80,12 +81,12 @@ import {
   formatSplit500m,
   hrToT,
   MetricRollingAvg,
-  SPEED_AVG_WINDOW_MS,
   STROKE_AVG_WINDOW_MS,
   splitSecFromMps,
   splitSecToT,
   updateSpectrumRail,
 } from './session-display';
+import { StrokePeriodSpeedAvg } from '../lib/stroke-speed-smooth';
 import { HistoryPanel } from './history-panel';
 
 type View = 'record' | 'history' | 'settings';
@@ -132,7 +133,8 @@ export function mountApp(root: HTMLElement): void {
   let sessionMapGeofenceLayer: L.LayerGroup | null = null;
   /** Keep map centered on the phone GPS; pauses when the user pans/zooms. */
   let sessionMapFollow = true;
-  const speedAvg = new MetricRollingAvg(SPEED_AVG_WINDOW_MS, 0.15);
+  /** Average boat speed over ~2 stroke periods (surge removed). */
+  const speedAvg = new StrokePeriodSpeedAvg({ strokes: 2, minMs: 4000, maxMs: 10000, fallbackMs: 8000 });
   const strokeRateAvg = new MetricRollingAvg(STROKE_AVG_WINDOW_MS, 0);
   let settings = loadSettings();
 
@@ -523,7 +525,7 @@ export function mountApp(root: HTMLElement): void {
     const canvas = root.querySelector('[data-speed-chart]') as HTMLCanvasElement | null;
     if (!canvas || fsTab !== 'speed') return;
     const now = Date.now();
-    const samples = getSessionSpeedSamples(now);
+    const samples = getSessionSpeedSamplesSmoothed(now);
     const points = samples.map((s) => ({
       x: (s.t - now) / 60_000,
       y: s.speedMps * 3.6,
@@ -601,6 +603,9 @@ export function mountApp(root: HTMLElement): void {
     setHudText('[data-hud-hr]', stats?.lastHr != null ? String(stats.lastHr) : '—');
     setHudText('[data-hud-distance]', formatDistanceM(stats?.distanceM));
 
+    const liveSpm =
+      spm != null && spm > 0 ? spm : avgSpm != null && avgSpm > 0 ? avgSpm : null;
+    speedAvg.setStrokeRate(liveSpm);
     if (stats?.speedMps != null && stats.speedMps >= 0.15) {
       speedAvg.push(stats.speedMps);
     }
@@ -620,6 +625,7 @@ export function mountApp(root: HTMLElement): void {
         speedMps: stats.speedMps,
         lat: stats.lastGps?.lat,
         lon: stats.lastGps?.lon,
+        strokeRateSpm: liveSpm,
       });
     }
 

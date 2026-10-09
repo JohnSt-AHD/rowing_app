@@ -1,22 +1,18 @@
 import type { MapPosition } from './api';
 import { resolveSpeedMps } from './map-smooth';
-import { densifyTimeSeries, smoothSpeedTimeSeries } from './chart-smooth';
+import { densifyTimeSeries } from './chart-smooth';
+import { smoothSpeedByStrokePeriod } from './stroke-speed-smooth';
 import { colorForDevice, type ChartSeries } from './history-track';
 
 /** Interpolate smoothed live speed every N seconds for a dense chart line. */
 const LIVE_CHART_DENSIFY_SEC = 0.25;
-/** Lighter smoothing for live speed — history charts keep stronger defaults. */
-const LIVE_SPEED_SMOOTH = {
-  tauSec: 4,
-  maxAccelMps2: 2.5,
-  glitchHoldAboveMps: 1.5,
-} as const;
 
 const WINDOW_MS = 5 * 60 * 1000;
 
 type LivePoint = {
   t: number;
   speedMps: number;
+  strokeRateSpm?: number | null;
 };
 
 type DeviceBuffer = {
@@ -63,14 +59,16 @@ export function recordLiveSpeedSamples(positions: MapPosition[]): void {
     }
 
     const prev = buf.points[buf.points.length - 1];
+    const strokeRateSpm = p.displayStrokeRate ?? p.strokeRate ?? null;
 
     if (prev && Math.abs(t - prev.t) < 80) {
       prev.speedMps = speed;
+      if (strokeRateSpm != null) prev.strokeRateSpm = strokeRateSpm;
       prune(buf, now);
       continue;
     }
 
-    buf.points.push({ t, speedMps: speed });
+    buf.points.push({ t, speedMps: speed, strokeRateSpm });
     prune(buf, now);
   }
 
@@ -85,14 +83,18 @@ export function recordLiveSpeedSamples(positions: MapPosition[]): void {
 
 export function liveSpeedVsTimeSeries(activeDeviceIds: string[]): ChartSeries[] {
   const ids = activeDeviceIds.filter((id) => (buffers.get(id)?.points.length ?? 0) >= 2);
-  return ids.map((id, i) => {
+  return ids.map((id) => {
     const pts = buffers.get(id)!.points;
     const t0 = pts[0].t;
     const smoothed = densifyTimeSeries(
-      smoothSpeedTimeSeries(
-        pts.map((p) => ({ tMs: p.t, value: p.speedMps })),
-        LIVE_SPEED_SMOOTH,
-      ),
+      smoothSpeedByStrokePeriod(
+        pts.map((p) => ({
+          tMs: p.t,
+          speedMps: p.speedMps,
+          strokeRateSpm: p.strokeRateSpm,
+        })),
+        { strokes: 2, minMs: 4000, maxMs: 10000, fallbackMs: 8000 },
+      ).map((p) => ({ tMs: p.tMs, value: p.speedMps })),
       LIVE_CHART_DENSIFY_SEC,
     );
     return {

@@ -1,10 +1,16 @@
 /** Rolling speed + trail samples for fullscreen Speed chart / Map trail. */
 
+import {
+  smoothSpeedByStrokePeriod,
+  type TimeSpeedPoint,
+} from './stroke-speed-smooth';
+
 export type SpeedSample = {
   t: number;
   speedMps: number;
   lat?: number;
   lon?: number;
+  strokeRateSpm?: number | null;
 };
 
 const WINDOW_MS = 8 * 60 * 1000;
@@ -28,6 +34,7 @@ export function pushSessionSpeedSample(
     prev.speedMps = sample.speedMps;
     if (sample.lat != null) prev.lat = sample.lat;
     if (sample.lon != null) prev.lon = sample.lon;
+    if (sample.strokeRateSpm != null) prev.strokeRateSpm = sample.strokeRateSpm;
   } else {
     samples.push({ ...sample });
   }
@@ -41,6 +48,25 @@ export function pushSessionSpeedSample(
 export function getSessionSpeedSamples(now = Date.now()): SpeedSample[] {
   const cutoff = now - WINDOW_MS;
   return samples.filter((s) => s.t >= cutoff);
+}
+
+/** Speed samples with stroke-period surge removed (for live graph). */
+export function getSessionSpeedSamplesSmoothed(now = Date.now()): SpeedSample[] {
+  const raw = getSessionSpeedSamples(now);
+  if (raw.length < 2) return raw;
+  const pts: TimeSpeedPoint[] = raw.map((s) => ({
+    tMs: s.t,
+    speedMps: s.speedMps,
+    strokeRateSpm: s.strokeRateSpm,
+  }));
+  const smoothed = smoothSpeedByStrokePeriod(pts);
+  return smoothed.map((p, i) => ({
+    t: p.tMs,
+    speedMps: p.speedMps,
+    lat: raw[i]?.lat,
+    lon: raw[i]?.lon,
+    strokeRateSpm: p.strokeRateSpm,
+  }));
 }
 
 export function getSessionTrailLatLon(
