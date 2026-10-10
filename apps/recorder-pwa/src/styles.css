@@ -1602,12 +1602,46 @@
     -webkit-backdrop-filter: blur(5px);
   }
 
+  /*
+   * Map tab: absolute full-bleed fill. Flex height chains often collapse to 0px
+   * in Android WebView landscape, leaving only the navy stage + chrome line.
+   */
+  .session-stage:fullscreen .session-fs-panel--map.is-active,
+  .session-stage--fullscreen .session-fs-panel--map.is-active {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    flex: none;
+    width: 100%;
+    height: 100%;
+    min-height: 100%;
+    display: flex;
+    overflow: hidden;
+  }
+
   .session-stage:fullscreen .session-fs-panel--map .session-map-stage,
   .session-stage--fullscreen .session-fs-panel--map .session-map-stage {
-    flex: 1;
+    position: absolute;
+    inset: 0;
+    flex: none;
+    width: 100%;
+    height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .session-stage:fullscreen .session-fs-panel--map .session-map-wrap,
+  .session-stage--fullscreen .session-fs-panel--map .session-map-wrap,
+  .session-stage:fullscreen .session-fs-panel--map .session-map-wrap .leaflet-container,
+  .session-stage--fullscreen .session-fs-panel--map .session-map-wrap .leaflet-container {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
   }
 
   .session-stage:fullscreen .session-fs-panel--map .session-metrics-ticket,

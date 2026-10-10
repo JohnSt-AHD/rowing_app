@@ -467,6 +467,15 @@ export function mountApp(root: HTMLElement): void {
   function ensureSessionMap(): void {
     const el = root.querySelector('[data-session-map]') as HTMLElement | null;
     if (!el) return;
+
+    // After a full re-render Leaflet can point at a detached node — remount.
+    if (sessionMap) {
+      const container = sessionMap.getContainer();
+      if (!container.isConnected || container !== el && !el.contains(container)) {
+        destroySessionMap();
+      }
+    }
+
     if (!sessionMap) {
       const stats = controller?.getStats();
       const lat = stats?.lastGps?.lat ?? -37.928;
@@ -498,7 +507,22 @@ export function mountApp(root: HTMLElement): void {
     }
     updateSessionMapFollowButton();
     updateSessionMapOverlay();
-    requestAnimationFrame(() => invalidateSessionMap());
+    // Wait for absolute full-bleed layout before measuring — 0×0 leaves a blank navy panel.
+    const sync = () => {
+      if (!sessionMap || !el.isConnected) return;
+      if (el.clientHeight < 48) {
+        el.style.minHeight = '60vh';
+        el.style.height = '100%';
+      }
+      invalidateSessionMap();
+      updateSessionMapOverlay();
+    };
+    requestAnimationFrame(() => {
+      sync();
+      requestAnimationFrame(sync);
+      window.setTimeout(sync, 120);
+      window.setTimeout(sync, 360);
+    });
   }
 
   function updateSessionMapOverlay(): void {
