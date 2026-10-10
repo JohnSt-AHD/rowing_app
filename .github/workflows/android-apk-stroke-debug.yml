@@ -45,16 +45,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Ensure Android platform
-        working-directory: apps/stroke-debug-native
-        run: |
-          if [ ! -f android/gradlew ]; then npx cap add android; fi
-          node ../../scripts/patch-stroke-debug-android.mjs
-
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses || true
-
-      - name: Build web + sync Capacitor
+      - name: Build web (needed before cap add / sync)
         run: |
           mkdir -p apps/stroke-debug-native/assets
           ICON_SRC=apps/recorder-pwa/public/assets/crewsight/crewsight-logo-icon-only-color.png
@@ -62,6 +53,24 @@ jobs:
             node scripts/generate-launcher-icon.mjs "$ICON_SRC" apps/stroke-debug-native/assets/icon-source.png --bg=black --scale=1.0
           fi
           npm run build:stroke-debug:native
+
+      - name: Ensure Android platform
+        working-directory: apps/stroke-debug-native
+        run: |
+          if [ ! -d www ] || [ ! -f www/index.html ]; then
+            echo "Missing www/ after web build" >&2
+            exit 1
+          fi
+          if [ ! -f android/gradlew ]; then
+            npx cap add android
+          fi
+          node ../../scripts/patch-stroke-debug-android.mjs
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Sync Capacitor + launcher icon
+        run: |
           (cd apps/stroke-debug-native && npx cap sync android)
           if [ -f apps/stroke-debug-native/assets/icon-source.png ]; then
             node scripts/apply-android-launcher-icon.mjs apps/stroke-debug-native/android/app apps/stroke-debug-native/assets/icon-source.png
