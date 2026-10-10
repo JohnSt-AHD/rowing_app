@@ -55,16 +55,15 @@ jobs:
           npm run build:stroke-debug:native
 
       - name: Ensure Android platform
-        working-directory: apps/stroke-debug-native
         run: |
-          if [ ! -d www ] || [ ! -f www/index.html ]; then
+          if [ ! -f apps/stroke-debug-native/www/index.html ]; then
             echo "Missing www/ after web build" >&2
             exit 1
           fi
-          if [ ! -f android/gradlew ]; then
-            npx cap add android
+          if [ ! -f apps/stroke-debug-native/android/gradlew ]; then
+            (cd apps/stroke-debug-native && npx cap add android)
           fi
-          node ../../scripts/patch-stroke-debug-android.mjs
+          node scripts/patch-stroke-debug-android.mjs
 
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses || true

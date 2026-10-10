@@ -1,13 +1,18 @@
 /**
  * After `npx cap add android`, set version + arm64-only split for the stroke-debug app.
+ * Paths are resolved from the repo root (this file lives in scripts/).
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const gradlePath = path.resolve(
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const gradlePath = path.join(
+  root,
   'apps/stroke-debug-native/android/app/build.gradle',
 );
-const stringsPath = path.resolve(
+const stringsPath = path.join(
+  root,
   'apps/stroke-debug-native/android/app/src/main/res/values/strings.xml',
 );
 
