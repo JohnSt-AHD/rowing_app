@@ -91,10 +91,6 @@ import {
   updateSpectrumRail,
 } from './session-display';
 import { StrokePeriodSpeedAvg } from '../lib/stroke-speed-smooth';
-import {
-  exportStrokeDebugJson,
-  StrokeDebugCapture,
-} from '../lib/stroke-debug-capture';
 import { HistoryPanel } from './history-panel';
 
 type View = 'record' | 'history' | 'settings';
@@ -147,85 +143,7 @@ export function mountApp(root: HTMLElement): void {
   /** Average boat speed over ~2 stroke periods (surge removed). */
   const speedAvg = new StrokePeriodSpeedAvg({ strokes: 2, minMs: 4000, maxMs: 10000, fallbackMs: 8000 });
   const strokeRateAvg = new MetricRollingAvg(STROKE_AVG_WINDOW_MS, 0);
-  const strokeDebugCapture = new StrokeDebugCapture();
   let settings = loadSettings();
-
-  function refreshStrokeDebugStatus(): void {
-    const el = root.querySelector('[data-stroke-debug-status]');
-    if (!el) return;
-    const st = strokeDebugCapture.getStatus();
-    const last = strokeDebugCapture.getLastExport();
-    if (st.active) {
-      const spm =
-        st.strokeRate != null && st.strokeRate > 0
-          ? `${Math.round(st.strokeRate)} spm`
-          : 'calibrating…';
-      el.textContent = `Recording ${st.elapsedSec}s / ${st.remainingSec}s left · ${st.sampleCount} samples · ${spm}${st.calibrated ? '' : ' · hold still to calibrate'}`;
-      return;
-    }
-    if (last) {
-      const spm =
-        last.replay.strokeRate != null
-          ? `${Math.round(last.replay.strokeRate)} spm`
-          : 'no rate';
-      el.textContent = `Last capture: ${last.sampleCount} samples · ${spm} · ${last.replay.markers.length} markers — export ready`;
-      return;
-    }
-    el.textContent =
-      'Idle — record 30–60s at a steady rate, then export JSON for analysis.';
-  }
-
-  async function startStrokeDebug(durationSec: number): Promise<void> {
-    if (recording || standby) {
-      pushLog('Stop the normal session / standby before stroke debug.');
-      return;
-    }
-    if (strokeDebugCapture.isActive()) {
-      pushLog('Stroke debug already running.');
-      return;
-    }
-    const s = loadSettings();
-    const ok = await strokeDebugCapture.start({
-      durationSec,
-      deviceId: s.deviceId || 'debug',
-      label: s.boatClass || '',
-      appVersion: buildVersionLabel() || APP_VERSION || '',
-      motionIntervalMs: 40,
-      onLog: (m) => pushLog(m, false),
-      onStatus: () => refreshStrokeDebugStatus(),
-    });
-    if (ok) {
-      refreshStrokeDebugStatus();
-      refreshLogPre();
-    }
-  }
-
-  async function stopStrokeDebugAndExport(): Promise<void> {
-    const exp =
-      strokeDebugCapture.isActive()
-        ? await strokeDebugCapture.stop()
-        : strokeDebugCapture.getLastExport();
-    refreshStrokeDebugStatus();
-    if (!exp) {
-      pushLog('No stroke debug capture to export yet.');
-      return;
-    }
-    try {
-      const how = await exportStrokeDebugJson(exp);
-      pushLog(
-        how === 'shared'
-          ? 'Stroke debug shared — save the JSON (Files / Drive / email).'
-          : how === 'downloaded'
-            ? 'Stroke debug downloaded — check Downloads / Files.'
-            : 'Stroke debug JSON copied to clipboard.',
-      );
-    } catch (e) {
-      pushLog(
-        `Export failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
-    refreshLogPre();
-  }
 
   document.addEventListener('fullscreenchange', () => {
     const stage = root.querySelector('[data-session-stage]');
@@ -1507,21 +1425,6 @@ export function mountApp(root: HTMLElement): void {
               <button type="button" class="hub-btn" data-action="clear-session">Clear session</button>
             </div>
           </form>
-          <section class="hub-panel" data-stroke-debug-panel>
-            <h2 class="hub-section-title">Stroke rate debug</h2>
-            <p class="form-hint">
-              Captures full-rate accelerometer + detected stroke markers on this phone
-              (not the sparse cloud upload). Do short steady pieces at different rates,
-              then export JSON and open it in <code>stroke-debug.html</code> on a computer.
-            </p>
-            <p class="form-hint" data-stroke-debug-status></p>
-            <div class="form-actions">
-              <button type="button" class="hub-btn hub-btn--primary" data-action="stroke-debug-30">Record 30s</button>
-              <button type="button" class="hub-btn hub-btn--primary" data-action="stroke-debug-60">Record 60s</button>
-              <button type="button" class="hub-btn hub-btn--danger" data-action="stroke-debug-stop">Stop &amp; export</button>
-              <button type="button" class="hub-btn" data-action="stroke-debug-export">Export last</button>
-            </div>
-          </section>
           ${logPanelHtml()}
         </div>
         ${hubFooter()}
@@ -2139,20 +2042,6 @@ export function mountApp(root: HTMLElement): void {
         );
       }
     });
-
-    root.querySelector('[data-action="stroke-debug-30"]')?.addEventListener('click', () => {
-      void startStrokeDebug(30);
-    });
-    root.querySelector('[data-action="stroke-debug-60"]')?.addEventListener('click', () => {
-      void startStrokeDebug(60);
-    });
-    root.querySelector('[data-action="stroke-debug-stop"]')?.addEventListener('click', () => {
-      void stopStrokeDebugAndExport();
-    });
-    root.querySelector('[data-action="stroke-debug-export"]')?.addEventListener('click', () => {
-      void stopStrokeDebugAndExport();
-    });
-    refreshStrokeDebugStatus();
 
     root.querySelectorAll('[data-action="connect-hr"]').forEach((el) => {
       el.addEventListener('click', () => {

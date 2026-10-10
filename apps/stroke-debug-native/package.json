@@ -1,0 +1,24 @@
+{
+  "name": "stroke-debug-native",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Capacitor native shell for CrewSight Stroke Debug",
+  "scripts": {
+    "build:web": "npm run build:native -w stroke-debug-pwa",
+    "sync": "npm run build:web && npx cap sync",
+    "sync:android": "npm run build:web && npx cap sync android",
+    "open:android": "npx cap open android",
+    "run:android": "npm run sync:android && npx cap run android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.2.0",
+    "@capacitor/core": "^7.2.0",
+    "@capgo/capacitor-accelerometer": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.2.0"
+  },
+  "capacitor": {
+    "platforms": ["android"]
+  }
+}

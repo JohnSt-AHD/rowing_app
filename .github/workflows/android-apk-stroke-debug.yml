@@ -1,0 +1,111 @@
+# Build a separate Stroke Debug APK (installs alongside CrewSight).
+name: Android APK (Stroke Debug)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'apps/stroke-debug-pwa/**'
+      - 'apps/stroke-debug-native/**'
+      - 'packages/motion-analysis/**'
+      - 'packages/sensor-adapters/**'
+      - 'packages/vite-plugins/**'
+      - 'scripts/patch-stroke-debug-android.mjs'
+      - 'scripts/generate-launcher-icon.mjs'
+      - 'scripts/apply-android-launcher-icon.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/android-apk-stroke-debug.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Ensure Android platform
+        working-directory: apps/stroke-debug-native
+        run: |
+          if [ ! -f android/gradlew ]; then npx cap add android; fi
+          node ../../scripts/patch-stroke-debug-android.mjs
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Build web + sync Capacitor
+        run: |
+          mkdir -p apps/stroke-debug-native/assets
+          ICON_SRC=apps/recorder-pwa/public/assets/crewsight/crewsight-logo-icon-only-color.png
+          if [ -f "$ICON_SRC" ]; then
+            node scripts/generate-launcher-icon.mjs "$ICON_SRC" apps/stroke-debug-native/assets/icon-source.png --bg=black --scale=1.0
+          fi
+          npm run build:stroke-debug:native
+          (cd apps/stroke-debug-native && npx cap sync android)
+          if [ -f apps/stroke-debug-native/assets/icon-source.png ]; then
+            node scripts/apply-android-launcher-icon.mjs apps/stroke-debug-native/android/app apps/stroke-debug-native/assets/icon-source.png
+          fi
+          node scripts/patch-stroke-debug-android.mjs
+
+      - name: Assemble debug APK
+        working-directory: apps/stroke-debug-native/android
+        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+
+      - name: Prepare release asset (arm64)
+        run: |
+          APK_DIR=apps/stroke-debug-native/android/app/build/outputs/apk/debug
+          if [ -f "$APK_DIR/app-arm64-v8a-debug.apk" ]; then
+            cp "$APK_DIR/app-arm64-v8a-debug.apk" CrewSight-Stroke-Debug.apk
+          else
+            cp "$APK_DIR/app-debug.apk" CrewSight-Stroke-Debug.apk
+          fi
+          ls -lh CrewSight-Stroke-Debug.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrewSight-Stroke-Debug-apk
+          path: CrewSight-Stroke-Debug.apk
+          retention-days: 90
+
+      - name: Publish GitHub Release (stable download link)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-apk-stroke-debug-latest
+          target_commitish: ${{ github.sha }}
+          name: CrewSight Stroke Debug — Android APK
+          body: |
+            **Separate** debug app (package `nz.org.rowing.strokedebug`) — installs next to CrewSight.
+
+            Records full-rate accelerometer + detected stroke markers for short test pieces.
+
+            1. Download **CrewSight-Stroke-Debug.apk**
+            2. Install (allow unknown apps if asked)
+            3. Record 30s/60s at a steady rate → Stop & export JSON
+            4. Open `stroke-debug.html` on a computer and drop the JSON
+
+            Normal CrewSight client is unchanged.
+          prerelease: true
+          make_latest: false
+          files: CrewSight-Stroke-Debug.apk

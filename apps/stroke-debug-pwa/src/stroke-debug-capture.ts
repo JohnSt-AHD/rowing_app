@@ -66,7 +66,6 @@ export class StrokeDebugCapture {
   private liveStrokeRate: { t: number; spm: number | null }[] = [];
   private startedAt = 0;
   private endsAt = 0;
-  private durationSec = 0;
   private intervalMs = DEFAULT_INTERVAL_MS;
   private deviceId = '';
   private label = '';
@@ -107,6 +106,10 @@ export class StrokeDebugCapture {
     };
   }
 
+  private emitStatus(): void {
+    this.onStatus?.(this.getStatus());
+  }
+
   async start(opts: StartOpts): Promise<boolean> {
     if (this.active) {
       opts.onLog?.('Stroke debug already running.');
@@ -117,7 +120,6 @@ export class StrokeDebugCapture {
       MAX_DURATION_SEC,
       Math.max(10, Math.round(opts.durationSec)),
     );
-    this.durationSec = durationSec;
     this.intervalMs = Math.max(20, opts.motionIntervalMs ?? DEFAULT_INTERVAL_MS);
     this.deviceId = opts.deviceId.trim() || 'unknown';
     this.label = (opts.label ?? '').trim();
@@ -133,7 +135,7 @@ export class StrokeDebugCapture {
     this.active = true;
 
     this.onLog?.(
-      `Stroke debug: capturing ${durationSec}s at ~${Math.round(1000 / this.intervalMs)} Hz. Hold phone as in the boat; row a steady rate.`,
+      `Capturing ${durationSec}s at ~${Math.round(1000 / this.intervalMs)} Hz. Hold still ~2s, then row a steady rate.`,
     );
 
     try {
@@ -158,7 +160,7 @@ export class StrokeDebugCapture {
     } catch (e) {
       this.active = false;
       this.onLog?.(
-        `Stroke debug failed to start: ${e instanceof Error ? e.message : String(e)}`,
+        `Failed to start: ${e instanceof Error ? e.message : String(e)}`,
       );
       return false;
     }
@@ -231,7 +233,7 @@ export class StrokeDebugCapture {
         ? `${Math.round(exp.replay.strokeRate)} spm`
         : 'no rate';
     this.onLog?.(
-      `Stroke debug ${opts?.auto ? 'finished' : 'stopped'}: ${exp.sampleCount} samples · ${spm} · ${exp.replay.markers.length} markers (${exp.replay.markerMode ?? '?'} / ${exp.replay.axis ?? '?'}). Export the JSON for analysis.`,
+      `${opts?.auto ? 'Finished' : 'Stopped'}: ${exp.sampleCount} samples · ${spm} · ${exp.replay.markers.length} markers (${exp.replay.markerMode ?? '?'} / ${exp.replay.axis ?? '?'}). Export the JSON.`,
     );
     return exp;
   }
@@ -262,7 +264,6 @@ export async function exportStrokeDebugJson(
         return 'shared';
       }
     } catch (e) {
-      // User cancel — try download; AbortError should not fall through as failure noisily.
       if (e instanceof DOMException && e.name === 'AbortError') {
         return 'shared';
       }

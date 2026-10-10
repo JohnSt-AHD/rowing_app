@@ -1,0 +1,135 @@
+:root {
+  color-scheme: dark;
+  --bg: #0a1628;
+  --panel: #12233a;
+  --ink: #e8eef5;
+  --muted: #9aadc2;
+  --line: #24374f;
+  --accent: #14b8a6;
+  --danger: #ef4444;
+  --btn: #1c3350;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+body {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+#app {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 1.1rem 1rem 2rem;
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.sub {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  line-height: 1.4;
+  font-size: 0.95rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1rem;
+  margin-bottom: 0.9rem;
+}
+
+label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+input {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #0d1b2d;
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 0.7rem 0.75rem;
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.status {
+  min-height: 3.2rem;
+  margin: 0 0 0.85rem;
+  padding: 0.75rem;
+  border-radius: 10px;
+  background: #0d1b2d;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  line-height: 1.35;
+  font-size: 0.95rem;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
+}
+
+button {
+  appearance: none;
+  border: 0;
+  border-radius: 11px;
+  padding: 0.85rem 0.7rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: var(--ink);
+  background: var(--btn);
+}
+
+button.primary {
+  background: var(--accent);
+  color: #042f2e;
+}
+
+button.danger {
+  background: var(--danger);
+  color: #fff;
+  grid-column: 1 / -1;
+}
+
+button:disabled {
+  opacity: 0.45;
+}
+
+.log {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.version {
+  margin-top: 0.85rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}

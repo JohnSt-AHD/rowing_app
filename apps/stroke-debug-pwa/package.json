@@ -1,0 +1,22 @@
+{
+  "name": "stroke-debug-pwa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:native": "vite build --mode native",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@capacitor/core": "^7.2.0",
+    "@capgo/capacitor-accelerometer": "^7.0.0",
+    "@rowing/motion-analysis": "*",
+    "@rowing/sensor-adapters": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
+  }
+}
