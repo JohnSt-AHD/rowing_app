@@ -36,6 +36,7 @@ import {
 import {
   distanceM,
   entryNotifyMessageFor,
+  findHazardZonesAt,
   findNotifyZoneAt,
   findSessionRestrictionAt,
   normalizeGeofenceKind,
@@ -83,6 +84,10 @@ export type RecorderStats = {
   recordingSuppressed?: boolean;
   /** Active regatta control message for this device, if any. */
   regattaMessage?: { id: number; text: string } | null;
+  /** True while GPS is inside one or more kind=hazard geofences. */
+  inHazardZone?: boolean;
+  /** Warning copy for the on-screen hazard banner (cleared when outside). */
+  hazardWarning?: string | null;
   /** Native foreground-service diagnostics (Android). */
   nativePulse?: import('../lib/native-capsize-monitor').NativeRecordingPulse;
 };
@@ -392,11 +397,31 @@ export async function startRecorder(
         void maybeNotifyGeofenceEntry(zoneKey, prev, entryNotifyMessageFor(notifyZone));
       }
     }
+
+    const hazards = findHazardZonesAt(lat, lon, geofences);
+    const hazard = hazards[0] ?? null;
+    const wasInHazard = Boolean(stats.inHazardZone);
+    const warning = hazard ? entryNotifyMessageFor(hazard) : null;
+    stats.inHazardZone = Boolean(hazard);
+    stats.hazardWarning = warning;
+    if (Boolean(hazard) !== wasInHazard) {
+      if (hazard) {
+        onLog(`Hazard zone entered: ${hazard.name.trim() || 'Hazard'}.`);
+      } else if (wasInHazard) {
+        onLog('Left hazard zone.');
+      }
+      emit();
+    }
   };
 
   const recheckGeofenceFromLastPosition = () => {
     if (!geofences.length) {
       if (inBoatPark) applyEconomyMode(null);
+      if (stats.inHazardZone || stats.hazardWarning) {
+        stats.inHazardZone = false;
+        stats.hazardWarning = null;
+        emit();
+      }
       return;
     }
     const lg = stats.lastGps;

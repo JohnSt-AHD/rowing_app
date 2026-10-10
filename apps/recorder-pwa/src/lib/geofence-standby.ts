@@ -6,6 +6,8 @@
 import type { RecorderSettings } from '@rowing/telemetry-types';
 import { startGpsWatcher } from '@rowing/sensor-adapters';
 import {
+  entryNotifyMessageFor,
+  findHazardZonesAt,
   findSessionRestrictionAt,
   normalizeGeofenceKind,
   type GeofenceConfig,
@@ -17,6 +19,8 @@ export type StandbyStatus = {
   inside: boolean;
   zoneName: string | null;
   message: string;
+  /** On-screen hazard warning while GPS is inside a kind=hazard zone. */
+  hazardWarning?: string | null;
 };
 
 export type StandbyController = {
@@ -49,6 +53,7 @@ export async function startGeofenceStandby(
   let startTriggered = false;
   let lastFreshFixMs = 0;
   let message = 'Armed — waiting for GPS…';
+  let hazardWarning: string | null = null;
 
   const emit = (nextMessage: string) => {
     message = nextMessage;
@@ -57,7 +62,17 @@ export async function startGeofenceStandby(
       inside,
       zoneName,
       message,
+      hazardWarning,
     });
+  };
+
+  const updateHazardAt = (lat: number, lon: number) => {
+    if (!geofences.length) {
+      hazardWarning = null;
+      return;
+    }
+    const hazard = findHazardZonesAt(lat, lon, geofences)[0] ?? null;
+    hazardWarning = hazard ? entryNotifyMessageFor(hazard) : null;
   };
 
   const autoStartZones = () =>
@@ -135,6 +150,7 @@ export async function startGeofenceStandby(
       return;
     }
     lastFreshFixMs = fixMs;
+    updateHazardAt(lat, lon);
 
     if (!autoStartZones().length) {
       emit('Armed — GPS ok, waiting for auto-start zones…');
@@ -197,9 +213,11 @@ export async function startGeofenceStandby(
       inside,
       zoneName,
       message,
+      hazardWarning,
     }),
     stop: () => {
       stopped = true;
+      hazardWarning = null;
       clearInterval(refreshTimer);
       clearInterval(dwellTimer);
       try {

@@ -1,4 +1,13 @@
-/** Traffic-channel status from lane geofences + GPS course. */
+/**
+ * Traffic / flow-pattern status from lane geofences + GPS course.
+ *
+ * Status id → athlete HUD colour (see `.session-channel-badge` in styles.css):
+ * - correct → green (right lane + heading)
+ * - nogo → amber (in no-go channel)
+ * - wrong → red (wrong lane for heading)
+ * - turnaround → amber (caution / turn zone)
+ * - unknown, no_lanes → neutral grey
+ */
 
 import {
   type GeofenceConfig,
@@ -108,7 +117,7 @@ export function inferUpBearingDeg(list: GeofenceConfig[], fallback = 133): numbe
 }
 
 /**
- * Evaluate whether the boat is in the correct channel for its heading.
+ * Evaluate whether the boat is in the correct flow pattern for its heading.
  * @param courseDeg GPS course over ground, or null if unknown
  */
 export function evaluateChannelStatus(
@@ -125,7 +134,7 @@ export function evaluateChannelStatus(
   ) {
     return {
       id: 'no_lanes',
-      label: 'No channel data',
+      label: 'No flow pattern data',
       sub: '',
       expected: null,
       actual: null,
@@ -155,7 +164,7 @@ export function evaluateChannelStatus(
   if (actual === 'nogo') {
     return {
       id: 'nogo',
-      label: 'No-go zone',
+      label: 'No-go channel',
       sub: 'Move to your lane',
       expected: null,
       actual,
@@ -184,7 +193,7 @@ export function evaluateChannelStatus(
     }
     return {
       id: 'unknown',
-      label: 'Off channel',
+      label: 'Off flow pattern',
       sub: 'Outside marked lanes',
       expected: null,
       actual,
@@ -194,7 +203,7 @@ export function evaluateChannelStatus(
   if (actual === expected) {
     return {
       id: 'correct',
-      label: 'Correct channel',
+      label: 'Correct flow pattern',
       sub: expected === 'up' ? 'Up lane' : 'Down lane',
       expected,
       actual,
@@ -203,7 +212,7 @@ export function evaluateChannelStatus(
   if (actual === 'up' || actual === 'down') {
     return {
       id: 'wrong',
-      label: 'Wrong channel',
+      label: 'Wrong flow pattern',
       sub:
         expected === 'up'
           ? 'Heading up — use up lane'
@@ -214,7 +223,7 @@ export function evaluateChannelStatus(
   }
   return {
     id: 'unknown',
-    label: 'Off channel',
+    label: 'Off flow pattern',
     sub:
       expected === 'up'
         ? 'Should be in up lane'

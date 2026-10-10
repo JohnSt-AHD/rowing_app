@@ -538,6 +538,73 @@
   display: none;
 }
 
+.session-live-hud__hazard {
+  margin: 0 0 0.65rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: 8px;
+  background: rgba(180, 83, 9, 0.92);
+  border: 1px solid rgba(251, 191, 36, 0.85);
+  color: #fffbeb;
+  text-align: center;
+  pointer-events: none;
+  animation: capsize-pulse 1.4s ease-in-out infinite;
+}
+
+.session-live-hud__hazard[hidden] {
+  display: none;
+}
+
+.session-live-hud__hazard-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #fde68a;
+  margin-bottom: 0.2rem;
+}
+
+.session-live-hud__hazard-text {
+  display: block;
+  font-size: clamp(0.95rem, 3.8vw, 1.2rem);
+  font-weight: 800;
+  line-height: 1.3;
+  color: #fffbeb;
+  -webkit-text-fill-color: #fffbeb;
+  text-wrap: pretty;
+}
+
+.session-standby-hazard {
+  margin: 0 0 0.75rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 8px;
+  background: rgba(180, 83, 9, 0.92);
+  border: 1px solid rgba(251, 191, 36, 0.85);
+  color: #fffbeb;
+  text-align: center;
+}
+
+.session-standby-hazard[hidden] {
+  display: none;
+}
+
+.session-standby-hazard__label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #fde68a;
+  margin-bottom: 0.2rem;
+}
+
+.session-standby-hazard__text {
+  display: block;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
 .session-live-hud__regatta {
   margin: 0 0 0.65rem;
   padding: 0.65rem 0.85rem;
@@ -917,20 +984,21 @@
   line-height: 1.2;
 }
 
+/* Flow-pattern HUD: green = correct lane+heading; amber = no-go / turnaround; red = wrong lane */
 .session-channel-badge[data-channel='correct'] {
   border-color: rgba(52, 211, 153, 0.55);
   background: rgba(6, 78, 59, 0.82);
 }
 
-.session-channel-badge[data-channel='wrong'],
-.session-channel-badge[data-channel='nogo'] {
-  border-color: rgba(248, 113, 113, 0.6);
-  background: rgba(127, 29, 29, 0.88);
-}
-
+.session-channel-badge[data-channel='nogo'],
 .session-channel-badge[data-channel='turnaround'] {
   border-color: rgba(251, 191, 36, 0.55);
   background: rgba(120, 53, 15, 0.85);
+}
+
+.session-channel-badge[data-channel='wrong'] {
+  border-color: rgba(248, 113, 113, 0.6);
+  background: rgba(127, 29, 29, 0.88);
 }
 
 .session-channel-badge[data-channel='unknown'],
@@ -1114,9 +1182,13 @@
   min-height: 242px;
   display: flex;
   flex-direction: column;
+  /* Keep HUD overlays above Leaflet's transformed tile panes (Android WebView). */
+  isolation: isolate;
 }
 
 .session-map-wrap {
+  position: relative;
+  z-index: 0;
   flex: 1;
   min-height: 242px;
   border-radius: 10px;
@@ -1130,13 +1202,14 @@
   height: 100%;
   min-height: 242px;
   background: #0c1c34;
+  z-index: 0;
 }
 
 .session-map-follow {
   position: absolute;
   left: 0.65rem;
   top: 0.65rem;
-  z-index: 500;
+  z-index: 1100;
   appearance: none;
   border: 1px solid rgba(0, 229, 255, 0.35);
   border-radius: 8px;
@@ -1343,6 +1416,11 @@
   font-size: clamp(1.15rem, 5vw, 1.75rem);
 }
 
+.session-stage:fullscreen .session-live-hud__hazard-text,
+.session-stage--fullscreen .session-live-hud__hazard-text {
+  font-size: clamp(1.05rem, 4.2vw, 1.45rem);
+}
+
 .session-stage:fullscreen .session-drawer-toggle,
 .session-stage--fullscreen .session-drawer-toggle {
   max-width: none;
@@ -1371,13 +1449,24 @@
   }
 
   /* Floating chrome over full-bleed map/graph (rails stay outside via stage padding) */
+  /* Hazard toast under chrome ? visible over map/graph, does not cover Stop. */
+  .session-stage:fullscreen .session-live-hud__hazard:not([hidden]),
+  .session-stage--fullscreen .session-live-hud__hazard:not([hidden]) {
+    position: absolute;
+    top: 3.55rem;
+    left: 0.55rem;
+    right: 0.55rem;
+    z-index: 1150;
+    margin: 0;
+  }
+
   .session-stage:fullscreen .session-fs-chrome,
   .session-stage--fullscreen .session-fs-chrome {
     position: absolute;
     top: 0.55rem;
     left: 0.55rem;
     right: 0.55rem;
-    z-index: 40;
+    z-index: 1200;
     flex-direction: row;
     flex-wrap: wrap;
     width: auto;
@@ -1471,17 +1560,21 @@
   .session-stage--fullscreen .session-metrics-overlay {
     display: block;
     position: absolute;
-    z-index: 30;
+    /* Above Leaflet panes (~200?700) so zoom/pan compositing cannot bury the HUD. */
+    z-index: 1000;
     left: 0.65rem;
     bottom: 0.65rem;
     width: min(14.75rem, calc(100% - 1.3rem));
     padding: 0.5rem 0.6rem 0.55rem;
     border-radius: 12px;
     border: 1px solid rgba(232, 244, 252, 0.18);
-    background: rgba(10, 22, 40, 0.38);
+    background: rgba(10, 22, 40, 0.55);
     backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
     box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
     pointer-events: none;
+    transform: translateZ(0);
+    will-change: transform;
   }
 
   .session-stage:fullscreen .session-metrics-overlay .session-metric__label,
@@ -1501,9 +1594,12 @@
   .session-stage--fullscreen .session-map-follow {
     bottom: 0.65rem;
     right: 0.65rem;
-    z-index: 30;
+    left: auto;
+    top: auto;
+    z-index: 1100;
     background: rgba(10, 22, 40, 0.55);
     backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
   }
 
   .session-stage:fullscreen .session-fs-panel--map .session-map-stage,
@@ -1583,7 +1679,6 @@
   overflow: hidden;
 }
 
-.ahd-recorder-shell--history .hub-topbar,
 .ahd-recorder-shell--history .hub-stats-bar,
 .ahd-recorder-shell--history .ahd-footer {
   flex-shrink: 0;
@@ -1916,6 +2011,9 @@
 }
 
 .history-map-wrap {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1923,6 +2021,8 @@
 }
 
 .history-map {
+  position: relative;
+  z-index: 0;
   flex: 1;
   min-height: 0;
   height: 100%;
@@ -1932,6 +2032,7 @@
 
 .history-map.leaflet-container {
   background: #0a1628;
+  z-index: 0;
 }
 
 .history-chart {
@@ -2216,7 +2317,6 @@
 }
 
 @media (orientation: landscape) and (max-height: 520px) {
-  .ahd-recorder-shell--history .hub-topbar,
   .ahd-recorder-shell--history .hub-stats-bar {
     display: none;
   }

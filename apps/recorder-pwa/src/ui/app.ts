@@ -679,6 +679,22 @@ export function mountApp(root: HTMLElement): void {
       else capsizeEl.setAttribute('hidden', '');
     }
 
+    const hazardEl = root.querySelector('[data-hud-hazard]') as HTMLElement | null;
+    if (hazardEl) {
+      const warning =
+        stats?.inHazardZone && stats.hazardWarning?.trim()
+          ? stats.hazardWarning.trim()
+          : '';
+      const textEl = hazardEl.querySelector('[data-hud-hazard-text]');
+      if (warning) {
+        hazardEl.removeAttribute('hidden');
+        if (textEl) textEl.textContent = warning;
+      } else {
+        hazardEl.setAttribute('hidden', '');
+        if (textEl) textEl.textContent = '';
+      }
+    }
+
     const regattaEl = root.querySelector('[data-hud-regatta]');
     if (regattaEl) {
       const text = stats?.regattaMessage?.text?.trim();
@@ -745,7 +761,7 @@ export function mountApp(root: HTMLElement): void {
         if (sub) sub.textContent = status.sub;
       } else {
         channelEl.setAttribute('data-channel', 'unknown');
-        if (label) label.textContent = 'Channel…';
+        if (label) label.textContent = 'Flow pattern…';
         if (sub) sub.textContent = '';
       }
     }
@@ -1120,7 +1136,11 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function liveHudHtml(): string {
-    const regattaText = controller?.getStats()?.regattaMessage?.text?.trim() || '';
+    const liveStats = controller?.getStats();
+    const regattaText = liveStats?.regattaMessage?.text?.trim() || '';
+    const hazardText = liveStats?.inHazardZone
+      ? liveStats.hazardWarning?.trim() || ''
+      : '';
     const landscape = isLandscapeOrientation();
     if (!landscape && fsTab !== 'metrics') fsTab = 'metrics';
     return `
@@ -1140,7 +1160,7 @@ export function mountApp(root: HTMLElement): void {
               role="status"
               aria-live="polite"
             >
-              <span class="session-channel-badge__label">Channel…</span>
+              <span class="session-channel-badge__label">Flow pattern…</span>
               <span class="session-channel-badge__sub"></span>
             </div>
             <button type="button" class="hub-btn hub-btn--danger session-fs-chrome__stop" data-action="stop">Stop</button>
@@ -1148,6 +1168,10 @@ export function mountApp(root: HTMLElement): void {
         </div>
         <div class="session-live-hud__alert" data-hud-capsize ${capsizeActive ? '' : 'hidden'} role="alert">
           ⚠ CAPSIZE — boat tipped. Check crew now.
+        </div>
+        <div class="session-live-hud__hazard" data-hud-hazard ${hazardText ? '' : 'hidden'} role="alert" aria-live="assertive">
+          <span class="session-live-hud__hazard-label">⚠ Hazard zone</span>
+          <span class="session-live-hud__hazard-text" data-hud-hazard-text>${hazardText ? esc(hazardText) : ''}</span>
         </div>
         <div class="session-live-hud__regatta" data-hud-regatta ${regattaText ? '' : 'hidden'} role="status" aria-live="polite">
           <span class="session-live-hud__regatta-label">Regatta control</span>
@@ -1194,10 +1218,15 @@ export function mountApp(root: HTMLElement): void {
     const s = loadSettings();
     const armed = Boolean(standby);
     const standbyLine = armed ? standbyStatus?.message || 'Standby on' : '';
+    const standbyHazard = armed ? standbyStatus?.hazardWarning?.trim() || '' : '';
     const standbyInfo =
       'Standby watches boat-park geofences and auto-starts a session when you leave the park. Recording pauses inside the park and can auto-stop when you re-enter.';
     return `
       <section class="hub-panel actions actions--idle session-actions-panel">
+        <div class="session-standby-hazard" data-standby-hazard ${standbyHazard ? '' : 'hidden'} role="alert" aria-live="assertive">
+          <span class="session-standby-hazard__label">⚠ Hazard zone</span>
+          <span class="session-standby-hazard__text" data-standby-hazard-text>${standbyHazard ? esc(standbyHazard) : ''}</span>
+        </div>
         <button type="button" class="hub-btn hub-btn--primary hub-btn-lg" data-action="start">Start session</button>
         ${
           s.geofenceSessionControl !== false
@@ -1217,9 +1246,9 @@ export function mountApp(root: HTMLElement): void {
   function historyHtml(): string {
     const s = loadSettings();
     const name = s.deviceId?.trim() || '—';
+    // No CrewSight title bar here — History needs the vertical space for stats/map/charts.
     return `
       <div class="ahd-recorder-shell ahd-recorder-shell--history">
-        ${hubHeader()}
         <div class="hub-stats-bar" aria-live="polite">
           <div class="hub-stats-item"><span class="hub-stats-label">Name</span><strong>${esc(name)}</strong></div>
           <div class="hub-stats-item"><span class="hub-stats-label">History</span><strong>This phone only</strong></div>
@@ -1476,12 +1505,29 @@ export function mountApp(root: HTMLElement): void {
     }
   }
 
+  function syncStandbyHazardBanner(warning: string | null | undefined): void {
+    const el = root.querySelector('[data-standby-hazard]') as HTMLElement | null;
+    if (!el) return;
+    const text = warning?.trim() || '';
+    const textEl = el.querySelector('[data-standby-hazard-text]');
+    if (text) {
+      el.removeAttribute('hidden');
+      if (textEl) textEl.textContent = text;
+    } else {
+      el.setAttribute('hidden', '');
+      if (textEl) textEl.textContent = '';
+    }
+  }
+
   function applyStandbyStatus(st: StandbyStatus | NativeStandbyStatus): void {
+    const hazardWarning =
+      'hazardWarning' in st ? (st as StandbyStatus).hazardWarning ?? null : null;
     standbyStatus = {
       armed: st.armed,
       inside: st.inside,
       zoneName: st.zoneName,
       message: st.message,
+      hazardWarning,
     };
     if (!recording && view === 'record') {
       const hint = root.querySelector('.session-standby-hint');
@@ -1489,6 +1535,7 @@ export function mountApp(root: HTMLElement): void {
         hint.textContent = st.message;
         hint.hidden = !st.message;
       }
+      syncStandbyHazardBanner(hazardWarning);
       const btn = root.querySelector('[data-action="toggle-standby"]');
       if (btn) {
         btn.textContent = 'End standby';
@@ -1636,20 +1683,7 @@ export function mountApp(root: HTMLElement): void {
       standby = await startGeofenceStandby(s, {
         onLog: (msg) => pushLog(msg),
         onStatus: (st) => {
-          standbyStatus = st;
-          if (!recording && view === 'record') {
-            const hint = root.querySelector('.session-standby-hint');
-            if (hint) {
-              hint.textContent = st.message;
-              hint.hidden = !st.message;
-            }
-            const btn = root.querySelector('[data-action="toggle-standby"]');
-            if (btn && standby) {
-              btn.textContent = 'End standby';
-              btn.classList.add('hub-btn--danger');
-              btn.classList.remove('hub-btn--ghost');
-            }
-          }
+          applyStandbyStatus(st);
         },
         onAutoStart: async () => {
           await stopStandby();

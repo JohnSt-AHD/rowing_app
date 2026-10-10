@@ -235,10 +235,28 @@ export function findNotifyZoneAt(
   geofences: GeofenceConfig[],
 ): GeofenceConfig | null {
   for (const g of geofences) {
-    if (!g.notifyOnEnter) continue;
+    if (!g.enabled) continue;
+    const kind = normalizeGeofenceKind(g.kind);
+    // Hazards always warn on enter; other kinds need notifyOnEnter.
+    if (!g.notifyOnEnter && kind !== 'hazard') continue;
     if (pointInZoneGeometry(g, lat, lon)) return g;
   }
   return null;
+}
+
+/** Enabled hazard zones containing this point (on-screen enter/exit warning). */
+export function findHazardZonesAt(
+  lat: number,
+  lon: number,
+  geofences: GeofenceConfig[],
+): GeofenceConfig[] {
+  const out: GeofenceConfig[] = [];
+  for (const g of geofences) {
+    if (!g.enabled) continue;
+    if (normalizeGeofenceKind(g.kind) !== 'hazard') continue;
+    if (pointInZoneGeometry(g, lat, lon)) out.push(g);
+  }
+  return out;
 }
 
 export function entryNotifyMessageFor(g: GeofenceConfig): string {

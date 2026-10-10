@@ -123,6 +123,8 @@ export class HistoryPanel {
   private timeline: HistoryTimeline | null = null;
   private historyMap: L.Map | null = null;
   private historyLines = new Map<string, L.Polyline>();
+  /** Last fitBounds signature — avoid resetting user zoom on every refresh. */
+  private historyMapFitKey = '';
   private sessionsLoaded = false;
   private loading = false;
   private loadingMessage = '';
@@ -340,6 +342,7 @@ export class HistoryPanel {
       this.historyMap = null;
     }
     this.historyLines.clear();
+    this.historyMapFitKey = '';
   }
 
   private updateTrackHint(): void {
@@ -686,8 +689,13 @@ export class HistoryPanel {
     const mapEl = this.q<HTMLElement>('[data-history-map]');
     if (!mapEl) return;
 
+    const created = !this.historyMap;
     if (!this.historyMap) {
-      this.historyMap = L.map(mapEl, { preferCanvas: true });
+      this.historyMap = L.map(mapEl, {
+        preferCanvas: true,
+        zoomControl: true,
+        attributionControl: false,
+      });
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
         attribution: '&copy; OpenStreetMap',
@@ -721,11 +729,19 @@ export class HistoryPanel {
       }
     }
 
-    if (bounds.length >= 2) {
+    const fitKey =
+      bounds.length >= 2
+        ? `${this.lastSessionId}|${this.selection.t0}|${this.selection.t1}|${this.selection.distStartM}|${this.selection.distWindowM}|${bounds.length}`
+        : '';
+    if (bounds.length >= 2 && (created || fitKey !== this.historyMapFitKey)) {
+      this.historyMapFitKey = fitKey;
       this.historyMap.fitBounds(L.latLngBounds(bounds), { padding: [28, 28] });
     }
-    window.setTimeout(() => this.historyMap?.invalidateSize(), 50);
-    window.setTimeout(() => this.historyMap?.invalidateSize(), 280);
+    // Defer size sync so the swipe pane has laid out; avoid double-fit fighting zoom.
+    window.setTimeout(() => this.historyMap?.invalidateSize({ animate: false }), 50);
+    if (created || this.activePane === 'map') {
+      window.setTimeout(() => this.historyMap?.invalidateSize({ animate: false }), 280);
+    }
   }
 
   private renderCharts(): void {
