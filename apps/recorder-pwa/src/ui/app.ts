@@ -329,8 +329,9 @@ export function mountApp(root: HTMLElement): void {
 
   function formatDistanceM(metres: number | null | undefined): string {
     if (metres == null || !Number.isFinite(metres) || metres < 0) return '—';
-    if (metres < 1000) return `${Math.round(metres)} m`;
-    return `${(metres / 1000).toFixed(2)} km`;
+    // Non-breaking space so "149 m" / "1.20 km" stay on one line in the overlay.
+    if (metres < 1000) return `${Math.round(metres)}\u00A0m`;
+    return `${(metres / 1000).toFixed(2)}\u00A0km`;
   }
 
   async function enterStageFullscreen(): Promise<void> {

@@ -1588,6 +1588,7 @@
     font-size: 0.88rem;
     color: #f8fafc;
     -webkit-text-fill-color: #f8fafc;
+    white-space: nowrap;
   }
 
   .session-stage:fullscreen .session-map-follow,
