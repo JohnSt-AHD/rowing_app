@@ -8,7 +8,7 @@ const config: CapacitorConfig = {
     androidScheme: 'https',
   },
   /* Identify the WebView so map tile CDNs do not treat requests as anonymous scrapers. */
-  appendToUserAgent: 'CrewSight/1.0.52 (nz.org.rowing.recorder)',
+  appendToUserAgent: 'CrewSight/1.0.53 (nz.org.rowing.recorder)',
   ios: {
     contentInset: 'automatic',
     backgroundColor: '#0a1628',

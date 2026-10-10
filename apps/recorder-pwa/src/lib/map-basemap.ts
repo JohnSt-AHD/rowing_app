@@ -3,17 +3,15 @@ import L from 'leaflet';
 
 /**
  * Basemap for CrewSight maps.
- * Prefer Carto (OSM data) — official tile.openstreetmap.org often blocks
- * Android WebView user-agents, which shows as an empty dark map.
+ * Carto raster tiles now require an API key (show "API KEY REQUIRED").
+ * Esri World Street Map is free for light app use and works in Android WebView.
  */
 export function addMapBasemap(map: LeafletMap): TileLayer {
-  // Voyager (light) so a failed/blank load is obvious vs the navy app chrome.
   return L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
     {
-      maxZoom: 20,
-      subdomains: 'abcd',
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri &mdash; Source: Esri, OpenStreetMap',
     },
   ).addTo(map);
 }
