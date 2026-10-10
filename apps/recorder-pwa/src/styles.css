@@ -1176,32 +1176,26 @@
   gap: 0;
 }
 
-.session-map-stage {
-  position: relative;
-  flex: 1;
-  min-height: 242px;
-  display: flex;
-  flex-direction: column;
-  /* Keep HUD overlays above Leaflet's transformed tile panes (Android WebView). */
-  isolation: isolate;
-}
-
+/* Same flex host pattern as the Graph canvas wrap (that layout works on Android). */
 .session-map-wrap {
   position: relative;
   z-index: 0;
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 242px;
+  width: 100%;
+  height: 100%;
   border-radius: 10px;
   border: 1px solid var(--ahd-border);
   overflow: hidden;
-  background: #0c1c34;
+  background: #d8e0e8;
 }
 
 .session-map-wrap .leaflet-container {
-  width: 100%;
-  height: 100%;
+  width: 100% !important;
+  height: 100% !important;
   min-height: 242px;
-  background: #0c1c34;
+  background: #d8e0e8;
   z-index: 0;
 }
 
@@ -1259,12 +1253,6 @@
 
 .session-metrics-ticket .session-metric__label {
   font-size: 0.52rem;
-}
-
-.session-stage:fullscreen .session-map-stage,
-.session-stage--fullscreen .session-map-stage {
-  min-height: 0;
-  flex: 1 1 auto;
 }
 
 .session-fs-metrics-side {
@@ -1427,15 +1415,6 @@
   width: auto;
   margin-left: 0;
   margin-right: 0;
-}
-
-.session-stage:fullscreen .session-fs-panel--map .session-map-stage,
-.session-stage:fullscreen .session-fs-panel--map .session-map-wrap,
-.session-stage:fullscreen .session-fs-panel--map .session-map-wrap .leaflet-container,
-.session-stage--fullscreen .session-fs-panel--map .session-map-stage,
-.session-stage--fullscreen .session-fs-panel--map .session-map-wrap,
-.session-stage--fullscreen .session-fs-panel--map .session-map-wrap .leaflet-container {
-  min-height: 0;
 }
 
 @media (orientation: landscape) {
@@ -1603,46 +1582,25 @@
     -webkit-backdrop-filter: blur(5px);
   }
 
-  /*
-   * Map tab: absolute full-bleed fill. Flex height chains often collapse to 0px
-   * in Android WebView landscape, leaving only the navy stage + chrome line.
-   */
+  /* Match Graph tab: map host fills the active media panel. */
   .session-stage:fullscreen .session-fs-panel--map.is-active,
   .session-stage--fullscreen .session-fs-panel--map.is-active {
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    flex: none;
-    width: 100%;
-    height: 100%;
-    min-height: 100%;
-    display: flex;
-    overflow: hidden;
-  }
-
-  .session-stage:fullscreen .session-fs-panel--map .session-map-stage,
-  .session-stage--fullscreen .session-fs-panel--map .session-map-stage {
-    position: absolute;
-    inset: 0;
-    flex: none;
-    width: 100%;
-    height: 100%;
+    position: relative;
+    flex: 1;
     min-width: 0;
     min-height: 0;
+    height: 100%;
     overflow: hidden;
   }
 
   .session-stage:fullscreen .session-fs-panel--map .session-map-wrap,
-  .session-stage--fullscreen .session-fs-panel--map .session-map-wrap,
-  .session-stage:fullscreen .session-fs-panel--map .session-map-wrap .leaflet-container,
-  .session-stage--fullscreen .session-fs-panel--map .session-map-wrap .leaflet-container {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
+  .session-stage--fullscreen .session-fs-panel--map .session-map-wrap {
+    flex: 1 1 auto;
+    min-width: 0;
     min-height: 0;
-    border: 0;
+    height: 100%;
     border-radius: 0;
+    border: 0;
   }
 
   .session-stage:fullscreen .session-fs-panel--map .session-metrics-ticket,

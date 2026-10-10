@@ -7,8 +7,9 @@ import L from 'leaflet';
  * Android WebView user-agents, which shows as an empty dark map.
  */
 export function addMapBasemap(map: LeafletMap): TileLayer {
+  // Voyager (light) so a failed/blank load is obvious vs the navy app chrome.
   return L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
     {
       maxZoom: 20,
       subdomains: 'abcd',

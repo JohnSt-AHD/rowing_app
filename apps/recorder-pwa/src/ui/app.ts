@@ -465,6 +465,32 @@ export function mountApp(root: HTMLElement): void {
     }
   }
 
+  /** Give Leaflet a real pixel box — % height often stays 0 in Android WebView flex layouts. */
+  function sizeSessionMapHost(el: HTMLElement): void {
+    const panel = el.closest('[data-fs-panel="map"]') as HTMLElement | null;
+    const hud = el.closest('.session-live-hud') as HTMLElement | null;
+    const stage = el.closest('[data-session-stage]') as HTMLElement | null;
+    const h = Math.max(
+      panel?.clientHeight ?? 0,
+      hud?.clientHeight ?? 0,
+      stage?.clientHeight ?? 0,
+      Math.floor(window.innerHeight * 0.8),
+      280,
+    );
+    const w = Math.max(
+      panel?.clientWidth ?? 0,
+      hud?.clientWidth ?? 0,
+      stage?.clientWidth ?? 0,
+      window.innerWidth,
+      320,
+    );
+    el.style.boxSizing = 'border-box';
+    el.style.width = `${w}px`;
+    el.style.height = `${h}px`;
+    el.style.minHeight = `${h}px`;
+    el.style.flex = '1 1 auto';
+  }
+
   function ensureSessionMap(): void {
     const el = root.querySelector('[data-session-map]') as HTMLElement | null;
     if (!el) return;
@@ -472,18 +498,21 @@ export function mountApp(root: HTMLElement): void {
     // After a full re-render Leaflet can point at a detached node — remount.
     if (sessionMap) {
       const container = sessionMap.getContainer();
-      if (!container.isConnected || container !== el && !el.contains(container)) {
+      if (!container.isConnected || (container !== el && !el.contains(container))) {
         destroySessionMap();
       }
     }
+
+    sizeSessionMapHost(el);
 
     if (!sessionMap) {
       const stats = controller?.getStats();
       const lat = stats?.lastGps?.lat ?? -37.928;
       const lon = stats?.lastGps?.lon ?? 175.548;
       sessionMapFollow = true;
+      // SVG renderer is more reliable than canvas on some Android WebViews.
       sessionMap = L.map(el, {
-        preferCanvas: true,
+        preferCanvas: false,
         zoomControl: true,
         attributionControl: false,
       }).setView([lat, lon], 15);
@@ -508,21 +537,19 @@ export function mountApp(root: HTMLElement): void {
     }
     updateSessionMapFollowButton();
     updateSessionMapOverlay();
-    // Wait for absolute full-bleed layout before measuring — 0×0 leaves a blank navy panel.
     const sync = () => {
-      if (!sessionMap || !el.isConnected) return;
-      if (el.clientHeight < 48) {
-        el.style.minHeight = '60vh';
-        el.style.height = '100%';
+      if (!el.isConnected) return;
+      sizeSessionMapHost(el);
+      if (sessionMap) {
+        sessionMap.invalidateSize({ animate: false });
+        updateSessionMapOverlay();
       }
-      invalidateSessionMap();
-      updateSessionMapOverlay();
     };
     requestAnimationFrame(() => {
       sync();
       requestAnimationFrame(sync);
-      window.setTimeout(sync, 120);
-      window.setTimeout(sync, 360);
+      window.setTimeout(sync, 100);
+      window.setTimeout(sync, 350);
     });
   }
 
@@ -1216,13 +1243,11 @@ export function mountApp(root: HTMLElement): void {
             ${metricsBlockHtml('overlay')}
           </div>
         </div>
-        <div class="session-fs-panel session-fs-panel--map session-fs-panel--media ${fsTab === 'map' ? 'is-active' : ''}" data-fs-panel="map">
-          <div class="session-map-stage">
-            <div class="session-map-wrap" data-session-map></div>
-            <button type="button" class="session-map-follow ${sessionMapFollow ? 'is-active' : ''}" data-map-follow aria-pressed="${sessionMapFollow ? 'true' : 'false'}">${sessionMapFollow ? 'Following' : 'Follow'}</button>
-            <div class="session-metrics-overlay" aria-label="Session metrics">
-              ${metricsBlockHtml('overlay')}
-            </div>
+        <div class="session-fs-panel session-fs-panel--map session-fs-panel--media session-fs-panel--split ${fsTab === 'map' ? 'is-active' : ''}" data-fs-panel="map">
+          <div class="session-map-wrap" data-session-map role="img" aria-label="Session map"></div>
+          <button type="button" class="session-map-follow ${sessionMapFollow ? 'is-active' : ''}" data-map-follow aria-pressed="${sessionMapFollow ? 'true' : 'false'}">${sessionMapFollow ? 'Following' : 'Follow'}</button>
+          <div class="session-metrics-overlay" aria-label="Session metrics">
+            ${metricsBlockHtml('overlay')}
           </div>
         </div>
       </section>
