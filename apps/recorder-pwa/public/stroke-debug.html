@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CrewSight — stroke debug plot</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f5f7;
+        --ink: #12202e;
+        --muted: #5b6b7a;
+        --line: #c9d3dc;
+        --surge: #0d9488;
+        --mark: #dc2626;
+        --spm: #2563eb;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 1.25rem 1rem 2rem;
+      }
+      h1 { font-size: 1.35rem; margin: 0 0 0.35rem; }
+      p { color: var(--muted); margin: 0 0 1rem; line-height: 1.4; }
+      .drop {
+        border: 2px dashed var(--line);
+        border-radius: 12px;
+        padding: 1.25rem;
+        background: #fff;
+        text-align: center;
+        margin-bottom: 1rem;
+      }
+      .drop.over { border-color: var(--surge); background: #ecfeff; }
+      .meta {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 0.6rem;
+        margin-bottom: 1rem;
+      }
+      .meta div {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 0.65rem 0.75rem;
+      }
+      .meta strong { display: block; font-size: 0.75rem; color: var(--muted); font-weight: 600; }
+      canvas {
+        width: 100%;
+        height: auto;
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        display: block;
+      }
+      input[type="file"] { margin-top: 0.75rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Stroke debug plot</h1>
+      <p>
+        Drop a <code>crewsight-stroke-debug-*.json</code> export from the app.
+        Red marks are detected strokes on the surge waveform; blue is live SPM.
+      </p>
+      <div class="drop" id="drop">
+        Drop JSON here
+        <div><input id="file" type="file" accept="application/json,.json" /></div>
+      </div>
+      <div class="meta" id="meta" hidden></div>
+      <canvas id="chart" width="1100" height="420"></canvas>
+    </main>
+    <script>
+      const drop = document.getElementById('drop');
+      const file = document.getElementById('file');
+      const meta = document.getElementById('meta');
+      const canvas = document.getElementById('chart');
+      const ctx = canvas.getContext('2d');
+
+      function cell(label, value) {
+        return `<div><strong>${label}</strong>${value}</div>`;
+      }
+
+      function loadJson(text) {
+        const data = JSON.parse(text);
+        if (data.kind !== 'crewsight-stroke-debug') {
+          throw new Error('Not a CrewSight stroke-debug export');
+        }
+        render(data);
+      }
+
+      function render(data) {
+        const surge = data.replay?.surge || [];
+        const markers = data.replay?.markers || [];
+        const live = data.liveStrokeRate || [];
+        meta.hidden = false;
+        meta.innerHTML = [
+          cell('Device', data.deviceId || '—'),
+          cell('Duration', `${data.durationSec ?? '—'} s`),
+          cell('Samples', String(data.sampleCount ?? surge.length)),
+          cell('Replay SPM', data.replay?.strokeRate != null ? Math.round(data.replay.strokeRate) : '—'),
+          cell('Markers', `${markers.length} (${data.replay?.markerMode || '?'} / ${data.replay?.axis || '?'})`),
+          cell('App', data.appVersion || '—'),
+        ].join('');
+
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, w, h);
+
+        if (surge.length < 2) {
+          ctx.fillStyle = '#5b6b7a';
+          ctx.fillText('No surge series in this file.', 24, 40);
+          return;
+        }
+
+        const t0 = surge[0].t;
+        const t1 = surge[surge.length - 1].t;
+        const xs = (t) => 48 + ((t - t0) / Math.max(1, t1 - t0)) * (w - 72);
+        let vmin = Infinity;
+        let vmax = -Infinity;
+        for (const p of surge) {
+          if (p.v < vmin) vmin = p.v;
+          if (p.v > vmax) vmax = p.v;
+        }
+        const pad = Math.max(0.4, (vmax - vmin) * 0.12);
+        vmin -= pad;
+        vmax += pad;
+        const ySurge = (v) => 24 + (1 - (v - vmin) / (vmax - vmin)) * (h * 0.62);
+
+        ctx.strokeStyle = '#e5eaf0';
+        ctx.beginPath();
+        ctx.moveTo(48, ySurge(0));
+        ctx.lineTo(w - 24, ySurge(0));
+        ctx.stroke();
+
+        ctx.strokeStyle = '#0d9488';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        surge.forEach((p, i) => {
+          const x = xs(p.t);
+          const y = ySurge(p.v);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        ctx.fillStyle = '#dc2626';
+        for (const m of markers) {
+          if (m.t < t0 || m.t > t1) continue;
+          const x = xs(m.t);
+          const y = ySurge(m.v);
+          ctx.beginPath();
+          ctx.arc(x, y, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        const spmPts = live.filter((p) => p.spm != null && p.spm > 0);
+        if (spmPts.length) {
+          const spmMin = 10;
+          const spmMax = 50;
+          const ySpm = (v) => h - 28 - ((v - spmMin) / (spmMax - spmMin)) * (h * 0.22);
+          ctx.strokeStyle = '#2563eb';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          spmPts.forEach((p, i) => {
+            const x = xs(p.t);
+            const y = ySpm(p.spm);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+          ctx.fillStyle = '#2563eb';
+          ctx.font = '12px Segoe UI, sans-serif';
+          ctx.fillText('Live SPM', 48, h - 10);
+        }
+
+        ctx.fillStyle = '#0d9488';
+        ctx.font = '12px Segoe UI, sans-serif';
+        ctx.fillText('Surge (high-pass hull axis)', 48, 16);
+        ctx.fillStyle = '#dc2626';
+        ctx.fillText('Detected strokes', 220, 16);
+      }
+
+      drop.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        drop.classList.add('over');
+      });
+      drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+      drop.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        drop.classList.remove('over');
+        const f = e.dataTransfer.files?.[0];
+        if (!f) return;
+        loadJson(await f.text());
+      });
+      file.addEventListener('change', async () => {
+        const f = file.files?.[0];
+        if (!f) return;
+        loadJson(await f.text());
+      });
+    </script>
+  </body>
+</html>

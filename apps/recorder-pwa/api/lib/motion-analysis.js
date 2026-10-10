@@ -229,6 +229,8 @@ class MotionAnalyzer {
     this.capsize = false;
     this._capsizeSince = null;
     this._capsizeClearSince = null;
+    /** @type {{ axis: string, markerMode: string, strokeRate: number|null, markers: { t: number, v: number }[], surge: { t: number, v: number }[] } | null} */
+    this._lastStrokeDebug = null;
   }
 
   reset() {
@@ -246,6 +248,7 @@ class MotionAnalyzer {
     this.capsize = false;
     this._capsizeSince = null;
     this._capsizeClearSince = null;
+    this._lastStrokeDebug = null;
   }
 
   /**
@@ -412,6 +415,15 @@ class MotionAnalyzer {
 
     this.peaks = chosenEvents;
     this.strokeRate = chosen.spm;
+    const markerMode =
+      chosenEvents === peaks && chosen === peakScore ? 'peak' : 'valley';
+    this._lastStrokeDebug = {
+      axis,
+      markerMode,
+      strokeRate: chosen.spm,
+      markers: chosenEvents.map((e) => ({ t: e.t, v: e.v })),
+      surge: times.map((t, i) => ({ t, v: hp[i] })),
+    };
   }
 
   /** @returns {{ strokeRate: number|null, capsize: boolean, tiltDeg: number|null, calibrated: boolean }} */
@@ -421,6 +433,31 @@ class MotionAnalyzer {
       capsize: this.capsize,
       tiltDeg: this.tiltDeg,
       calibrated: this.calibrated,
+    };
+  }
+
+  /**
+   * Last computed surge waveform + stroke markers (for debug export / plots).
+   * @returns {{
+   *   strokeRate: number|null,
+   *   calibrated: boolean,
+   *   axis: string|null,
+   *   markerMode: string|null,
+   *   markers: { t: number, v: number }[],
+   *   surge: { t: number, v: number }[],
+   *   samples: { t: number, ax: number, ay: number, az: number }[],
+   * }}
+   */
+  getStrokeDebug() {
+    const d = this._lastStrokeDebug;
+    return {
+      strokeRate: this.strokeRate,
+      calibrated: this.calibrated,
+      axis: d?.axis ?? null,
+      markerMode: d?.markerMode ?? null,
+      markers: d?.markers ? d.markers.map((m) => ({ ...m })) : [],
+      surge: d?.surge ? d.surge.map((s) => ({ ...s })) : [],
+      samples: this.buffer.map((s) => ({ t: s.t, ax: s.ax, ay: s.ay, az: s.az })),
     };
   }
 }
@@ -440,9 +477,38 @@ function analyzeMotionWindow(samples) {
   return analyzer.getMetrics();
 }
 
+/**
+ * Offline replay of a full capture for stroke-debug plots.
+ * @param {{ t: number, ax?: number, ay?: number, az?: number, motion?: { ax: number, ay: number, az: number } }[]} samples
+ * @param {{ bufferMs?: number }} [opts]
+ */
+function analyzeMotionDebug(samples, opts = {}) {
+  const sorted = [...samples].sort((a, b) => a.t - b.t);
+  const spanMs =
+    sorted.length >= 2 ? sorted[sorted.length - 1].t - sorted[0].t : 0;
+  const bufferMs = Math.max(opts.bufferMs ?? 120_000, spanMs + 1000, 8000);
+  const analyzer = new MotionAnalyzer({ bufferMs });
+  /** @type {{ t: number, spm: number|null }[]} */
+  const liveStrokeRate = [];
+  for (const s of sorted) {
+    const ax = s.ax ?? s.motion?.ax;
+    const ay = s.ay ?? s.motion?.ay;
+    const az = s.az ?? s.motion?.az;
+    if (ax == null || ay == null || az == null) continue;
+    analyzer.process(s.t, ax, ay, az);
+    const m = analyzer.getMetrics();
+    liveStrokeRate.push({ t: s.t, spm: m.strokeRate });
+  }
+  return {
+    ...analyzer.getStrokeDebug(),
+    liveStrokeRate,
+  };
+}
+
 module.exports = {
   MotionAnalyzer,
   analyzeMotionWindow,
+  analyzeMotionDebug,
   MIN_SPM,
   MAX_SPM,
 };
