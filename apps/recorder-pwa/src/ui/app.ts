@@ -64,6 +64,7 @@ import {
 } from '@rowing/rowing-pace';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { addMapBasemap, scheduleMapInvalidate } from '../lib/map-basemap';
 import { resolveResumeCandidate } from '../lib/session-resume';
 import {
   getHrConnectionStatus,
@@ -376,7 +377,7 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function invalidateSessionMap(): void {
-    sessionMap?.invalidateSize();
+    scheduleMapInvalidate(sessionMap);
   }
 
   function updateSessionMapFollowButton(): void {
@@ -476,9 +477,7 @@ export function mountApp(root: HTMLElement): void {
         zoomControl: true,
         attributionControl: false,
       }).setView([lat, lon], 15);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-      }).addTo(sessionMap);
+      addMapBasemap(sessionMap);
       sessionMap.on('dragstart', () => {
         if (!sessionMapFollow) return;
         setSessionMapFollow(false);

@@ -26,6 +26,7 @@ import {
   type HistorySelection,
 } from '../lib/history-track';
 import { HistoryTimeline } from '../lib/history-timeline';
+import { addMapBasemap, scheduleMapInvalidate } from '../lib/map-basemap';
 
 type StatusFn = (msg: string, err?: boolean) => void;
 
@@ -696,10 +697,7 @@ export class HistoryPanel {
         zoomControl: true,
         attributionControl: false,
       });
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap',
-      }).addTo(this.historyMap);
+      addMapBasemap(this.historyMap);
     }
 
     const filtered = filterTracks(this.tracks, this.selection);
@@ -738,10 +736,7 @@ export class HistoryPanel {
       this.historyMap.fitBounds(L.latLngBounds(bounds), { padding: [28, 28] });
     }
     // Defer size sync so the swipe pane has laid out; avoid double-fit fighting zoom.
-    window.setTimeout(() => this.historyMap?.invalidateSize({ animate: false }), 50);
-    if (created || this.activePane === 'map') {
-      window.setTimeout(() => this.historyMap?.invalidateSize({ animate: false }), 280);
-    }
+    scheduleMapInvalidate(this.historyMap);
   }
 
   private renderCharts(): void {
