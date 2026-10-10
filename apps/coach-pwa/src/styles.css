@@ -223,8 +223,11 @@
   -webkit-text-fill-color: #111111;
   border: 1px solid transparent;
   border-radius: 10px;
-  padding: 0.55rem 0.2rem;
+  padding: 0.55rem 0.15rem;
+  font-size: 0.78rem;
+  line-height: 1.15;
   font-weight: 650;
+  white-space: nowrap;
   font-family: inherit;
   font-size: 0.72rem;
   cursor: pointer;
@@ -252,12 +255,38 @@
   -webkit-text-fill-color: #ffffff;
 }
 
-.coach-panel--race {
+.coach-panel--live {
   padding-top: 0.35rem;
 }
 
-.race-panel-root {
+.live-data-panel-root {
   width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.live-data-panel-root .history-review {
+  flex: 1;
+  min-height: 0;
+}
+
+.live-course-extra {
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--coach-border);
+}
+
+.live-course-extra[hidden] {
+  display: none !important;
+}
+
+.race-toolbar--live {
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 0;
 }
 
 .race-panel {
@@ -569,9 +598,6 @@
   font-weight: 700;
 }
 
-.live-speed-chart {
-  margin-top: 0.75rem;
-}
 
 .device-card {
   background: #ffffff;
@@ -1997,7 +2023,9 @@ button.coach-btn.coach-btn--ghost {
 }
 
 .coach-panel--map .coach-map {
-  min-height: 48vh;
+  min-height: 56vh;
+  max-height: none;
+  height: min(70vh, calc(100dvh - 11rem));
 }
 
 /* Short viewports (phone landscape): compact chrome so History panes stay usable */
@@ -2034,12 +2062,19 @@ button.coach-btn.coach-btn--ghost {
     padding: 0.3rem clamp(10px, 3vw, 16px) 0.35rem;
   }
 
-  .coach-panel--history {
+  .coach-panel--history,
+  .coach-panel--live {
     overflow: hidden;
   }
 
-  .history-review {
+  .history-review,
+  .live-data-panel {
     gap: 0.25rem;
+  }
+
+  .live-course-extra {
+    max-height: 38vh;
+    overflow: auto;
   }
 
   .history-select-bar {

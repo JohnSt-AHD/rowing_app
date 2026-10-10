@@ -2,14 +2,11 @@ import '../styles.css';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { HistoryPanel } from './history-panel';
-import { RacePanel } from './race-panel';
+import { LiveDataPanel } from './live-data-panel';
 import { LogbookPanel } from './logbook-panel';
-import { drawMultiSeriesChart } from '../lib/history-charts';
 import {
   clearLiveSpeedBuffers,
   liveDeviceColor,
-  liveSpeedVsTimeSeries,
-  recordLiveSpeedSamples,
   registerLiveDevice,
 } from '../lib/live-speed-buffer';
 import {
@@ -53,7 +50,7 @@ import {
   onQuietHoursChange,
 } from '../lib/quiet-hours';
 
-type Tab = 'dashboard' | 'map' | 'logbook' | 'race' | 'history' | 'settings';
+type Tab = 'dashboard' | 'map' | 'live' | 'logbook' | 'history' | 'settings';
 
 type CrewTicketRow = FleetDevice & {
   onWater: boolean;
@@ -108,7 +105,7 @@ export function mountApp(root: HTMLElement): void {
   let mapFollowFleet = loadMapFollowPref();
   let mapTickUnsub: (() => void) | null = null;
   let historyPanel: HistoryPanel | null = null;
-  let racePanel: RacePanel | null = null;
+  let liveDataPanel: LiveDataPanel | null = null;
   let logbookPanel: LogbookPanel | null = null;
   /** Capsize alarm: beep + voice + beep, every 5s until cleared. */
   const CAPSIZE_ALARM_EVERY_MS = 5000;
@@ -124,7 +121,7 @@ export function mountApp(root: HTMLElement): void {
   function shouldPollLive(): boolean {
     if (isQuietHours()) return false;
     if (!settings.apiBaseUrl) return false;
-    return monitoring || tab === 'race' || tab === 'dashboard' || tab === 'map';
+    return monitoring || tab === 'live' || tab === 'dashboard' || tab === 'map';
   }
 
   function syncPollTimer() {
@@ -381,12 +378,11 @@ export function mountApp(root: HTMLElement): void {
       devices = dev;
       positions = pos;
       syncMapTracks(pos);
-      recordLiveSpeedSamples(pos);
       syncCapsizeAlarm();
       updateDashboardPanel();
       updateMapPanelExtras();
       updateMap();
-      racePanel?.processPositions(pos);
+      liveDataPanel?.processPositions(pos);
 
       if (errors.length && !pos.length && !dev.length) {
         const joined = errors.join(' · ');
@@ -775,18 +771,6 @@ export function mountApp(root: HTMLElement): void {
     );
   }
 
-  function updateLiveChart(activeIds: string[]): void {
-    const canvas = root.querySelector('[data-live-speed-chart]') as HTMLCanvasElement | null;
-    if (!canvas) return;
-    const series = liveSpeedVsTimeSeries(activeIds);
-    drawMultiSeriesChart(canvas, series, {
-      title: 'Speed vs time (last 5 min)',
-      xLabel: 'seconds',
-      yLabel: 'km/h',
-      yFormat: (v) => `${v.toFixed(0)}`,
-    });
-  }
-
   function updateDashboardPanel() {
     if (tab !== 'dashboard') return;
     syncCapsizeAlarm();
@@ -815,7 +799,6 @@ export function mountApp(root: HTMLElement): void {
     const ashoreSection = root.querySelector('[data-ashore-section]') as HTMLElement | null;
     if (ashoreSection) ashoreSection.hidden = ashore.length === 0;
 
-    updateLiveChart(onWater.map((d) => d.deviceId));
   }
 
   function updateMapPanelExtras() {
@@ -823,7 +806,6 @@ export function mountApp(root: HTMLElement): void {
     const active = crewTicketRows().filter((r) => r.onWater);
     const countEl = root.querySelector('[data-map-active-count]');
     if (countEl) countEl.textContent = String(active.length);
-    updateLiveChart(active.map((d) => d.deviceId));
   }
 
   async function onStartMonitoring() {
@@ -871,7 +853,7 @@ export function mountApp(root: HTMLElement): void {
       setStatus(QUIET_HOURS_MESSAGE);
       return;
     }
-    if (!monitoring && tab !== 'race' && tab !== 'dashboard' && tab !== 'map') return;
+    if (!monitoring && tab !== 'live' && tab !== 'dashboard' && tab !== 'map') return;
     settings = loadSettings();
     if (IS_NATIVE && settings.apiBaseUrl && monitoring) {
       await startNativeMonitoring(settings.apiBaseUrl, settings.ingestToken);
@@ -919,14 +901,14 @@ export function mountApp(root: HTMLElement): void {
     pollTimer = null;
   }
 
-  function ensureRacePanel(): RacePanel {
-    if (!racePanel) {
-      racePanel = new RacePanel(
+  function ensureLiveDataPanel(): LiveDataPanel {
+    if (!liveDataPanel) {
+      liveDataPanel = new LiveDataPanel(
         () => loadSettings(),
         (msg, err) => setStatus(msg, err),
       );
     }
-    return racePanel;
+    return liveDataPanel;
   }
 
   function ensureLogbookPanel(): LogbookPanel {
@@ -1023,14 +1005,13 @@ export function mountApp(root: HTMLElement): void {
             <span class="coach-dash-pill"><strong data-map-active-count>0</strong> on water</span>
           </div>
           <div id="coachMap" class="coach-map"></div>
-          <canvas class="live-speed-chart history-chart" data-live-speed-chart height="200"></canvas>
+        </section>
+        <section class="coach-panel coach-panel--live coach-panel--history" data-panel="live" ${tab === 'live' ? '' : 'hidden'}>
+          <p class="poll-line" data-poll-status hidden></p>
+          <div class="live-data-panel-root" data-live-root></div>
         </section>
         <section class="coach-panel" data-panel="logbook" ${tab === 'logbook' ? '' : 'hidden'}>
           <div data-logbook-root></div>
-        </section>
-        <section class="coach-panel coach-panel--race" data-panel="race" ${tab === 'race' ? '' : 'hidden'}>
-          <p class="poll-line" data-poll-status hidden></p>
-          <div class="race-panel-root" data-race-root></div>
         </section>
         <section class="coach-panel coach-panel--history" data-panel="history" ${tab === 'history' ? '' : 'hidden'}>
           <div class="history-panel" data-history-root></div>
@@ -1054,8 +1035,8 @@ export function mountApp(root: HTMLElement): void {
         <nav class="coach-tabs coach-tabs--bottom" aria-label="Manager sections">
           <button type="button" class="coach-tab coach-tab--home ${tab === 'dashboard' ? 'active' : ''}" data-tab="dashboard">Home</button>
           <button type="button" class="coach-tab ${tab === 'map' ? 'active' : ''}" data-tab="map">Map</button>
+          <button type="button" class="coach-tab ${tab === 'live' ? 'active' : ''}" data-tab="live">Live data</button>
           <button type="button" class="coach-tab ${tab === 'logbook' ? 'active' : ''}" data-tab="logbook">Logbook</button>
-          <button type="button" class="coach-tab ${tab === 'race' ? 'active' : ''}" data-tab="race">Race</button>
           <button type="button" class="coach-tab ${tab === 'history' ? 'active' : ''}" data-tab="history">History</button>
         </nav>
       </div>`;
@@ -1075,7 +1056,7 @@ export function mountApp(root: HTMLElement): void {
       btn.addEventListener('click', () => {
         const next = (btn as HTMLElement).dataset.tab as Tab;
         historyPanel?.prepareForRender(next);
-        racePanel?.prepareForRender(next);
+        liveDataPanel?.prepareForRender(next);
         logbookPanel?.prepareForRender(next);
         tab = next;
         render();
@@ -1089,7 +1070,7 @@ export function mountApp(root: HTMLElement): void {
           updateDashboardPanel();
           void pollLive();
         }
-        if (tab === 'race' || tab === 'map') {
+        if (tab === 'live' || tab === 'map') {
           void pollLive();
         }
         if (tab === 'logbook') {
@@ -1107,16 +1088,16 @@ export function mountApp(root: HTMLElement): void {
       };
       saveSettings(settings);
       setStatus('Settings saved');
-      void ensureRacePanel().reloadLines();
+      void ensureLiveDataPanel().reloadLines();
       syncPollTimer();
       if (shouldPollLive()) void pollLive();
     });
 
-    if (tab === 'race') {
-      const raceRoot = root.querySelector('[data-race-root]') as HTMLElement | null;
-      if (raceRoot) {
-        const panel = ensureRacePanel();
-        panel.mount(raceRoot);
+    if (tab === 'live') {
+      const liveRoot = root.querySelector('[data-live-root]') as HTMLElement | null;
+      if (liveRoot) {
+        const panel = ensureLiveDataPanel();
+        panel.mount(liveRoot);
         panel.onTabShown();
         panel.processPositions(positions);
       }
