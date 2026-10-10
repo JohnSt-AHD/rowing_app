@@ -1,0 +1,19 @@
+{
+  "targetSpanKm": 22,
+  "excludeZones": [
+    {
+      "name": "Far-east inlet",
+      "minLat": -37.9468,
+      "maxLat": -37.9422,
+      "minLon": 175.6585,
+      "maxLon": 175.68
+    }
+  ],
+  "turnaround": {
+    "name": "Weather buoy (turnaround)",
+    "note": "North-end turnaround — align with the weather buoy geofence on rnz / test orgs. Drag the yellow zone on the draft map if this seed is off, then regenerate or save.",
+    "lat": -37.9268,
+    "lon": 175.5438,
+    "radiusM": 40
+  }
+}

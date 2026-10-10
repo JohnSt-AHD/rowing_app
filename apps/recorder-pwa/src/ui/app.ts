@@ -43,6 +43,10 @@ import {
   type GeofenceConfig,
 } from '../lib/geofence';
 import {
+  courseFromTrack,
+  evaluateChannelStatus,
+} from '../lib/channel-status';
+import {
   clearSessionSpeedBuffer,
   getSessionSpeedSamplesSmoothed,
   getSessionTrailLatLon,
@@ -133,6 +137,9 @@ export function mountApp(root: HTMLElement): void {
   let sessionMapGeofenceLayer: L.LayerGroup | null = null;
   /** Keep map centered on the phone GPS; pauses when the user pans/zooms. */
   let sessionMapFollow = true;
+  /** Previous GPS fix for course-over-ground (channel check). */
+  let channelCoursePrev: { lat: number; lon: number } | null = null;
+  let channelCourseDeg: number | null = null;
   /** Average boat speed over ~2 stroke periods (surge removed). */
   const speedAvg = new StrokePeriodSpeedAvg({ strokes: 2, minMs: 4000, maxMs: 10000, fallbackMs: 8000 });
   const strokeRateAvg = new MetricRollingAvg(STROKE_AVG_WINDOW_MS, 0);
@@ -416,8 +423,20 @@ export function mountApp(root: HTMLElement): void {
           .addTo(sessionMapGeofenceLayer);
         continue;
       }
-      const isNotify = Boolean(g.notifyOnEnter) || kind === 'hazard';
-      const color = isNotify ? '#f87171' : '#f59e0b';
+      const isNotify =
+        Boolean(g.notifyOnEnter) || kind === 'hazard' || kind === 'lane_nogo';
+      const color =
+        kind === 'lane_up'
+          ? '#22d3ee'
+          : kind === 'lane_down'
+            ? '#a78bfa'
+            : kind === 'lane_nogo'
+              ? '#f97316'
+              : kind === 'turnaround'
+                ? '#fbbf24'
+                : isNotify
+                  ? '#f87171'
+                  : '#f59e0b';
       if (g.shapeType === 'circle' && g.radiusM > 0) {
         L.circle([g.centerLat, g.centerLon], {
           radius: g.radiusM,
@@ -698,6 +717,35 @@ export function mountApp(root: HTMLElement): void {
       } else {
         zoneEl.setAttribute('data-zone', 'on_water');
         if (label) label.textContent = 'On water';
+        if (sub) sub.textContent = '';
+      }
+    }
+
+    const channelEl = root.querySelector('[data-hud-channel]');
+    if (channelEl) {
+      const label = channelEl.querySelector('.session-channel-badge__label');
+      const sub = channelEl.querySelector('.session-channel-badge__sub');
+      const gps = stats?.lastGps;
+      if (gps) {
+        const course = courseFromTrack(channelCoursePrev, {
+          lat: gps.lat,
+          lon: gps.lon,
+        });
+        if (course != null) channelCourseDeg = course;
+        channelCoursePrev = { lat: gps.lat, lon: gps.lon };
+        const status = evaluateChannelStatus(
+          gps.lat,
+          gps.lon,
+          channelCourseDeg,
+          getCachedGeofences(),
+        );
+        channelEl.setAttribute('data-channel', status.id);
+        channelEl.removeAttribute('hidden');
+        if (label) label.textContent = status.label;
+        if (sub) sub.textContent = status.sub;
+      } else {
+        channelEl.setAttribute('data-channel', 'unknown');
+        if (label) label.textContent = 'Channel…';
         if (sub) sub.textContent = '';
       }
     }
@@ -1085,6 +1133,16 @@ export function mountApp(root: HTMLElement): void {
             <button type="button" class="session-fs-tab" data-fs-tab="map" aria-selected="${fsTab === 'map' ? 'true' : 'false'}">Map</button>
           </nav>
           <div class="session-fs-chrome__actions">
+            <div
+              class="session-channel-badge"
+              data-hud-channel
+              data-channel="unknown"
+              role="status"
+              aria-live="polite"
+            >
+              <span class="session-channel-badge__label">Channel…</span>
+              <span class="session-channel-badge__sub"></span>
+            </div>
             <button type="button" class="hub-btn hub-btn--danger session-fs-chrome__stop" data-action="stop">Stop</button>
           </div>
         </div>
@@ -1980,6 +2038,8 @@ export function mountApp(root: HTMLElement): void {
         speedAvg.clear();
         strokeRateAvg.clear();
         clearSessionSpeedBuffer();
+        channelCoursePrev = null;
+        channelCourseDeg = null;
         destroySessionMap();
         fsTab = 'metrics';
         await exitStageFullscreen();

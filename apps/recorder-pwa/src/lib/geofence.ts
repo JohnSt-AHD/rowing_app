@@ -1,6 +1,13 @@
 /** Geofence types and geometry (mirrors api/lib/geofence.js). */
 
-export type GeofenceKind = 'boat_park' | 'hazard' | 'lake';
+export type GeofenceKind =
+  | 'boat_park'
+  | 'hazard'
+  | 'lake'
+  | 'lane_up'
+  | 'lane_down'
+  | 'lane_nogo'
+  | 'turnaround';
 export type GeofenceShapeType = 'circle' | 'polygon';
 
 export type GeofenceConfig = {
@@ -135,6 +142,12 @@ export function normalizeGeofenceKind(
   const k = String(input ?? fallback ?? 'boat_park').trim().toLowerCase();
   if (k === 'hazard') return 'hazard';
   if (k === 'lake' || k === 'water') return 'lake';
+  if (k === 'lane_up' || k === 'up_lane') return 'lane_up';
+  if (k === 'lane_down' || k === 'down_lane') return 'lane_down';
+  if (k === 'lane_nogo' || k === 'nogo' || k === 'no_go' || k === 'channel_nogo') {
+    return 'lane_nogo';
+  }
+  if (k === 'turnaround' || k === 'weather_buoy') return 'turnaround';
   return 'boat_park';
 }
 

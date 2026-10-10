@@ -297,21 +297,28 @@ function toTraccarGeofence(g) {
   };
 }
 
-/** Normalize geofence kind to boat_park | hazard | lake. */
+/** Normalize geofence kind to boat_park | hazard | lake | lane_* | turnaround. */
 function normalizeGeofenceKind(input, fallback = 'boat_park') {
   const k = String(input ?? fallback ?? 'boat_park').trim().toLowerCase();
   if (k === 'hazard') return 'hazard';
   if (k === 'lake' || k === 'water') return 'lake';
+  if (k === 'lane_up' || k === 'up_lane') return 'lane_up';
+  if (k === 'lane_down' || k === 'down_lane') return 'lane_down';
+  if (k === 'lane_nogo' || k === 'nogo' || k === 'no_go' || k === 'channel_nogo') {
+    return 'lane_nogo';
+  }
+  if (k === 'turnaround' || k === 'weather_buoy') return 'turnaround';
   return 'boat_park';
 }
 
-/** Enabled hazard zones containing this point. */
+/** Enabled hazard / channel no-go zones containing this point. */
 function findHazardZonesAt(lat, lon, geofences) {
   if (!Array.isArray(geofences)) return [];
   const out = [];
   for (const g of geofences) {
     if (!g || g.enabled === false) continue;
-    if (normalizeGeofenceKind(g.kind) !== 'hazard') continue;
+    const kind = normalizeGeofenceKind(g.kind);
+    if (kind !== 'hazard' && kind !== 'lane_nogo') continue;
     if (pointInZoneGeometry(g, lat, lon)) out.push(g);
   }
   return out;

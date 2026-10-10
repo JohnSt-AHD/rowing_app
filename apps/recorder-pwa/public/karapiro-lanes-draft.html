@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Draft · Lake Karāpiro traffic lanes</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.18.3/dist/leaflet-geoman.css"
+    />
+    <style>
+      :root {
+        --bg: #0b1a2e;
+        --text: #e8f4fc;
+        --muted: #94a3b8;
+        --up: #22d3ee;
+        --down: #a78bfa;
+        --nogo: #f97316;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        background: linear-gradient(165deg, #0b1a2e, #061018);
+        color: var(--text);
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(280px, 360px) 1fr;
+        min-height: 100vh;
+      }
+      @media (max-width: 820px) {
+        .layout { grid-template-columns: 1fr; }
+        aside { max-height: 46vh; overflow: auto; }
+        #map { min-height: 54vh; }
+      }
+      aside {
+        padding: 1.1rem 1.15rem 1.5rem;
+        border-right: 1px solid rgba(56, 189, 248, 0.22);
+        background: rgba(8, 18, 32, 0.92);
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.2rem;
+        font-weight: 750;
+        letter-spacing: -0.02em;
+      }
+      .lead {
+        margin: 0 0 1rem;
+        color: var(--muted);
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+      .meta {
+        display: grid;
+        gap: 0.45rem;
+        margin-bottom: 0.85rem;
+        font-size: 0.82rem;
+      }
+      .meta strong { color: #f8fafc; font-weight: 700; }
+      .swatch {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        margin: 0.3rem 0;
+        font-size: 0.85rem;
+      }
+      .swatch i {
+        width: 1.1rem;
+        height: 1.1rem;
+        border-radius: 4px;
+        display: inline-block;
+        border: 1px solid rgba(255, 255, 255, 0.25);
+      }
+      .swatch--up i { background: rgba(34, 211, 238, 0.55); }
+      .swatch--down i { background: rgba(167, 139, 250, 0.55); }
+      .swatch--nogo i { background: rgba(249, 115, 22, 0.65); }
+      .swatch--water i { background: rgba(56, 189, 248, 0.2); }
+      .swatch--buoy i { background: #fbbf24; border-radius: 50%; }
+      h2 {
+        margin: 1.05rem 0 0.4rem;
+        font-size: 0.78rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #7dd3fc;
+      }
+      ol, ul {
+        margin: 0;
+        padding-left: 1.15rem;
+        color: var(--muted);
+        font-size: 0.84rem;
+        line-height: 1.45;
+      }
+      li { margin: 0.3rem 0; }
+      .panel {
+        margin-top: 0.85rem;
+        padding: 0.75rem;
+        border-radius: 10px;
+        border: 1px solid rgba(56, 189, 248, 0.28);
+        background: rgba(12, 28, 52, 0.75);
+      }
+      .panel label {
+        display: block;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+      }
+      .panel select,
+      .panel button,
+      .actions button {
+        width: 100%;
+        font: inherit;
+        border-radius: 8px;
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        background: #0a1628;
+        color: var(--text);
+        padding: 0.45rem 0.55rem;
+        margin-bottom: 0.4rem;
+        cursor: pointer;
+      }
+      .actions {
+        display: grid;
+        gap: 0.35rem;
+        margin-top: 0.35rem;
+      }
+      .actions button.primary {
+        background: #00e5ff;
+        color: #0a1628;
+        border: 0;
+        font-weight: 750;
+      }
+      .actions button.active {
+        outline: 2px solid #00e5ff;
+        outline-offset: 1px;
+      }
+      .actions button.warn {
+        border-color: rgba(249, 115, 22, 0.55);
+      }
+      .status {
+        font-size: 0.85rem;
+        font-weight: 700;
+        min-height: 1.3em;
+      }
+      .status.ok { color: #34d399; }
+      .status.warn { color: #fbbf24; }
+      .status.bad { color: #f87171; }
+      .edit-hint {
+        margin: 0.35rem 0 0;
+        font-size: 0.78rem;
+        color: #94a3b8;
+        line-height: 1.4;
+      }
+      #map { width: 100%; height: 100vh; background: #0c1c34; }
+      .note {
+        margin-top: 1rem;
+        font-size: 0.78rem;
+        color: #64748b;
+        line-height: 1.4;
+      }
+      .marker-icon {
+        background: #00e5ff;
+        border: 2px solid #fff;
+        border-radius: 50%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <aside>
+        <h1>Draft · Karāpiro traffic lanes</h1>
+        <p class="lead">
+          Keep-right rotation with editable boundaries. Drag vertices to reshape lanes
+          and the centre no-go. Changes save in this browser; download GeoJSON when ready.
+        </p>
+        <div class="meta" id="meta">Loading…</div>
+        <div class="swatch swatch--water"><i></i> Water (east inlet clipped)</div>
+        <div class="swatch swatch--up"><i></i> Up lane</div>
+        <div class="swatch swatch--nogo"><i></i> No-go / safety (~20 m)</div>
+        <div class="swatch swatch--down"><i></i> Down lane</div>
+        <div class="swatch swatch--buoy"><i></i> Weather buoy / north turnaround</div>
+
+        <h2>Edit boundaries</h2>
+        <div class="actions">
+          <button type="button" class="primary" id="btnEdit">Start editing</button>
+          <button type="button" id="btnSmooth">Smooth no-go</button>
+          <button type="button" id="btnSave">Save in browser</button>
+          <button type="button" id="btnDownload">Download GeoJSON</button>
+          <button type="button" class="warn" id="btnReset">Reset to generated draft</button>
+        </div>
+        <p class="edit-hint" id="editHint">
+          Editing off. Turn it on, then drag orange/cyan/purple vertices. Click a mid-edge
+          handle to add a point; right-click a vertex to remove.
+        </p>
+
+        <h2>Lane check</h2>
+        <div class="panel">
+          <label for="heading">Simulate boat heading</label>
+          <select id="heading">
+            <option value="up">Going up the lake</option>
+            <option value="down">Going down the lake</option>
+          </select>
+          <button type="button" id="drop">Drop demo boat on map</button>
+          <p class="status" id="laneStatus">Tap the map or drop a demo boat.</p>
+        </div>
+
+        <p class="note">
+          Draft only — not a surveyed course. Open at
+          <code>/karapiro-lanes-draft.html</code>.
+        </p>
+      </aside>
+      <div id="map"></div>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.18.3/dist/leaflet-geoman.min.js"></script>
+    <script>
+      const STORAGE_KEY = 'crewsight.karapiro-lanes-draft.v1';
+      const STYLES = {
+        water: { color: '#38bdf8', weight: 1, fillColor: '#0ea5e9', fillOpacity: 0.1 },
+        up: { color: '#22d3ee', weight: 2, fillColor: '#22d3ee', fillOpacity: 0.32 },
+        down: { color: '#a78bfa', weight: 2, fillColor: '#a78bfa', fillOpacity: 0.32 },
+        nogo: { color: '#f97316', weight: 2, fillColor: '#f97316', fillOpacity: 0.5 },
+        center: { color: '#f8fafc', weight: 2, opacity: 0.75, dashArray: '6 6' },
+        buoy: { color: '#fbbf24', weight: 2, fillColor: '#fbbf24', fillOpacity: 0.28 },
+      };
+      const EDITABLE_IDS = new Set(['lane_up', 'lane_down', 'no_go', 'centerline', 'turnaround']);
+
+      function inPolyLonLat(lat, lon, coords) {
+        const ring = coords[0];
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const xi = ring[i][0];
+          const yi = ring[i][1];
+          const xj = ring[j][0];
+          const yj = ring[j][1];
+          const intersect =
+            yi > lat !== yj > lat &&
+            lon < ((xj - xi) * (lat - yi)) / (yj - yi + 1e-15) + xi;
+          if (intersect) inside = !inside;
+        }
+        return inside;
+      }
+
+      function unwrapRing(latlngs) {
+        let pts = latlngs.map((p) => L.latLng(p));
+        if (
+          pts.length > 2 &&
+          pts[0].lat === pts[pts.length - 1].lat &&
+          pts[0].lng === pts[pts.length - 1].lng
+        ) {
+          pts = pts.slice(0, -1);
+        }
+        return pts;
+      }
+
+      function downsampleLatLngs(latlngs, maxPts) {
+        const pts = unwrapRing(latlngs);
+        if (pts.length <= maxPts) return pts;
+        const out = [];
+        const last = pts.length - 1;
+        for (let i = 0; i < maxPts; i++) {
+          const idx = Math.round((i * last) / (maxPts - 1));
+          out.push(pts[idx]);
+        }
+        return out;
+      }
+
+      /** Smooth without exploding vertex count (avg → light Chaikin → downsample). */
+      function smoothRingKeepBudget(latlngs, maxPts) {
+        let pts = unwrapRing(latlngs);
+        const w = 5;
+        const half = 2;
+        const averaged = [];
+        for (let i = 0; i < pts.length; i++) {
+          let slat = 0;
+          let slon = 0;
+          let n = 0;
+          for (let j = i - half; j <= i + half; j++) {
+            if (j < 0 || j >= pts.length) continue;
+            slat += pts[j].lat;
+            slon += pts[j].lng;
+            n += 1;
+          }
+          averaged.push(L.latLng(slat / n, slon / n));
+        }
+        if (averaged.length) {
+          averaged[0] = pts[0];
+          averaged[averaged.length - 1] = pts[pts.length - 1];
+        }
+        pts = averaged;
+        // One Chaikin pass only, then cap handles
+        if (pts.length >= 3) {
+          const next = [pts[0]];
+          for (let i = 0; i < pts.length - 1; i++) {
+            const a = pts[i];
+            const b = pts[i + 1];
+            next.push(
+              L.latLng(0.75 * a.lat + 0.25 * b.lat, 0.75 * a.lng + 0.25 * b.lng),
+            );
+            next.push(
+              L.latLng(0.25 * a.lat + 0.75 * b.lat, 0.25 * a.lng + 0.75 * b.lng),
+            );
+          }
+          next.push(pts[pts.length - 1]);
+          pts = next;
+        }
+        return downsampleLatLngs(pts, maxPts);
+      }
+
+      const map = L.map('map', { zoomControl: true }).setView([-37.95, 175.58], 12);
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OSM &copy; CARTO',
+      }).addTo(map);
+
+      map.pm.setGlobalOptions({
+        snappable: true,
+        snapDistance: 18,
+        allowSelfIntersection: true,
+        draggable: false,
+      });
+      map.pm.addControls({
+        position: 'topleft',
+        drawMarker: false,
+        drawCircleMarker: false,
+        drawPolyline: false,
+        drawRectangle: false,
+        drawPolygon: false,
+        drawCircle: false,
+        drawText: false,
+        cutPolygon: false,
+        rotateMode: false,
+        removalMode: false,
+        editMode: true,
+        dragMode: false,
+      });
+      // Start with edit tools off; our button toggles
+      map.pm.disableGlobalEditMode();
+
+      let data;
+      let baseline;
+      let boatMarker;
+      let editing = false;
+      const layerById = {};
+      const groups = [];
+
+      function featureById(id) {
+        return data.features.find((f) => f.properties.id === id);
+      }
+
+      function syncFeatureFromLayer(id, layer) {
+        const f = featureById(id);
+        if (!f || !layer) return;
+        const gj = layer.toGeoJSON();
+        f.geometry = gj.geometry;
+      }
+
+      function syncAllEditable() {
+        for (const id of EDITABLE_IDS) {
+          syncFeatureFromLayer(id, layerById[id]);
+        }
+      }
+
+      function evaluate(lat, lon) {
+        const heading = document.getElementById('heading').value;
+        syncAllEditable();
+        const up = featureById('lane_up');
+        const down = featureById('lane_down');
+        const nogo = featureById('no_go');
+        const water = featureById('water');
+        const el = document.getElementById('laneStatus');
+
+        if (!inPolyLonLat(lat, lon, water.geometry.coordinates)) {
+          el.className = 'status warn';
+          el.textContent = 'Off water / outside lake outline.';
+          return;
+        }
+        if (inPolyLonLat(lat, lon, nogo.geometry.coordinates)) {
+          el.className = 'status bad';
+          el.textContent = 'In no-go / safety zone — move to your lane.';
+          return;
+        }
+        const inUp = inPolyLonLat(lat, lon, up.geometry.coordinates);
+        const inDown = inPolyLonLat(lat, lon, down.geometry.coordinates);
+        const expected = heading === 'up' ? 'up' : 'down';
+        const actual = inUp ? 'up' : inDown ? 'down' : 'unknown';
+        if (actual === 'unknown') {
+          el.className = 'status warn';
+          el.textContent = 'On water but outside draft lane polygons.';
+          return;
+        }
+        if (actual === expected) {
+          el.className = 'status ok';
+          el.textContent =
+            expected === 'up'
+              ? 'Correct — in up lane while heading up.'
+              : 'Correct — in down lane while heading down.';
+        } else {
+          el.className = 'status bad';
+          el.textContent =
+            expected === 'up'
+              ? 'Wrong lane — heading up but in the down lane.'
+              : 'Wrong lane — heading down but in the up lane.';
+        }
+      }
+
+      function placeBoat(latlng) {
+        if (!boatMarker) {
+          boatMarker = L.circleMarker(latlng, {
+            radius: 8,
+            color: '#f8fafc',
+            fillColor: '#00e5ff',
+            fillOpacity: 1,
+            weight: 2,
+            pmIgnore: true,
+          }).addTo(map);
+        } else {
+          boatMarker.setLatLng(latlng);
+        }
+        evaluate(latlng.lat, latlng.lng);
+      }
+
+      function setEditing(on) {
+        editing = on;
+        const btn = document.getElementById('btnEdit');
+        const hint = document.getElementById('editHint');
+        btn.classList.toggle('active', on);
+        btn.textContent = on ? 'Stop editing' : 'Start editing';
+        if (on) {
+          map.pm.enableGlobalEditMode();
+          hint.textContent =
+            'Editing on — drag vertices on up / down / no-go / centreline. Mid-edge markers add points; right-click removes.';
+        } else {
+          map.pm.disableGlobalEditMode();
+          syncAllEditable();
+          hint.textContent =
+            'Editing off. Turn it on, then drag orange/cyan/purple vertices. Click a mid-edge handle to add a point; right-click a vertex to remove.';
+        }
+      }
+
+      function smoothNoGo() {
+        const layer = layerById.no_go;
+        if (!layer) return;
+        const wasEditing = editing;
+        if (wasEditing) map.pm.disableGlobalEditMode();
+
+        let ring = layer.getLatLngs();
+        if (Array.isArray(ring[0]) && !ring[0].lat) ring = ring[0];
+        // Keep ≤180 handles so edit mode stays responsive
+        const smoothed = smoothRingKeepBudget(ring, 180);
+        layer.setLatLngs([smoothed]);
+        syncFeatureFromLayer('no_go', layer);
+
+        if (wasEditing) map.pm.enableGlobalEditMode();
+        document.getElementById('editHint').textContent =
+          'No-go smoothed (' + smoothed.length + ' points). Save or download when ready.';
+        if (boatMarker) {
+          const ll = boatMarker.getLatLng();
+          evaluate(ll.lat, ll.lng);
+        }
+      }
+
+      function exportFeatureCollection() {
+        syncAllEditable();
+        return {
+          ...data,
+          properties: {
+            ...(data.properties || {}),
+            editedAt: new Date().toISOString(),
+          },
+        };
+      }
+
+      function saveLocal() {
+        const fc = exportFeatureCollection();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(fc));
+        document.getElementById('editHint').textContent =
+          'Saved in this browser. Download GeoJSON for a file copy.';
+      }
+
+      function downloadGeoJson() {
+        const fc = exportFeatureCollection();
+        const blob = new Blob([JSON.stringify(fc, null, 2)], {
+          type: 'application/geo+json',
+        });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'karapiro-lanes-draft.json';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }
+
+      function clearLayers() {
+        for (const g of groups) {
+          map.removeLayer(g);
+        }
+        groups.length = 0;
+        for (const id of Object.keys(layerById)) delete layerById[id];
+      }
+
+      function renderFeatures(fc, fit) {
+        clearLayers();
+        data = fc;
+        const p = fc.properties || {};
+
+        const order = [
+          'water',
+          'lane_down',
+          'lane_up',
+          'no_go',
+          'centerline',
+          'turnaround',
+        ];
+        const byId = Object.fromEntries(fc.features.map((f) => [f.properties.id, f]));
+        for (const id of order) {
+          const f = byId[id];
+          if (!f) continue;
+          const style = STYLES[f.properties.style] || STYLES.water;
+          const editable = EDITABLE_IDS.has(id);
+          const group = L.geoJSON(f, {
+            style: () => style,
+            pmIgnore: !editable,
+            onEachFeature: (_feat, l) => {
+              l.feature = f;
+              if (!editable) return;
+              l.on('pm:edit', () => {
+                syncFeatureFromLayer(id, l);
+                if (boatMarker) {
+                  const ll = boatMarker.getLatLng();
+                  evaluate(ll.lat, ll.lng);
+                }
+              });
+              layerById[id] = l;
+            },
+          });
+          group.addTo(map);
+          groups.push(group);
+          if (!editable) layerById[id] = group;
+        }
+
+        const buoyPt = byId.turnaround_point;
+        if (buoyPt?.geometry?.coordinates) {
+          const [blo, bla] = buoyPt.geometry.coordinates;
+          const marker = L.circleMarker([bla, blo], {
+            radius: 7,
+            color: '#0a1628',
+            weight: 2,
+            fillColor: '#fbbf24',
+            fillOpacity: 1,
+            pmIgnore: true,
+          })
+            .bindTooltip(buoyPt.properties.name || 'Weather buoy', {
+              permanent: true,
+              direction: 'right',
+              offset: [10, 0],
+              className: 'buoy-tip',
+            })
+            .addTo(map);
+          groups.push(marker);
+        }
+
+        document.getElementById('meta').innerHTML = `
+          <div><strong>${p.spanKm ?? '—'} km</strong> draft span · no-go <strong>${p.noGoWidthM ?? 20} m</strong></div>
+          <div>Up bearing ≈ <strong>${p.upBearingDeg ?? '—'}°</strong> · down ≈ <strong>${p.downBearingDeg ?? '—'}°</strong></div>
+          <div>Far-east inlet excluded · north turnaround = weather buoy</div>
+          <div style="color:#64748b">${p.note || ''}</div>
+        `;
+
+        if (fit) {
+          const group = L.featureGroup(
+            Object.values(layerById).filter((l) => l.getBounds),
+          );
+          try {
+            map.fitBounds(group.getBounds().pad(0.08));
+          } catch (_) {
+            /* ignore */
+          }
+        }
+        if (editing) map.pm.enableGlobalEditMode();
+      }
+
+      function vertexCount(fc) {
+        let max = 0;
+        for (const f of fc.features || []) {
+          const g = f.geometry;
+          if (!g) continue;
+          if (g.type === 'Polygon') max = Math.max(max, g.coordinates[0]?.length || 0);
+          if (g.type === 'LineString') max = Math.max(max, g.coordinates.length);
+        }
+        return max;
+      }
+
+      async function loadInitial() {
+        const res = await fetch('./karapiro-lanes-draft.geojson', { cache: 'no-store' });
+        baseline = await res.json();
+        let start = baseline;
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            // Old saves ballooned to thousands of vertices and freeze edit mode
+            if (vertexCount(parsed) > 800) {
+              localStorage.removeItem(STORAGE_KEY);
+            } else {
+              start = parsed;
+            }
+          }
+        } catch (_) {
+          /* ignore corrupt */
+        }
+        renderFeatures(start, true);
+      }
+
+      document.getElementById('btnEdit').addEventListener('click', () => {
+        setEditing(!editing);
+      });
+      document.getElementById('btnSmooth').addEventListener('click', smoothNoGo);
+      document.getElementById('btnSave').addEventListener('click', saveLocal);
+      document.getElementById('btnDownload').addEventListener('click', downloadGeoJson);
+      document.getElementById('btnReset').addEventListener('click', () => {
+        if (!baseline) return;
+        localStorage.removeItem(STORAGE_KEY);
+        setEditing(false);
+        renderFeatures(structuredClone(baseline), true);
+        document.getElementById('editHint').textContent =
+          'Reset to generated draft (smoothed no-go from script).';
+      });
+
+      map.on('click', (e) => {
+        if (editing) return;
+        placeBoat(e.latlng);
+      });
+      document.getElementById('heading').addEventListener('change', () => {
+        if (boatMarker) {
+          const ll = boatMarker.getLatLng();
+          evaluate(ll.lat, ll.lng);
+        }
+      });
+      document.getElementById('drop').addEventListener('click', () => {
+        placeBoat(map.getCenter());
+      });
+
+      loadInitial().catch((err) => {
+        document.getElementById('meta').textContent =
+          'Failed to load GeoJSON: ' + err.message;
+      });
+    </script>
+  </body>
+</html>

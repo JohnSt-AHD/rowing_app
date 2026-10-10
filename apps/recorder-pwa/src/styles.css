@@ -887,6 +887,57 @@
   white-space: nowrap;
 }
 
+.session-channel-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+  min-width: 7.5rem;
+  max-width: 11rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 10px;
+  border: 1px solid rgba(232, 244, 252, 0.22);
+  background: rgba(10, 22, 40, 0.72);
+  backdrop-filter: blur(6px);
+  color: #e8f4fc;
+  pointer-events: none;
+}
+
+.session-channel-badge__label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+}
+
+.session-channel-badge__sub {
+  font-size: 0.58rem;
+  font-weight: 650;
+  color: rgba(248, 250, 252, 0.72);
+  line-height: 1.2;
+}
+
+.session-channel-badge[data-channel='correct'] {
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(6, 78, 59, 0.82);
+}
+
+.session-channel-badge[data-channel='wrong'],
+.session-channel-badge[data-channel='nogo'] {
+  border-color: rgba(248, 113, 113, 0.6);
+  background: rgba(127, 29, 29, 0.88);
+}
+
+.session-channel-badge[data-channel='turnaround'] {
+  border-color: rgba(251, 191, 36, 0.55);
+  background: rgba(120, 53, 15, 0.85);
+}
+
+.session-channel-badge[data-channel='unknown'],
+.session-channel-badge[data-channel='no_lanes'] {
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
 .session-fs-chrome {
   display: flex;
   align-items: center;
