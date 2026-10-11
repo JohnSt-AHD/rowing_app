@@ -27,5 +27,5 @@ No code changes required for GPS-only: existing map polls Traccar `/api/position
 
 Recommended live event settings:
 
-- PWA GPS interval: **1000–3000 ms**
+- PWA GPS interval: **1000–3000 ms** (product default is 10 s; tighten for denser live tracks)
 - Overlay map refresh: **3–5 s**
