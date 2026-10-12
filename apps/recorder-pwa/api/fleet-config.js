@@ -15,9 +15,9 @@ function readBody(req) {
 }
 
 /**
- * GET /api/fleet-config — coaches + boats for recorder settings and manager
+ * GET /api/fleet-config — coaches + boats + org client flags for recorder / manager
  * POST /api/fleet-config — create coach or boat { type, ...fields }
- * PATCH /api/fleet-config?id=&type= — update boat
+ * PATCH /api/fleet-config?id=&type= — update boat, or type=settings for org client flags
  * DELETE /api/fleet-config?id=&type= — remove coach or boat
  */
 module.exports = async function handler(req, res) {
@@ -34,7 +34,10 @@ module.exports = async function handler(req, res) {
     try {
       const config = db.hasDb()
         ? await db.getFleetConfig(org.id)
-        : memoryDefaults();
+        : {
+            ...memoryDefaults(),
+            ...(await db.getOrgClientSettings(org.id)),
+          };
       return res.status(200).json({
         ok: true,
         org: org.slug,
@@ -49,15 +52,34 @@ module.exports = async function handler(req, res) {
   const org = await requireOrg(req, res);
   if (!org) return;
 
+  const body = readBody(req);
+  const type = String(body.type || req.query?.type || '').trim().toLowerCase();
+
+  if (req.method === 'PATCH' && type === 'settings') {
+    try {
+      if (!('showOtherBoatsOnMap' in body)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'showOtherBoatsOnMap is required',
+        });
+      }
+      const client = await db.setShowOtherBoatsOnMap(org.id, body.showOtherBoatsOnMap);
+      return res.status(200).json({
+        ok: true,
+        persisted: db.hasDb(),
+        ...client,
+      });
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: String(e.message || e) });
+    }
+  }
+
   if (!db.hasDb()) {
     return res.status(503).json({
       ok: false,
       error: 'No database — add POSTGRES_URL on Vercel to manage coaches and boats.',
     });
   }
-
-  const body = readBody(req);
-  const type = String(body.type || req.query?.type || '').trim().toLowerCase();
 
   if (req.method === 'POST') {
     try {
@@ -79,7 +101,10 @@ module.exports = async function handler(req, res) {
     try {
       const id = req.query?.id;
       if (type !== 'boat') {
-        return res.status(400).json({ ok: false, error: 'PATCH supports type=boat only' });
+        return res.status(400).json({
+          ok: false,
+          error: 'PATCH supports type=boat or type=settings',
+        });
       }
       const boat = await db.updateBoat(org.id, id, body);
       if (!boat) return res.status(404).json({ ok: false, error: 'Boat not found' });

@@ -666,6 +666,10 @@ async function ensureFleetConfigTables() {
   `;
   await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS boat_id INTEGER REFERENCES rnz_boats(id)`;
   await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS boat_class TEXT`;
+  await sql`
+    ALTER TABLE rnz_orgs
+    ADD COLUMN IF NOT EXISTS show_other_boats_on_map BOOLEAN NOT NULL DEFAULT false
+  `;
 }
 
 const {
@@ -673,8 +677,12 @@ const {
   DEFAULT_BOATS,
   normalizeCoach,
   normalizeBoat,
+  defaultOrgClientSettings,
   memoryDefaults,
 } = require('./fleet-config-defaults');
+
+/** @type {Map<number, { showOtherBoatsOnMap: boolean }>} */
+const memoryOrgClientSettings = new Map();
 
 async function ensureFleetConfigSeed(orgId) {
   if (!hasDb()) return;
@@ -832,10 +840,55 @@ async function deleteBoat(orgId, id) {
   return (del.rowCount ?? 0) > 0;
 }
 
+async function getOrgClientSettings(orgId) {
+  const defaults = defaultOrgClientSettings();
+  if (!hasDb()) {
+    return { ...defaults, ...(memoryOrgClientSettings.get(orgId) || {}) };
+  }
+  await ensureOrgsBootstrapped();
+  await ensureFleetConfigTables();
+  const sql = await getSql();
+  const rows = await sql`
+    SELECT show_other_boats_on_map
+    FROM rnz_orgs
+    WHERE id = ${orgId}
+    LIMIT 1
+  `;
+  const row = rows.rows[0];
+  if (!row) return defaults;
+  return {
+    showOtherBoatsOnMap: Boolean(row.show_other_boats_on_map),
+  };
+}
+
+async function setShowOtherBoatsOnMap(orgId, enabled) {
+  const showOtherBoatsOnMap = Boolean(enabled);
+  if (!hasDb()) {
+    memoryOrgClientSettings.set(orgId, { showOtherBoatsOnMap });
+    return getOrgClientSettings(orgId);
+  }
+  await ensureOrgsBootstrapped();
+  await ensureFleetConfigTables();
+  const sql = await getSql();
+  const updated = await sql`
+    UPDATE rnz_orgs
+    SET show_other_boats_on_map = ${showOtherBoatsOnMap}
+    WHERE id = ${orgId}
+    RETURNING show_other_boats_on_map
+  `;
+  if (!updated.rows.length) {
+    throw new Error('Organisation not found');
+  }
+  return {
+    showOtherBoatsOnMap: Boolean(updated.rows[0].show_other_boats_on_map),
+  };
+}
+
 async function getFleetConfig(orgId) {
   const coaches = await listCoaches(orgId);
   const boats = await listBoats(orgId);
-  return { coaches, boats };
+  const client = await getOrgClientSettings(orgId);
+  return { coaches, boats, ...client };
 }
 
 async function listCapsizeNotifyEmails(orgId) {
@@ -3437,7 +3490,7 @@ async function syncHazardPresence(orgId, uniqueId, sessionId, lat, lon, tMs) {
 }
 
 /**
- * Enabled hazard geofence definitions for RowSafe register.
+ * Enabled hazard geofences for the RowSafe register (zones, not visit log).
  * @param {number} orgId
  */
 async function listHazardZones(orgId) {
@@ -3995,6 +4048,8 @@ module.exports = {
   addCapsizeNotifyEmail,
   removeCapsizeNotifyEmail,
   getFleetConfig,
+  getOrgClientSettings,
+  setShowOtherBoatsOnMap,
   listCoaches,
   createCoach,
   deleteCoach,

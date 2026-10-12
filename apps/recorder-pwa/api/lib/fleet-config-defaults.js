@@ -52,6 +52,11 @@ function normalizeBoat(row) {
   };
 }
 
+/** Org client flags — default OFF for privacy (other boats on rower map). */
+function defaultOrgClientSettings() {
+  return { showOtherBoatsOnMap: false };
+}
+
 function memoryDefaults() {
   const coaches = DEFAULT_COACHES.map((name, i) => ({
     id: `coach-${i + 1}`,
@@ -66,7 +71,7 @@ function memoryDefaults() {
     sortOrder: i,
     enabled: true,
   }));
-  return { coaches, boats };
+  return { coaches, boats, ...defaultOrgClientSettings() };
 }
 
 module.exports = {
@@ -74,5 +79,6 @@ module.exports = {
   DEFAULT_BOATS,
   normalizeCoach,
   normalizeBoat,
+  defaultOrgClientSettings,
   memoryDefaults,
 };

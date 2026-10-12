@@ -109,6 +109,52 @@
     }
   }
 
+  function setOrgClientStatus(text, isError) {
+    const el = document.getElementById('orgClientSettingsStatus');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('poll-line--warn', Boolean(isError));
+  }
+
+  function applyOrgClientSettings(data) {
+    const toggle = document.getElementById('showOtherBoatsOnMap');
+    if (toggle) {
+      toggle.checked = Boolean(data?.showOtherBoatsOnMap);
+    }
+    const note = document.getElementById('orgClientSettingsStorageNote');
+    if (note) {
+      note.textContent = data?.persisted
+        ? 'Saved in the CrewSight database (org-scoped). Recorder phones read this via fleet-config.'
+        : 'No database — setting is memory-only until POSTGRES_URL is set.';
+    }
+  }
+
+  async function saveShowOtherBoatsOnMap(enabled) {
+    setOrgClientStatus('Saving…');
+    try {
+      const res = await fetch(`${apiBase()}/api/fleet-config`, {
+        method: 'PATCH',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'settings', showOtherBoatsOnMap: Boolean(enabled) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Save failed (${res.status})`);
+      applyOrgClientSettings({
+        showOtherBoatsOnMap: data.showOtherBoatsOnMap,
+        persisted: data.persisted,
+      });
+      setOrgClientStatus(
+        data.showOtherBoatsOnMap
+          ? 'Other boats on rower map: on.'
+          : 'Other boats on rower map: off.',
+      );
+    } catch (err) {
+      setOrgClientStatus(err.message || 'Could not save rower client setting', true);
+      const toggle = document.getElementById('showOtherBoatsOnMap');
+      if (toggle) toggle.checked = !enabled;
+    }
+  }
+
   async function refresh() {
     try {
       const res = await fetch(`${apiBase()}/api/fleet-config`, { headers: headers() });
@@ -117,9 +163,11 @@
       renderCoaches(data.coaches);
       renderBoats(data.boats);
       updateMeta(data);
+      applyOrgClientSettings(data);
       return data;
     } catch (err) {
       setStatus(err.message || 'Could not load coaches and boats', true);
+      setOrgClientStatus(err.message || 'Could not load rower client settings', true);
       return null;
     }
   }
@@ -220,6 +268,10 @@
     document.getElementById('fleetCoachAddForm')?.addEventListener('submit', addCoach);
     document.getElementById('fleetBoatAddForm')?.addEventListener('submit', addBoat);
     document.getElementById('fleetSetupRefreshBtn')?.addEventListener('click', () => void refresh());
+    document.getElementById('showOtherBoatsOnMap')?.addEventListener('change', (ev) => {
+      const checked = Boolean(ev.target?.checked);
+      void saveShowOtherBoatsOnMap(checked);
+    });
     void refresh();
   }
 

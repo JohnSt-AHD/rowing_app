@@ -19,6 +19,8 @@ export type FleetBoat = {
 export type FleetConfig = {
   coaches: FleetCoach[];
   boats: FleetBoat[];
+  /** Org flag: live other-boat markers on recorder Map tab. Default false. */
+  showOtherBoatsOnMap?: boolean;
   persisted?: boolean;
 };
 
@@ -75,7 +77,7 @@ export function defaultFleetConfig(): FleetConfig {
     sortOrder: i,
     enabled: true,
   }));
-  return { coaches, boats, persisted: false };
+  return { coaches, boats, showOtherBoatsOnMap: false, persisted: false };
 }
 
 function formatClassShort(boatClass: string): string {
@@ -109,6 +111,7 @@ export async function fetchFleetConfig(force = false): Promise<FleetConfig> {
     const config: FleetConfig = {
       coaches: data.coaches ?? [],
       boats: data.boats ?? [],
+      showOtherBoatsOnMap: Boolean(data.showOtherBoatsOnMap),
       persisted: data.persisted,
     };
     writeCache(config);

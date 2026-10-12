@@ -22,7 +22,7 @@ import {
   type BackgroundStatus,
 } from '../lib/background-session';
 import { requestNativePermissions } from '@rowing/sensor-adapters';
-import type { SessionMeta } from '@rowing/telemetry-types';
+import { DEFAULT_INGEST_URL, type SessionMeta } from '@rowing/telemetry-types';
 import {
   armNativeGeofenceStandby,
   disarmNativeGeofenceStandby,
@@ -136,6 +136,12 @@ export function mountApp(root: HTMLElement): void {
   let sessionMapMarker: L.CircleMarker | null = null;
   let sessionMapTrail: L.Polyline | null = null;
   let sessionMapGeofenceLayer: L.LayerGroup | null = null;
+  let sessionMapOtherBoatsLayer: L.LayerGroup | null = null;
+  /** deviceId → circle marker for other fleet boats */
+  const sessionMapOtherBoatMarkers = new Map<string, L.CircleMarker>();
+  let otherBoatsPollTimer: ReturnType<typeof setInterval> | null = null;
+  let otherBoatsFetchInFlight = false;
+  const OTHER_BOATS_POLL_MS = 10_000;
   /** Keep map centered on the phone GPS; pauses when the user pans/zooms. */
   let sessionMapFollow = true;
   /** Previous GPS fix for course-over-ground (channel check). */
@@ -368,6 +374,8 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function destroySessionMap(): void {
+    stopOtherBoatsPolling();
+    clearOtherBoatMarkers();
     if (sessionMap) {
       sessionMap.remove();
       sessionMap = null;
@@ -375,6 +383,166 @@ export function mountApp(root: HTMLElement): void {
     sessionMapMarker = null;
     sessionMapTrail = null;
     sessionMapGeofenceLayer = null;
+    sessionMapOtherBoatsLayer = null;
+  }
+
+  function mapPositionsUrl(): string {
+    const s = loadSettings();
+    const ingest = (s.ingestUrl || DEFAULT_INGEST_URL).trim();
+    try {
+      const u = new URL(ingest);
+      return `${u.origin}/api/map-positions?onlineSec=120&staleSec=3600&predictMode=rowing`;
+    } catch {
+      return '/api/map-positions?onlineSec=120&staleSec=3600&predictMode=rowing';
+    }
+  }
+
+  function otherBoatLabel(deviceId: string, name?: string | null): string {
+    const raw = String(name || deviceId || '').trim() || deviceId;
+    return raw.length > 18 ? `${raw.slice(0, 16)}…` : raw;
+  }
+
+  function clearOtherBoatMarkers(): void {
+    for (const marker of sessionMapOtherBoatMarkers.values()) {
+      marker.remove();
+    }
+    sessionMapOtherBoatMarkers.clear();
+    sessionMapOtherBoatsLayer?.clearLayers();
+  }
+
+  function stopOtherBoatsPolling(): void {
+    if (otherBoatsPollTimer) {
+      clearInterval(otherBoatsPollTimer);
+      otherBoatsPollTimer = null;
+    }
+    otherBoatsFetchInFlight = false;
+  }
+
+  function shouldShowOtherBoats(): boolean {
+    if (!recording || fsTab !== 'map') return false;
+    const fleet = fleetConfigCache ?? getCachedFleetConfig();
+    if (!fleet.showOtherBoatsOnMap) return false;
+    const token = loadSettings().ingestToken.trim();
+    return Boolean(token);
+  }
+
+  function syncOtherBoatsPolling(): void {
+    if (!shouldShowOtherBoats()) {
+      stopOtherBoatsPolling();
+      clearOtherBoatMarkers();
+      return;
+    }
+    if (otherBoatsPollTimer) return;
+    void refreshOtherBoatsOverlay();
+    otherBoatsPollTimer = setInterval(() => {
+      void refreshOtherBoatsOverlay();
+    }, OTHER_BOATS_POLL_MS);
+  }
+
+  function updateOtherBoatMarkers(
+    positions: Array<{
+      deviceId: string;
+      name?: string | null;
+      athleteId?: string | null;
+      latitude: number;
+      longitude: number;
+      online?: boolean;
+    }>,
+  ): void {
+    if (!sessionMap) return;
+    if (!sessionMapOtherBoatsLayer) {
+      sessionMapOtherBoatsLayer = L.layerGroup().addTo(sessionMap);
+    }
+    const selfId = loadSettings().deviceId.trim().toLowerCase();
+    const seen = new Set<string>();
+    for (const p of positions) {
+      const id = String(p.deviceId || '').trim();
+      if (!id) continue;
+      if (selfId && id.toLowerCase() === selfId) continue;
+      if (p.online === false) continue;
+      if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) continue;
+      seen.add(id);
+      const ll: [number, number] = [p.latitude, p.longitude];
+      const label = otherBoatLabel(id, p.name || p.athleteId);
+      let marker = sessionMapOtherBoatMarkers.get(id);
+      if (!marker) {
+        marker = L.circleMarker(ll, {
+          radius: 6,
+          color: '#fbbf24',
+          fillColor: '#b45309',
+          fillOpacity: 0.92,
+          weight: 2,
+          opacity: 0.95,
+        })
+          .bindTooltip(label, {
+            permanent: true,
+            direction: 'top',
+            offset: [0, -8],
+            className: 'session-other-boat-label',
+            opacity: 0.9,
+          })
+          .addTo(sessionMapOtherBoatsLayer);
+        sessionMapOtherBoatMarkers.set(id, marker);
+      } else {
+        marker.setLatLng(ll);
+        marker.setTooltipContent(label);
+        if (!sessionMapOtherBoatsLayer.hasLayer(marker)) {
+          marker.addTo(sessionMapOtherBoatsLayer);
+        }
+      }
+    }
+    for (const [id, marker] of sessionMapOtherBoatMarkers) {
+      if (seen.has(id)) continue;
+      marker.remove();
+      sessionMapOtherBoatMarkers.delete(id);
+    }
+  }
+
+  async function refreshOtherBoatsOverlay(): Promise<void> {
+    if (!shouldShowOtherBoats() || !sessionMap || otherBoatsFetchInFlight) return;
+    otherBoatsFetchInFlight = true;
+    try {
+      const s = loadSettings();
+      const token = s.ingestToken.trim();
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(mapPositionsUrl(), { headers });
+      if (!res.ok) {
+        clearOtherBoatMarkers();
+        return;
+      }
+      const data = (await res.json()) as {
+        positions?: Array<{
+          deviceId?: string;
+          name?: string | null;
+          athleteId?: string | null;
+          latitude?: number;
+          longitude?: number;
+          online?: boolean;
+        }>;
+      };
+      if (!shouldShowOtherBoats() || !sessionMap) return;
+      const positions = (data.positions ?? [])
+        .map((p) => ({
+          deviceId: String(p.deviceId ?? ''),
+          name: p.name ?? null,
+          athleteId: p.athleteId ?? null,
+          latitude: Number(p.latitude),
+          longitude: Number(p.longitude),
+          online: p.online !== false,
+        }))
+        .filter(
+          (p) =>
+            p.deviceId &&
+            Number.isFinite(p.latitude) &&
+            Number.isFinite(p.longitude),
+        );
+      updateOtherBoatMarkers(positions);
+    } catch {
+      clearOtherBoatMarkers();
+    } finally {
+      otherBoatsFetchInFlight = false;
+    }
   }
 
   function invalidateSessionMap(): void {
@@ -537,6 +705,11 @@ export function mountApp(root: HTMLElement): void {
     }
     updateSessionMapFollowButton();
     updateSessionMapOverlay();
+    void fetchFleetConfig(true).then((next) => {
+      fleetConfigCache = next;
+      syncOtherBoatsPolling();
+    });
+    syncOtherBoatsPolling();
     const sync = () => {
       if (!el.isConnected) return;
       sizeSessionMapHost(el);
@@ -642,6 +815,10 @@ export function mountApp(root: HTMLElement): void {
         panel.getAttribute('data-fs-panel') === next,
       );
     });
+    if (next !== 'map') {
+      stopOtherBoatsPolling();
+      clearOtherBoatMarkers();
+    }
     refreshFsPanels();
   }
 

@@ -1223,6 +1223,23 @@
   border-color: #00e5ff;
 }
 
+.session-other-boat-label {
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  border-radius: 4px;
+  color: #fef3c7;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+  padding: 0.12rem 0.35rem;
+  box-shadow: none;
+}
+
+.session-other-boat-label::before {
+  border-top-color: rgba(15, 23, 42, 0.82);
+}
+
 .session-metrics-ticket {
   position: absolute;
   right: 0.5rem;

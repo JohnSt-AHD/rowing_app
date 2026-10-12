@@ -682,6 +682,7 @@
         <div class="info-tip-panel" id="info-tip-settings" hidden>
           <p>Ingest token must match <code>INGEST_TOKEN</code> on Vercel. Map position is display-only: Raw shows the last GPS fix; Smoothed predicts to now using motion between fixes.</p>
           <p>Predict speed cap limits that offset (rowing vs car testing). Refresh is how often this page polls. Hide offline after drops stale boats from the map.</p>
+          <p>Rower client settings are organisation-wide and load on phones via fleet-config (no Manager app required).</p>
         </div>
         <div class="dashboard-section__body" id="section-body-settings" hidden>
           <details class="dashboard-health-details">
@@ -694,6 +695,17 @@
               <span class="dashboard-health-item" id="batteryHealth">Battery: —</span>
             </div>
           </details>
+          <div class="org-client-settings" id="orgClientSettings">
+            <h3 class="data-manage-subtitle">Rower client</h3>
+            <p class="data-manage-hint">Organisation-wide. Phones pick these up from fleet-config while recording.</p>
+            <label class="ahd-field geofence-form__check">
+              <input type="checkbox" id="showOtherBoatsOnMap" />
+              Show other boats on rower map
+            </label>
+            <p class="field-hint">When on, the recorder Map tab polls fleet positions and shows other devices (not self). Default off for privacy.</p>
+            <p class="poll-line" id="orgClientSettingsStatus" role="status"></p>
+            <p class="poll-line" id="orgClientSettingsStorageNote"></p>
+          </div>
           <div class="ahd-inline-fields">
             <label class="ahd-field">
               Ingest token

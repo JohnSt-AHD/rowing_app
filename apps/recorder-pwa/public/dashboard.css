@@ -1210,6 +1210,20 @@
   color: var(--ahd-accent);
 }
 
+.org-client-settings {
+  margin: 0 0 1.1rem;
+  padding: 0.85rem 0 1rem;
+  border-bottom: 1px solid var(--ahd-border);
+}
+
+.org-client-settings .geofence-form__check {
+  margin-top: 0.5rem;
+}
+
+.org-client-settings .field-hint {
+  margin: 0.35rem 0 0.5rem;
+}
+
 .data-manage-label {
   margin: 0 0 0.5rem;
   font-size: 0.85rem;
