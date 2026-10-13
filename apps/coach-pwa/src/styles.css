@@ -2179,3 +2179,91 @@ button.coach-btn.coach-btn--ghost {
     font-size: 0.68rem;
   }
 }
+
+/* Club admin (RNZ) — Settings */
+.club-admin__divider {
+  border: 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.12);
+  margin: 1.5rem 0 1.25rem;
+}
+
+.club-admin__hint {
+  margin: 0 0 0.85rem;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  color: #4a5568;
+}
+
+.club-admin__hint code {
+  font-size: 0.82em;
+}
+
+.club-admin__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.85rem;
+}
+
+.club-admin__subhead {
+  margin-top: 1.25rem;
+  font-size: 1rem;
+}
+
+.club-admin__table-wrap {
+  overflow-x: auto;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.club-admin__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.club-admin__table th,
+.club-admin__table td {
+  text-align: left;
+  padding: 0.45rem 0.4rem;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+  vertical-align: middle;
+}
+
+.club-admin__table th {
+  font-weight: 600;
+  color: #2d3748;
+}
+
+.club-admin__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.club-admin__token-box {
+  margin: 0.75rem 0 1rem;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid rgba(180, 83, 9, 0.45);
+  background: rgba(254, 243, 199, 0.55);
+  border-radius: 6px;
+}
+
+.club-admin__token-box p {
+  margin: 0 0 0.55rem;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.club-admin__token-box input {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  padding: 0.45rem 0.5rem;
+  margin-bottom: 0.55rem;
+}
+
+.club-admin__token-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}

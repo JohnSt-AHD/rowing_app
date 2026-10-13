@@ -1,5 +1,7 @@
 export const LS_API_BASE = 'coach_api_base';
 export const LS_TOKEN = 'coach_ingest_token';
+/** RNZ ADMIN_TOKEN — session only (not localStorage). */
+export const SS_ADMIN_TOKEN = 'coach_admin_token';
 
 /** Production fleet API (same deployment as rower ingest). */
 export const DEFAULT_API_BASE_URL =
@@ -52,6 +54,39 @@ export function authHeaders(settings: CoachSettings): HeadersInit {
   const h: Record<string, string> = { Accept: 'application/json' };
   if (settings.ingestToken) {
     h.Authorization = `Bearer ${settings.ingestToken}`;
+  }
+  return h;
+}
+
+export function loadAdminToken(): string {
+  try {
+    return sessionStorage.getItem(SS_ADMIN_TOKEN)?.trim() ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveAdminToken(token: string): void {
+  try {
+    const t = token.trim();
+    if (t) sessionStorage.setItem(SS_ADMIN_TOKEN, t);
+    else sessionStorage.removeItem(SS_ADMIN_TOKEN);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearAdminToken(): void {
+  saveAdminToken('');
+}
+
+export function adminAuthHeaders(adminToken: string): HeadersInit {
+  const h: Record<string, string> = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  };
+  if (adminToken.trim()) {
+    h.Authorization = `Bearer ${adminToken.trim()}`;
   }
   return h;
 }

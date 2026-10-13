@@ -1,4 +1,8 @@
-import { authHeaders, type CoachSettings } from './settings';
+import {
+  adminAuthHeaders,
+  authHeaders,
+  type CoachSettings,
+} from './settings';
 
 export type FleetDevice = {
   deviceId: string;
@@ -317,4 +321,95 @@ export async function fetchLogbook(
     throw new Error(data.error || `Logbook ${res.status}`);
   }
   return data;
+}
+
+export type AdminOrg = {
+  id: number;
+  slug: string;
+  name: string;
+  createdAt?: string | null;
+};
+
+export type AdminOrgsPayload = {
+  ok?: boolean;
+  orgs?: AdminOrg[];
+  org?: AdminOrg;
+  token?: string;
+  warning?: string;
+  error?: string;
+};
+
+async function adminFetch(
+  settings: CoachSettings,
+  adminToken: string,
+  init?: RequestInit,
+): Promise<AdminOrgsPayload> {
+  const url = `${apiBase(settings)}/api/admin-orgs`;
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      ...adminAuthHeaders(adminToken),
+      ...(init?.headers || {}),
+    },
+  });
+  const data = (await res.json().catch(() => ({}))) as AdminOrgsPayload;
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Admin 401 — check ADMIN_TOKEN password');
+    }
+    if (res.status === 503) {
+      throw new Error(data.error || 'Admin API unavailable (ADMIN_TOKEN / database)');
+    }
+    throw new Error(data.error || `Admin ${res.status}`);
+  }
+  return data;
+}
+
+export async function fetchAdminOrgs(
+  settings: CoachSettings,
+  adminToken: string,
+): Promise<AdminOrg[]> {
+  const data = await adminFetch(settings, adminToken, { method: 'GET' });
+  return data.orgs ?? [];
+}
+
+export async function createAdminOrg(
+  settings: CoachSettings,
+  adminToken: string,
+  slug: string,
+  name: string,
+): Promise<{ org: AdminOrg; token: string }> {
+  const data = await adminFetch(settings, adminToken, {
+    method: 'POST',
+    body: JSON.stringify({ slug, name }),
+  });
+  if (!data.org || !data.token) throw new Error(data.error || 'Create failed');
+  return { org: data.org, token: data.token };
+}
+
+export async function renameAdminOrg(
+  settings: CoachSettings,
+  adminToken: string,
+  slug: string,
+  name: string,
+): Promise<AdminOrg> {
+  const data = await adminFetch(settings, adminToken, {
+    method: 'PATCH',
+    body: JSON.stringify({ slug, name }),
+  });
+  if (!data.org) throw new Error(data.error || 'Rename failed');
+  return data.org;
+}
+
+export async function rotateAdminOrgToken(
+  settings: CoachSettings,
+  adminToken: string,
+  slug: string,
+): Promise<{ org: AdminOrg; token: string }> {
+  const data = await adminFetch(settings, adminToken, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'rotate', slug }),
+  });
+  if (!data.org || !data.token) throw new Error(data.error || 'Rotate failed');
+  return { org: data.org, token: data.token };
 }

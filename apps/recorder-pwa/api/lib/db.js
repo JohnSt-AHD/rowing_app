@@ -1000,6 +1000,61 @@ async function createOrg(slug, name, plainToken) {
   return rows.rows[0];
 }
 
+/** Create org only if slug is unused (admin UI). */
+async function createOrgExclusive(slug, name, plainToken) {
+  if (!hasDb()) throw new Error('Database required to create orgs');
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const { hashToken } = require('./org-auth');
+  const s = String(slug).trim().toLowerCase();
+  const n = String(name).trim() || s;
+  const token = String(plainToken).trim();
+  if (!s || !token) throw new Error('slug and token required');
+  const rows = await sql`
+    INSERT INTO rnz_orgs (slug, name, token_hash)
+    VALUES (${s}, ${n}, ${hashToken(token)})
+    ON CONFLICT (slug) DO NOTHING
+    RETURNING id, slug, name, created_at
+  `;
+  if (!rows.rows[0]) throw new Error(`Club slug already exists: ${s}`);
+  return rows.rows[0];
+}
+
+async function updateOrgName(slug, name) {
+  if (!hasDb()) throw new Error('Database required to update orgs');
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const s = String(slug).trim().toLowerCase();
+  const n = String(name).trim();
+  if (!s || !n) throw new Error('slug and name required');
+  const rows = await sql`
+    UPDATE rnz_orgs
+    SET name = ${n}
+    WHERE slug = ${s}
+    RETURNING id, slug, name, created_at
+  `;
+  if (!rows.rows[0]) throw new Error(`Club not found: ${s}`);
+  return rows.rows[0];
+}
+
+async function rotateOrgToken(slug, plainToken) {
+  if (!hasDb()) throw new Error('Database required to rotate org tokens');
+  await ensureOrgsBootstrapped();
+  const sql = await getSql();
+  const { hashToken } = require('./org-auth');
+  const s = String(slug).trim().toLowerCase();
+  const token = String(plainToken).trim();
+  if (!s || !token) throw new Error('slug and token required');
+  const rows = await sql`
+    UPDATE rnz_orgs
+    SET token_hash = ${hashToken(token)}
+    WHERE slug = ${s}
+    RETURNING id, slug, name, created_at
+  `;
+  if (!rows.rows[0]) throw new Error(`Club not found: ${s}`);
+  return rows.rows[0];
+}
+
 async function listOrgs() {
   if (!hasDb()) return [];
   await ensureOrgsBootstrapped();
@@ -3980,6 +4035,9 @@ module.exports = {
   getDefaultOrg,
   isOrgAuthRequired,
   createOrg,
+  createOrgExclusive,
+  updateOrgName,
+  rotateOrgToken,
   listOrgs,
   resolveMemoryOrgFromToken,
   persistBatch,

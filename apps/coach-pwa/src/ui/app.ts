@@ -1,6 +1,7 @@
 import '../styles.css';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { ClubAdminPanel } from './club-admin-panel';
 import { HistoryPanel } from './history-panel';
 import { LiveDataPanel } from './live-data-panel';
 import { LogbookPanel } from './logbook-panel';
@@ -931,6 +932,17 @@ export function mountApp(root: HTMLElement): void {
     return historyPanel;
   }
 
+  let clubAdminPanel: ClubAdminPanel | null = null;
+  function ensureClubAdminPanel(): ClubAdminPanel {
+    if (!clubAdminPanel) {
+      clubAdminPanel = new ClubAdminPanel(
+        () => loadSettings(),
+        (msg, err) => setStatus(msg, err),
+      );
+    }
+    return clubAdminPanel;
+  }
+
   function render() {
     destroyMap();
     const caps = capsizeCount();
@@ -1031,6 +1043,8 @@ export function mountApp(root: HTMLElement): void {
           <div class="coach-settings-actions">
             <button type="button" class="coach-btn coach-btn--primary" data-save-settings>Save settings</button>
           </div>
+          <hr class="club-admin__divider" />
+          <div data-club-admin-root></div>
         </section>
         <nav class="coach-tabs coach-tabs--bottom" aria-label="Manager sections">
           <button type="button" class="coach-tab coach-tab--home ${tab === 'dashboard' ? 'active' : ''}" data-tab="dashboard">Home</button>
@@ -1119,6 +1133,11 @@ export function mountApp(root: HTMLElement): void {
         panel.mount(logRoot);
         void panel.onTabShown();
       }
+    }
+
+    if (tab === 'settings') {
+      const adminRoot = root.querySelector('[data-club-admin-root]') as HTMLElement | null;
+      if (adminRoot) ensureClubAdminPanel().mount(adminRoot);
     }
 
     if (tab === 'map') {

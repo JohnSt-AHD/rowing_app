@@ -42,6 +42,15 @@ Optional: **ORG_TOKEN_PEPPER** — extra salt for token hashing (defaults to bui
 
 Legacy **INGEST_TOKEN** still works for org `default` during transition.
 
+### Add a club later (Manager UI — preferred)
+
+1. Set **`ADMIN_TOKEN`** on Vercel (Secret) and redeploy. This is an RNZ-only password, not a club ingest token.
+2. Open **CrewSight Manager → Settings → Club admin (RNZ)**.
+3. Unlock with `ADMIN_TOKEN`, then **Create club** / **Rename** / **Rotate token**.
+4. Copy the ingest token when shown (once only) and give it to that club’s coaches and devices.
+
+API: `GET|POST|PATCH /api/admin-orgs` with `Authorization: Bearer <ADMIN_TOKEN>`.
+
 ### Add a club later (Postgres CLI)
 
 ```bash
@@ -57,7 +66,7 @@ Share the token only with that club’s coaches and devices.
 
 | Step | Who |
 |------|-----|
-| Create org + token | RNZ admin |
+| Create org + token | RNZ admin (Manager → Club admin, or CLI) |
 | Recorder Settings → Ingest token | Each phone in the club |
 | CrewSight Manager Settings → Ingest token | Coaches |
 | Device ID per boat | Unique within club only |
@@ -67,6 +76,7 @@ Share the token only with that club’s coaches and devices.
 - Tokens are stored **hashed** in `rnz_orgs` (SHA-256 with pepper).
 - Deletes, history, geofences, and live fleet are all scoped by org.
 - **Delete all** in the dashboard only clears **that org’s** data.
+- **`ADMIN_TOKEN`** gates cross-club management on Manager; club coaches never need it. Plain ingest tokens are returned only once on create/rotate.
 
 ## Troubleshooting
 
