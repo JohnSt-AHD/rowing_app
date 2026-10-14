@@ -1210,6 +1210,63 @@
   color: var(--ahd-accent);
 }
 
+.club-admin-settings {
+  margin: 0 0 1.1rem;
+  padding: 0.85rem 0 1rem;
+  border-bottom: 1px solid var(--ahd-border);
+}
+
+.club-admin-settings .ahd-field {
+  margin-bottom: 0.65rem;
+}
+
+.club-admin-table-wrap {
+  overflow-x: auto;
+  margin: 0.65rem 0 1rem;
+}
+
+.club-admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.club-admin-table th,
+.club-admin-table td {
+  text-align: left;
+  padding: 0.45rem 0.4rem;
+  border-bottom: 1px solid var(--ahd-border);
+  vertical-align: middle;
+}
+
+.club-admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.club-admin-token-box {
+  margin: 0.75rem 0 1rem;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid rgba(180, 83, 9, 0.45);
+  background: rgba(254, 243, 199, 0.2);
+  border-radius: 6px;
+}
+
+.club-admin-token-box p {
+  margin: 0 0 0.55rem;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.club-admin-token-box input {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  padding: 0.45rem 0.5rem;
+  margin-bottom: 0.55rem;
+}
+
 .org-client-settings {
   margin: 0 0 1.1rem;
   padding: 0.85rem 0 1rem;

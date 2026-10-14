@@ -45,7 +45,8 @@ Legacy **INGEST_TOKEN** still works for org `default` during transition.
 ### Add a club later (Manager UI — preferred)
 
 1. Set **`ADMIN_TOKEN`** on Vercel (Secret) and redeploy. This is an RNZ-only password, not a club ingest token.
-2. Open **CrewSight Manager → Settings → Club admin (RNZ)**.
+2. Open **Dashboard → Settings** (tab next to Coaches & Boats) → **Club admin (RNZ)**  
+   (also available on Manager → Settings → Club admin).
 3. Unlock with `ADMIN_TOKEN`, then **Create club** / **Rename** / **Rotate token**.
 4. Copy the ingest token when shown (once only) and give it to that club’s coaches and devices.
 
