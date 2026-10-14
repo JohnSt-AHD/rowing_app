@@ -17,7 +17,8 @@
     "api/messages.js": { "maxDuration": 15 },
     "api/ping.js": { "maxDuration": 10 },
     "api/walkup.js": { "maxDuration": 15 },
-    "api/fleet-config.js": { "maxDuration": 15 }
+    "api/fleet-config.js": { "maxDuration": 15 },
+    "api/admin-orgs.js": { "maxDuration": 15 }
   },
   "redirects": [
     {
