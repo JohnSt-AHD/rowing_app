@@ -899,7 +899,8 @@ export function mountApp(root: HTMLElement): void {
   function startPollTimer() {
     stopPollTimer();
     if (!shouldPollLive()) return;
-    pollTimer = setInterval(() => void pollLive(), 2000);
+    // 1s poll so sticky capsize alerts show on Manager soon after ingest.
+    pollTimer = setInterval(() => void pollLive(), 1000);
   }
 
   function stopPollTimer() {

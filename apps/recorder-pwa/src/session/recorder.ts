@@ -509,7 +509,8 @@ export async function startRecorder(
   };
 
   const queueSample = (sample: TelemetrySample) => {
-    if (recordingSuppressed) return;
+    // Boat-park suppress pauses normal telemetry, but capsize must still reach Manager.
+    if (recordingSuppressed && sample.derived?.capsize !== true) return;
     batch.push(sample);
     const cap =
       inBoatPark && effectiveUploadIntervalMs > settings.uploadBatchMs

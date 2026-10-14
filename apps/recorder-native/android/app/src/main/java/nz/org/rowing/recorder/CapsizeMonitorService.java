@@ -999,9 +999,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void offerIngestSample(JSONObject sample, boolean flushNow) {
         loadEconomyFromPrefs();
-        if (suppressRecordingActive) return;
+        // Boat-park suppress pauses normal telemetry, but capsize must still reach Manager.
+        if (suppressRecordingActive && !sampleHasCapsize(sample)) return;
         ingestBuffer.put(sample);
         maybeAutoFlushIngest(flushNow);
+    }
+
+    private static boolean sampleHasCapsize(JSONObject sample) {
+        if (sample == null) return false;
+        JSONObject derived = sample.optJSONObject("derived");
+        return derived != null && derived.optBoolean("capsize", false);
     }
 
     private void maybeAutoFlushIngest(boolean force) {
