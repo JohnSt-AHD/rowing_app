@@ -353,9 +353,11 @@ export function mountApp(root: HTMLElement): void {
       const posResult = settled[1];
       const errors: string[] = [];
 
-      const pos =
-        posResult.status === 'fulfilled' ? posResult.value : ([] as MapPosition[]);
-      if (posResult.status === 'rejected') {
+      // Keep last good map/devices on a failed poll so Lou (etc.) does not flash off.
+      let pos: MapPosition[] = positions;
+      if (posResult.status === 'fulfilled') {
+        pos = posResult.value;
+      } else {
         const msg =
           posResult.reason instanceof Error
             ? posResult.reason.message
@@ -363,7 +365,7 @@ export function mountApp(root: HTMLElement): void {
         errors.push(`Map: ${msg}`);
       }
 
-      let dev: FleetDevice[] = [];
+      let dev: FleetDevice[] = devices;
       if (devResult.status === 'fulfilled') {
         dev = mergeCoachDevicesWithMap(devResult.value, pos);
       } else {
@@ -372,8 +374,8 @@ export function mountApp(root: HTMLElement): void {
             ? devResult.reason.message
             : String(devResult.reason);
         errors.push(`Devices: ${msg}`);
-        // Still show map markers if devices list failed.
-        dev = mergeCoachDevicesWithMap([], pos);
+        // Keep prior fleet metadata; still merge any fresh map points.
+        dev = mergeCoachDevicesWithMap(devices, pos);
       }
 
       devices = dev;
@@ -549,8 +551,8 @@ export function mountApp(root: HTMLElement): void {
       if (!d.online) continue;
       const p = posById.get(d.deviceId);
       if (!p || !Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) continue;
-      const ago = d.lastSeenAgoSec ?? p.lastSeenAgoSec ?? p.fixAgeSec ?? 999;
-      if (ago > ONLINE_SEC) continue;
+      const ago = d.lastSeenAgoSec ?? p.lastSeenAgoSec;
+      if (ago != null && Number.isFinite(ago) && ago > ONLINE_SEC) continue;
       latlngs.push(mapLatLngFor(p));
     }
     return latlngs;
@@ -679,10 +681,13 @@ export function mountApp(root: HTMLElement): void {
 
   function isDeviceOnWater(d: FleetDevice, p?: MapPosition): boolean {
     if (d.noGps && d.online) return true;
-    if (!d.online || !p) return false;
-    if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) return false;
-    const ago = d.lastSeenAgoSec ?? p.lastSeenAgoSec ?? p.fixAgeSec ?? 999;
-    return ago <= ONLINE_SEC;
+    if (!d.online) return false;
+    // Use ingest/receive age only — GPS fix clock age can spike and flicker tickets.
+    const ago = d.lastSeenAgoSec ?? p?.lastSeenAgoSec;
+    if (ago != null && Number.isFinite(ago)) return ago <= ONLINE_SEC;
+    // Online but age missing: still on water if we have a map fix.
+    if (p && Number.isFinite(p.latitude) && Number.isFinite(p.longitude)) return true;
+    return false;
   }
 
   function crewTicketRows(): CrewTicketRow[] {
