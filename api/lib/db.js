@@ -1847,9 +1847,48 @@ function resolveCourseFromRow(row) {
   return hdg ?? 0;
 }
 
+/**
+ * Infer boat class from device name / uniqueId (e.g. "W1x Emma" → "W1x").
+ * Used when outing identity was never set so RowSafe/Manager still have a label.
+ * @param {string|null|undefined} uniqueId
+ * @returns {string|null}
+ */
+function inferBoatClassFromDeviceId(uniqueId) {
+  const raw = String(uniqueId || '').trim();
+  if (!raw) return null;
+  const re = /(?:^|[^A-Z0-9])([BJL]?)([MW])([1248])([X+\-])(?=[^A-Z0-9]|$)/i;
+  const m = re.exec(raw);
+  if (!m) return null;
+  const prefix = (m[1] || '').toUpperCase();
+  const gender = m[2].toUpperCase();
+  const seats = m[3];
+  let type = m[4];
+  if (type === 'X' || type === 'x') type = 'x';
+  else if (type === '+') type = '+';
+  else type = '-';
+  return `${prefix}${gender}${seats}${type}`;
+}
+
+/**
+ * Live snapshot freshness for RowSafe: prefer wall-clock GPS / last ingest over
+ * sample `t_ms`, which can lag far behind when the phone clock is skewed.
+ * @param {{ t_ms?: number|null, last_gps_fix_ms?: number|null, last_seen_ms?: number|null, live_t_ms?: number|null }} row
+ */
+function resolveLiveFixMs(row) {
+  const candidates = [row.live_t_ms, row.last_gps_fix_ms, row.last_seen_ms, row.t_ms]
+    .map((v) => Number(v))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  return candidates.length ? Math.max(...candidates) : Date.now();
+}
+
 function rowToTraccarPosition(row) {
-  const fix = new Date(Number(row.t_ms)).toISOString();
+  const sampleMs = Number(row.t_ms);
+  const liveMs = resolveLiveFixMs(row);
+  const fix = new Date(liveMs).toISOString();
   const attrs = {};
+  if (Number.isFinite(sampleMs) && sampleMs > 0 && Math.abs(sampleMs - liveMs) > 2000) {
+    attrs.sampleTms = sampleMs;
+  }
   if (row.hr != null) {
     attrs.hr = row.hr;
     attrs.heartRate = row.hr;
@@ -1918,6 +1957,8 @@ async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
       d.id AS device_ref,
       d.unique_id,
       d.last_gps_t_ms AS t_ms,
+      d.last_gps_fix_ms,
+      (EXTRACT(EPOCH FROM d.last_seen_at) * 1000)::bigint AS last_seen_ms,
       d.last_lat AS latitude,
       d.last_lon AS longitude,
       d.last_gps_accuracy AS accuracy,
@@ -1948,7 +1989,11 @@ async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
       AND d.last_gps_t_ms IS NOT NULL
       AND d.last_lat IS NOT NULL
       AND d.last_lon IS NOT NULL
-      AND d.last_gps_t_ms >= ${staleCutoff}
+      AND GREATEST(
+        COALESCE(d.last_gps_fix_ms, 0),
+        COALESCE((EXTRACT(EPOCH FROM d.last_seen_at) * 1000)::bigint, 0),
+        COALESCE(d.last_gps_t_ms, 0)
+      ) >= ${staleCutoff}
     ORDER BY d.id
   `;
   // deviceId must match listRegistryDevices().id so RowSafe can join positions[d.id].
@@ -1958,6 +2003,14 @@ async function getLatestTraccarPositions(orgId, onlineMs = 30000) {
       device_ref: Number(row.device_ref),
       unique_id: row.unique_id,
       t_ms: Number(row.t_ms),
+      last_gps_fix_ms:
+        row.last_gps_fix_ms != null && Number.isFinite(Number(row.last_gps_fix_ms))
+          ? Number(row.last_gps_fix_ms)
+          : null,
+      last_seen_ms:
+        row.last_seen_ms != null && Number.isFinite(Number(row.last_seen_ms))
+          ? Number(row.last_seen_ms)
+          : null,
       latitude: row.latitude,
       longitude: row.longitude,
       accuracy: row.accuracy,
@@ -2288,6 +2341,7 @@ async function getLatestSessionStateByDevice(orgId) {
 
 /**
  * Latest outing crew labels per device (coach + boat) for Manager / RowSafe tickets.
+ * Prefers an open session when one exists. Infers boatClass from unique_id when unset.
  * @returns {Promise<Map<string, {
  *   coach: string|null,
  *   rowerName: string|null,
@@ -2295,6 +2349,7 @@ async function getLatestSessionStateByDevice(orgId) {
  *   boatClass: string|null,
  *   boatName: string|null,
  *   source: string|null,
+ *   sessionId: string|null,
  * }>>}
  */
 async function getLatestSessionCrewMetaByDevice(orgId) {
@@ -2304,6 +2359,7 @@ async function getLatestSessionCrewMetaByDevice(orgId) {
   const rows = await sql`
     SELECT DISTINCT ON (s.unique_id)
       s.unique_id,
+      s.session_id,
       s.athlete_id,
       s.rower_name,
       s.boat_id,
@@ -2314,25 +2370,30 @@ async function getLatestSessionCrewMetaByDevice(orgId) {
     LEFT JOIN rnz_boats b
       ON b.org_id = s.org_id AND b.id = s.boat_id
     WHERE s.org_id = ${orgId}
-    ORDER BY s.unique_id, COALESCE(s.updated_at, s.started_at) DESC
+    ORDER BY s.unique_id,
+      (s.ended_at IS NULL) DESC,
+      COALESCE(s.updated_at, s.started_at) DESC
   `;
   const byDevice = new Map();
   for (const row of rows.rows) {
+    const uid = String(row.unique_id);
     const coach = String(row.athlete_id || '').trim() || null;
     const rowerName = String(row.rower_name || '').trim() || null;
-    const boatClass = String(row.boat_class || '').trim() || null;
+    const boatClass =
+      String(row.boat_class || '').trim() || inferBoatClassFromDeviceId(uid) || null;
     const boatName = String(row.boat_name || '').trim() || null;
     const boatId =
       row.boat_id != null && Number.isFinite(Number(row.boat_id))
         ? Number(row.boat_id)
         : null;
-    byDevice.set(String(row.unique_id), {
+    byDevice.set(uid, {
       coach,
       rowerName,
       boatId,
       boatClass,
       boatName,
       source: row.source != null ? String(row.source) : null,
+      sessionId: row.session_id != null ? String(row.session_id) : null,
     });
   }
   return byDevice;
@@ -2531,9 +2592,12 @@ async function listRegistryDevices(orgId) {
     const uid = String(d.unique_id);
     const meta = crewMeta.get(uid);
     const coach = meta?.coach || String(d.athlete_id || '').trim() || '';
-    const boatClass = meta?.boatClass || '';
+    // Prefer real outing boat class; else infer from device id so RowSafe cards
+    // still show identity without a selected fleet boat.
+    const boatClass =
+      meta?.boatClass || inferBoatClassFromDeviceId(uid) || '';
     const boatName = meta?.boatName || '';
-    const displayName = String(d.name || d.unique_id);
+    const displayName = String(d.name || d.unique_id).trim() || uid;
     return {
       id: Number(d.id),
       name: displayName,
@@ -2547,9 +2611,11 @@ async function listRegistryDevices(orgId) {
         name: displayName,
         coach,
         boatClass,
-        boatName,
+        // Omit empty boatName — RowSafe treats present empty strings as blank crew.
+        ...(boatName ? { boatName } : {}),
         rowerName: meta?.rowerName || '',
         boatId: meta?.boatId != null ? String(meta.boatId) : '',
+        ...(meta?.sessionId ? { sessionId: meta.sessionId } : {}),
       },
     };
   });
@@ -4098,6 +4164,7 @@ module.exports = {
   getDeviceRegistryTimes,
   getLatestSessionStateByDevice,
   getLatestSessionCrewMetaByDevice,
+  inferBoatClassFromDeviceId,
   getMapPositions,
   getRegistryMapPositions,
   getRegistryGpsByDevice,

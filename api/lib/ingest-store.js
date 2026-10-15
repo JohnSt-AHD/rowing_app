@@ -2132,7 +2132,7 @@ async function listDevices(orgId, opts = {}) {
               boatId: meta?.boatId ?? null,
               boatClass: meta?.boatClass || null,
               boatName: meta?.boatName || null,
-              sessionId: '',
+              sessionId: meta?.sessionId || '',
               samples: [
                 {
                   t: regFix.t,
@@ -2178,7 +2178,7 @@ async function listDevices(orgId, opts = {}) {
               boatId: meta?.boatId ?? null,
               boatClass: meta?.boatClass || null,
               boatName: meta?.boatName || null,
-              sessionId: '',
+              sessionId: meta?.sessionId || '',
               samples: [],
               lastSeenMs,
               firstSeenMs: lastSeenMs,
@@ -2201,6 +2201,7 @@ async function listDevices(orgId, opts = {}) {
           if (meta.boatClass) dev.boatClass = meta.boatClass;
           if (meta.boatName) dev.boatName = meta.boatName;
           if (meta.boatId != null) dev.boatId = meta.boatId;
+          if (meta.sessionId && !dev.sessionId) dev.sessionId = meta.sessionId;
           if (meta.rowerName) {
             dev.name = meta.rowerName;
           } else if (!dev.name) {
@@ -2208,6 +2209,11 @@ async function listDevices(orgId, opts = {}) {
           }
         } else if (!dev.name) {
           dev.name = dev.deviceId;
+        }
+        // Device id often encodes class (e.g. "W1x Emma") when fleet boat unset.
+        if (!dev.boatClass && typeof db.inferBoatClassFromDeviceId === 'function') {
+          const inferred = db.inferBoatClassFromDeviceId(dev.deviceId);
+          if (inferred) dev.boatClass = inferred;
         }
         mergeListDeviceDbTelemetry(
           dev,
@@ -2426,7 +2432,13 @@ function getPositionsSnapshot(orgId, onlineMs = 30000) {
     }
     if (!lastGps) continue;
 
-    const fixMs = lastGps.t;
+    // Prefer ingest/update wall time when sample `t` lags (phone clock skew) so
+    // RowSafe's recent-fix window still lists the device.
+    const sampleMs = Number(lastGps.t);
+    const fixMs = Math.max(
+      Number.isFinite(sampleMs) ? sampleMs : 0,
+      Number(row.updatedAt) || 0,
+    );
     const pos = {
       uniqueId: row.deviceId,
       deviceId: row.deviceId,

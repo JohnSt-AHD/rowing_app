@@ -17,6 +17,7 @@ import {
   type FleetDevice,
   type MapPosition,
 } from '../lib/api';
+import { parseBoatClass } from '@rowing/rowing-pace';
 import {
   getNativeMonitoringStatus,
   IS_NATIVE,
@@ -664,19 +665,24 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function deviceDisplayName(d: FleetDevice): string {
-    // Recorder "Name" is deviceId; walk-up may set name to rower.
+    // Always prefer device identity (recorder Name = deviceId). Walk-up may set rower name.
     const name = String(d.name ?? '').trim();
     return name || d.deviceId;
   }
 
   function deviceCrewDetailLine(d: FleetDevice): string {
     const parts: string[] = [];
+    const title = deviceDisplayName(d);
     const coach = String(d.coach ?? d.athleteId ?? '').trim();
     const boatName = String(d.boatName ?? '').trim();
-    const boatClass = String(d.boatClass ?? '').trim();
+    // Outing boat class is optional — fall back to class encoded in device id (e.g. W1x Emma).
+    const boatClass =
+      String(d.boatClass ?? '').trim() ||
+      parseBoatClass(d.boatClass, d.deviceId, d.name) ||
+      '';
     // Avoid repeating walk-up rower as "coach" when name already shows it.
-    if (coach && coach !== String(d.name ?? '').trim()) parts.push(`Coach ${coach}`);
-    if (boatName) parts.push(boatName);
+    if (coach && coach !== title) parts.push(`Coach ${coach}`);
+    if (boatName && boatName !== title) parts.push(boatName);
     if (boatClass) parts.push(boatClass);
     return parts.join(' · ');
   }
@@ -720,7 +726,8 @@ export function mountApp(root: HTMLElement): void {
       rows.push({
         ...d,
         onWater,
-        speedMps: onWater && p && !stale ? resolveSpeedMps(p) : null,
+        // Keep speed on tickets even when outing identity is missing; mark stale in meta.
+        speedMps: onWater && p ? resolveSpeedMps(p) : null,
         displayName: deviceDisplayName(d),
         colorIndex: registerLiveDevice(d.deviceId),
         telemetryStale: stale,
@@ -775,21 +782,36 @@ export function mountApp(root: HTMLElement): void {
         ? `Last seen ${formatRelativeAgo(d.lastSeenAgoSec)}`
         : 'Offline';
     const crewLine = deviceCrewDetailLine(d);
+    // Always keep device id visible when the title is a rower/walk-up name.
+    const showDeviceId = d.displayName !== d.deviceId;
+    // Show speed when known even without coach/boat outing fields.
+    const speedMpsFallback =
+      d.onWater && !d.noGps && d.speedMps == null && d.mapPosition
+        ? resolveSpeedMps(d.mapPosition)
+        : null;
+    const speedShown =
+      speed ||
+      (speedMpsFallback != null && Number.isFinite(speedMpsFallback) && speedMpsFallback >= 0
+        ? `${(speedMpsFallback * 3.6).toFixed(1)} km/h`
+        : null);
     return (
       `<li class="${ticketClass}" data-device-id="${esc(d.deviceId)}">` +
       `<span class="crew-ticket__dot" style="background:${accent}" aria-hidden="true"></span>` +
       `<div class="crew-ticket__body">` +
       `<div class="crew-ticket__name">${esc(d.displayName)}</div>` +
+      (showDeviceId ? `<div class="crew-ticket__id">${esc(d.deviceId)}</div>` : '') +
       (crewLine ? `<div class="crew-ticket__crew">${esc(crewLine)}</div>` : '') +
       `<div class="crew-ticket__meta">${esc(meta)}</div>` +
       `</div>` +
       `<div class="crew-ticket__status">` +
       `<span class="crew-ticket__badge ${statusClass}">${statusLabel}</span>` +
-      (d.onWater && !d.noGps && (speed || spm)
-        ? `<div class="crew-ticket__stats">${[speed, spm].filter(Boolean).map((x) => esc(x!)).join(' · ')}</div>`
+      (d.onWater && !d.noGps && (speedShown || spm)
+        ? `<div class="crew-ticket__stats">${[speedShown, spm].filter(Boolean).map((x) => esc(x!)).join(' · ')}</div>`
         : d.onWater && d.noGps
           ? `<div class="crew-ticket__stats">No GPS</div>`
-          : '') +
+          : d.onWater
+            ? `<div class="crew-ticket__stats">Live</div>`
+            : '') +
       `</div>` +
       `</li>`
     );
