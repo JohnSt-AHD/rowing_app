@@ -2042,6 +2042,8 @@ async function listDevices(orgId, opts = {}) {
   let warning = hasPostgres
     ? null
     : 'No database configured — monitor only sees data on the same server instance. Add POSTGRES_URL in Vercel and redeploy.';
+  /** @type {Map<string, { active?: boolean, atMs?: number|null }>|null} */
+  let dbCapsizeAlerts = null;
 
   if (hasPostgres) {
     try {
@@ -2052,7 +2054,7 @@ async function listDevices(orgId, opts = {}) {
         registryGps,
         registryTimes,
         rowingTel,
-        dbCapsizeAlerts,
+        dbCapsizeAlertsLoaded,
         batteryByDevice,
         strokeByDevice,
         crewMeta,
@@ -2068,6 +2070,7 @@ async function listDevices(orgId, opts = {}) {
           return new Map();
         }),
       ]);
+      dbCapsizeAlerts = dbCapsizeAlertsLoaded;
 
       for (const [deviceId, regFix] of registryGps) {
         const meta = crewMeta.get(deviceId);
@@ -2168,14 +2171,6 @@ async function listDevices(orgId, opts = {}) {
           now,
         );
       }
-      forceCapsizeAlertsOnDevices(
-        byDevice,
-        dbCapsizeAlerts,
-        orgId,
-        windowMs,
-        onlineMs,
-        now,
-      );
 
       warning = null;
     } catch (err) {
@@ -2184,8 +2179,20 @@ async function listDevices(orgId, opts = {}) {
       warning = `Database read failed: ${err.message}`;
     }
   }
+  // Wipe live-derived tip flags — monitor banners use sticky/DB until Acknowledge.
+  // Must match map: DB ∪ in-memory sticky (sticky alone misses other serverless instances).
   for (const dev of byDevice.values()) {
     if (dev.rowing) dev.rowing.capsize = false;
+  }
+  if (dbCapsizeAlerts?.size) {
+    forceCapsizeAlertsOnDevices(
+      byDevice,
+      dbCapsizeAlerts,
+      orgId,
+      windowMs,
+      onlineMs,
+      now,
+    );
   }
   forceCapsizeAlertsOnDevices(
     byDevice,
@@ -2704,37 +2711,66 @@ function rowingMetricsByDevice(orgId, byDevice, windowMs) {
   return out;
 }
 
+const HELP_ON_WAY_TEXT = 'Help is on the way — stay with the boat.';
+
 /**
- * Dismiss capsize alert on the monitor (per device or all currently alerting).
+ * Resolve device IDs that clearCapsizeAlert will clear (before mutating state).
  * @param {string} [deviceId]
  */
-async function clearCapsizeAlert(orgId, deviceId) {
+async function listCapsizeAlertDeviceIds(orgId, deviceId) {
+  if (deviceId) return [String(deviceId)];
+  const ids = new Set();
+  if (db.hasDb()) {
+    try {
+      const dbAlerts = await loadDbCapsizeAlerts(orgId);
+      for (const id of dbAlerts.keys()) ids.add(String(id));
+    } catch (err) {
+      console.error('[ingest-store] DB capsize alert list failed:', err);
+    }
+  }
+  for (const id of getStickyCapsizeAlerts(orgId).keys()) ids.add(String(id));
+  return [...ids];
+}
+
+/**
+ * Dismiss capsize alert on the monitor (per device or all currently alerting).
+ * By default notifies each cleared device with the help-on-the-way crew message first.
+ * @param {string} [deviceId]
+ * @param {{ notifyHelp?: boolean }} [options]
+ */
+async function clearCapsizeAlert(orgId, deviceId, options = {}) {
+  const notifyHelp = options?.notifyHelp !== false;
   const now = Date.now();
+  const toClear = await listCapsizeAlertDeviceIds(orgId, deviceId);
+  /** @type {string[]} */
+  const helpNotified = [];
+
+  if (notifyHelp && toClear.length) {
+    for (const id of toClear) {
+      try {
+        const message = await db.setRegattaMessage(orgId, id, HELP_ON_WAY_TEXT);
+        if (message) helpNotified.push(id);
+      } catch (err) {
+        console.error('[ingest-store] Help-on-way message failed for', id, err);
+      }
+    }
+  }
+
   if (deviceId) {
     const id = String(deviceId);
     setCapsizeClear(orgDeviceKey(orgId, id));
     clearStickyCapsizeAlert(orgId, id);
     if (db.hasDb()) await db.clearCapsizeAlertDb(orgId, id);
-    return { cleared: [id], clearedAt: now };
+    return { cleared: [id], clearedAt: now, helpNotified };
   }
 
   // Fast path: do not call listDevices here (can 504 and leave alerts uncleared).
-  const cleared = new Set();
-  if (db.hasDb()) {
-    try {
-      const dbAlerts = await loadDbCapsizeAlerts(orgId);
-      for (const id of dbAlerts.keys()) cleared.add(String(id));
-    } catch (err) {
-      console.error('[ingest-store] DB capsize alert list failed:', err);
-    }
-  }
-  for (const id of getStickyCapsizeAlerts(orgId).keys()) cleared.add(String(id));
-  for (const id of cleared) setCapsizeClear(orgDeviceKey(orgId, id));
+  for (const id of toClear) setCapsizeClear(orgDeviceKey(orgId, id));
   // Also mark a global org clear time for any device that might still stream tip samples.
   setCapsizeClear(orgDeviceKey(orgId, '*'));
   clearStickyCapsizeAlert(orgId);
   if (db.hasDb()) await db.clearCapsizeAlertDb(orgId);
-  return { cleared: [...cleared], clearedAt: now };
+  return { cleared: toClear, clearedAt: now, helpNotified };
 }
 
 /** Recent motion samples per device (in-memory ingest). */

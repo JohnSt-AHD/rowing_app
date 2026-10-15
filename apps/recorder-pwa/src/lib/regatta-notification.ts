@@ -13,6 +13,10 @@ function isBackgrounded(): boolean {
   return document.hidden || document.visibilityState === 'hidden';
 }
 
+function isHelpOnWay(text: string): boolean {
+  return text.trim().startsWith('Help is on the way');
+}
+
 async function ensureChannels(): Promise<boolean> {
   if (!IS_NATIVE) return false;
   try {
@@ -53,7 +57,10 @@ export async function maybeNotifyRegattaMessage(
   msg: { id: number; text: string } | null,
   prevId: number | null,
 ): Promise<void> {
-  if (!IS_NATIVE || !msg || msg.id === prevId || !isBackgrounded()) return;
+  if (!IS_NATIVE || !msg || msg.id === prevId) return;
+  const help = isHelpOnWay(msg.text);
+  // Help-on-the-way stays sticky even in foreground (HUD + notification).
+  if (!help && !isBackgrounded()) return;
   const ready = await ensureChannels();
   if (!ready) return;
   try {
@@ -61,20 +68,30 @@ export async function maybeNotifyRegattaMessage(
       notifications: [
         {
           id: NOTIF_ID_CREW,
-          title: 'Coach message',
+          title: help ? 'Help on the way' : 'Coach message',
           body: msg.text.trim() || 'New message from regatta control',
           channelId: CREW_CHANNEL_ID,
           sound: 'default',
           smallIcon: 'ic_stat_rowing_shell',
           iconColor: '#2563EB',
           priority: 3,
-          autoCancel: true,
-          extra: { type: 'regatta_message', messageId: msg.id },
+          ongoing: help,
+          autoCancel: !help,
+          extra: { type: 'regatta_message', messageId: msg.id, help },
         },
       ],
     });
   } catch (e) {
     console.warn('Regatta message notification failed', e);
+  }
+}
+
+export async function clearCrewMessageNotification(): Promise<void> {
+  if (!IS_NATIVE) return;
+  try {
+    await LocalNotifications.cancel({ notifications: [{ id: NOTIF_ID_CREW }] });
+  } catch {
+    /* optional */
   }
 }
 

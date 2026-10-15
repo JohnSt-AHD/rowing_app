@@ -68,6 +68,14 @@
                 <action android:name="nz.org.rowing.recorder.BOOT_RESUME_RETRY" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".CrewMessageDismissReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="nz.org.rowing.recorder.DISMISS_CREW_MESSAGE" />
+            </intent-filter>
+        </receiver>
     </application>
 
     <!-- Permissions (plugins merge more; listed for clarity) -->

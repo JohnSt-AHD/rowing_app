@@ -144,7 +144,7 @@ export function mountApp(root: HTMLElement): void {
     const names = caps.map((d) => deviceDisplayName(d)).filter(Boolean);
     const namePart = names.length ? `: ${names.join(', ')}` : '';
     const n = caps.length || 1;
-    return `${n} CAPSIZE${namePart} — check crew now. Stays until acknowledged.`;
+    return `${n} CAPSIZE${namePart} — check crew now. Stays on until Acknowledge (even if the boat is upright again).`;
   }
 
   function updateCapsizeBanner(): void {
@@ -195,8 +195,16 @@ export function mountApp(root: HTMLElement): void {
 
   async function acknowledgeCapsizeAlerts() {
     try {
-      await clearCapsizeAlert(settings);
-      setStatus('Capsize alert acknowledged');
+      const result = (await clearCapsizeAlert(settings)) as {
+        helpNotified?: string[];
+        cleared?: string[];
+      };
+      const helped = Array.isArray(result?.helpNotified) ? result.helpNotified.length : 0;
+      setStatus(
+        helped > 0
+          ? `Acknowledged — help message sent to ${helped} crew device(s)`
+          : 'Acknowledged — help message sent',
+      );
       await pollLive();
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e), true);
@@ -432,8 +440,11 @@ export function mountApp(root: HTMLElement): void {
     const byId = new Map<string, FleetDevice>();
     for (const d of apiDevices) {
       const p = mapById.get(d.deviceId);
+      const rowing = { ...(d.rowing || {}) };
+      if (p?.capsize) rowing.capsize = true;
       byId.set(d.deviceId, {
         ...d,
+        rowing,
         gpsAgeSec:
           d.gps?.displayAgeSec ??
           displayGpsAgeSec(d.gps?.ageSec, d.gps?.ingestAgoSec) ??
@@ -995,7 +1006,7 @@ export function mountApp(root: HTMLElement): void {
           >${QUIET_HOURS_MESSAGE}</div>
           <div class="capsize-banner" data-capsize-banner role="alert" ${caps > 0 ? '' : 'hidden'}>
             <span data-capsize-text>${caps > 0 ? capsizeBannerText() : ''}</span>
-            <button type="button" class="capsize-banner__clear" data-capsize-clear>Acknowledge / clear</button>
+            <button type="button" class="capsize-banner__clear" data-capsize-clear>Acknowledge — notify crew</button>
           </div>
         </div>
         <section class="coach-panel coach-panel--dashboard" data-panel="dashboard" ${tab === 'dashboard' ? '' : 'hidden'}>

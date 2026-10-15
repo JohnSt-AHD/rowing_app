@@ -613,10 +613,13 @@
 }
 
 .capsize-alert-bar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
   margin: 0 0 1rem;
   padding: 0.65rem 1rem;
   border-radius: 8px;
-  background: rgba(127, 29, 29, 0.92);
+  background: rgba(127, 29, 29, 0.96);
   color: #fecaca;
   border-bottom: 1px solid rgba(248, 113, 113, 0.45);
   animation: capsize-card-pulse 1.2s ease-in-out infinite;
@@ -630,6 +633,28 @@
 .capsize-alert-bar__main {
   text-align: center;
   flex: 1 1 12rem;
+}
+
+.capsize-alert-bar__hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: #fecaca;
+  opacity: 0.95;
+}
+
+.device-card__capsize-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.65rem 0 0;
+}
+
+.device-card__ack-btn {
+  background: rgba(254, 252, 232, 0.95);
+  color: #7f1d1d;
+  border: 1px solid rgba(254, 202, 202, 0.9);
+  font-weight: 700;
 }
 
 .capsize-alert-bar strong {

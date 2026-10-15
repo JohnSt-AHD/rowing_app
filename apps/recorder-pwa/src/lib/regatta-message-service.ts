@@ -35,4 +35,27 @@ export async function fetchRegattaMessage(
   }
 }
 
+/** Clear active regatta/crew message for this device (rower dismiss). */
+export async function clearRegattaMessage(
+  ingestUrl: string,
+  deviceId: string,
+  ingestToken?: string,
+): Promise<boolean> {
+  const id = deviceId.trim();
+  if (!id) return false;
+
+  const url = `${messagesUrl(ingestUrl)}?deviceId=${encodeURIComponent(id)}`;
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (ingestToken?.trim()) headers.Authorization = `Bearer ${ingestToken.trim()}`;
+
+  try {
+    const res = await fetch(url, { method: 'DELETE', headers });
+    if (res.status === 404) return true;
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean };
+    return res.ok && data.ok !== false;
+  } catch {
+    return false;
+  }
+}
+
 export const REGATTA_MESSAGE_POLL_MS = 15_000;

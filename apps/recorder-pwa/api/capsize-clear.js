@@ -29,6 +29,10 @@ module.exports = async function handler(req, res) {
       ? String(body?.deviceId || req.query?.deviceId)
       : undefined;
 
-  const result = await store.clearCapsizeAlert(org.id, deviceId);
+  // Default on: send help-on-the-way crew message before clearing sticky alert.
+  // Escape hatch: { notifyHelp: false }.
+  const notifyHelp = body?.notifyHelp !== false;
+
+  const result = await store.clearCapsizeAlert(org.id, deviceId, { notifyHelp });
   return res.status(200).json({ ok: true, ...result });
 };

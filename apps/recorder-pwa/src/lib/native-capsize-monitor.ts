@@ -48,6 +48,8 @@ export type NativeRecordingPulse = {
   nativeGpsCount?: number;
   /** GPS fixes sent on heartbeat fallback (timer stall). */
   heartbeatGpsCount?: number;
+  /** Native tip state (may raise Manager while WebView motion is idle). */
+  capsizeActive?: boolean;
   serviceRunning?: boolean;
   enableGps?: boolean;
   gpsIntervalMs?: number;
@@ -124,6 +126,7 @@ export interface NativeCapsizeMonitorPlugin {
   transitionToStandby(): Promise<void>;
   disarmGeofenceStandby(): Promise<void>;
   getStandbyStatus(): Promise<NativeStandbyStatus>;
+  dismissCrewMessage(): Promise<void>;
 }
 
 const CapsizeMonitor = registerPlugin<NativeCapsizeMonitorPlugin>('CapsizeMonitor');
@@ -289,6 +292,16 @@ export async function getNativeStandbyStatus(): Promise<NativeStandbyStatus | nu
     return await CapsizeMonitor.getStandbyStatus();
   } catch {
     return null;
+  }
+}
+
+/** Cancel sticky native crew/help notification after in-app Dismiss. */
+export async function dismissNativeCrewMessage(): Promise<void> {
+  if (!IS_NATIVE) return;
+  try {
+    await CapsizeMonitor.dismissCrewMessage();
+  } catch {
+    /* optional on older APKs */
   }
 }
 

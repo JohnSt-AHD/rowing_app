@@ -640,6 +640,33 @@
   text-wrap: pretty;
 }
 
+.session-live-hud__regatta--help {
+  background: rgba(180, 83, 9, 0.95);
+  border-color: rgba(253, 186, 116, 0.85);
+}
+
+.session-live-hud__regatta--help .session-live-hud__regatta-label {
+  color: #ffedd5;
+}
+
+.session-live-hud__regatta-dismiss {
+  display: inline-block;
+  margin-top: 0.55rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.35);
+  color: #ffffff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.session-live-hud__regatta-dismiss:active {
+  background: rgba(15, 23, 42, 0.55);
+}
+
 .session-live-hud__metrics {
   display: grid;
   grid-template-columns: repeat(5, 1fr);

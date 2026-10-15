@@ -64,6 +64,33 @@
   font: inherit;
 }
 
+button.hub-stat {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: default;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+button.hub-stat.hub-stat--capsize-active {
+  cursor: pointer;
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  background: rgba(185, 28, 28, 0.12);
+  border: 1px solid rgba(185, 28, 28, 0.35);
+}
+
+button.hub-stat.hub-stat--capsize-active:hover {
+  background: rgba(185, 28, 28, 0.2);
+}
+
+button.hub-stat:disabled {
+  opacity: 1;
+}
+
 .hub-stat-value {
   font-size: 15px;
   font-weight: 600;

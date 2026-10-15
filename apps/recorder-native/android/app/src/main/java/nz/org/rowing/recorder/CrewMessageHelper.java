@@ -19,9 +19,10 @@ import org.json.JSONObject;
 /** Poll regatta/coach messages while native session service runs (background-safe). */
 final class CrewMessageHelper {
     private static final String TAG = "CrewMessages";
-    private static final String PREFS_LAST_MESSAGE_ID = "lastRegattaMessageId";
+    static final String PREFS_LAST_MESSAGE_ID = "lastRegattaMessageId";
     static final String CHANNEL_ID = "rnz_capsize_native_crew";
     static final int NOTIF_ID = 9105;
+    private static final String HELP_ON_WAY_PREFIX = "Help is on the way";
 
     private CrewMessageHelper() {}
 
@@ -34,6 +35,15 @@ final class CrewMessageHelper {
             base = base.substring(0, base.length() - 1);
         }
         return base + "/api/messages?deviceId=" + deviceId;
+    }
+
+    static boolean isHelpOnWay(String text) {
+        return text != null && text.trim().startsWith(HELP_ON_WAY_PREFIX);
+    }
+
+    static void cancelCrewMessageNotification(Context ctx) {
+        NotificationManager nm = ctx.getSystemService(NotificationManager.class);
+        if (nm != null) nm.cancel(NOTIF_ID);
     }
 
     static void pollMessages(Context ctx) {
@@ -76,6 +86,7 @@ final class CrewMessageHelper {
             if (message == null) {
                 if (lastId != 0) {
                     p.edit().putInt(PREFS_LAST_MESSAGE_ID, 0).apply();
+                    cancelCrewMessageNotification(ctx);
                 }
                 return;
             }
@@ -98,6 +109,7 @@ final class CrewMessageHelper {
     static void showCrewMessageNotification(Context ctx, String body) {
         NotificationManager nm = ctx.getSystemService(NotificationManager.class);
         if (nm == null) return;
+        boolean help = isHelpOnWay(body);
         Intent launch = new Intent(ctx, MainActivity.class);
         PendingIntent pi =
                 PendingIntent.getActivity(
@@ -105,17 +117,35 @@ final class CrewMessageHelper {
                         2,
                         launch,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Notification n =
+
+        NotificationCompat.Builder builder =
                 new NotificationCompat.Builder(ctx, CHANNEL_ID)
-                        .setContentTitle("Coach message")
+                        .setContentTitle(help ? "Help on the way" : "Coach message")
                         .setContentText(body)
+                        .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
                         .setSmallIcon(R.drawable.ic_stat_rowing_shell)
                         .setContentIntent(pi)
                         .setPriority(NotificationCompat.PRIORITY_HIGH)
-                        .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                        .setAutoCancel(true)
-                        .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
-                        .build();
-        nm.notify(NOTIF_ID, n);
+                        .setCategory(
+                                help
+                                        ? NotificationCompat.CATEGORY_ALARM
+                                        : NotificationCompat.CATEGORY_MESSAGE)
+                        .setOngoing(help)
+                        .setAutoCancel(!help)
+                        .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE);
+
+        if (help) {
+            Intent dismiss = new Intent(ctx, CrewMessageDismissReceiver.class);
+            dismiss.setAction(CrewMessageDismissReceiver.ACTION);
+            PendingIntent dismissPi =
+                    PendingIntent.getBroadcast(
+                            ctx,
+                            3,
+                            dismiss,
+                            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            builder.addAction(0, "Dismiss", dismissPi);
+        }
+
+        nm.notify(NOTIF_ID, builder.build());
     }
 }

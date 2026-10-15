@@ -964,17 +964,28 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             if (capsizeSinceMs == 0) capsizeSinceMs = t;
             if (!capsizeActive && t - capsizeSinceMs >= CAPSIZE_HOLD_MS) {
                 capsizeActive = true;
+                persistCapsizeActive(true);
                 onCapsizeTriggered(t, lastAx, lastAy, lastAz, tiltDeg);
             }
         } else if (dot > 0.55f) {
             capsizeSinceMs = 0;
             if (capsizeActive) {
                 capsizeActive = false;
-                cancelAlertNotification();
+                persistCapsizeActive(false);
+                // Keep a sticky "reported" notice so the phone matches Manager until dismissed.
+                // (Manager sticky alert stays until Acknowledge.)
+                showCapsizeReportedNotification();
             }
         } else {
             capsizeSinceMs = 0;
         }
+    }
+
+    private void persistCapsizeActive(boolean active) {
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putBoolean("capsizeActive", active)
+                .apply();
     }
 
     private void onCapsizeTriggered(long t, float ax, float ay, float az, int tiltDeg) {
@@ -1639,9 +1650,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (inst != null) {
             ret.put("enableGps", inst.enableGps);
             ret.put("gpsIntervalMs", inst.effectiveGpsIntervalMs());
+            ret.put("capsizeActive", inst.capsizeActive);
         } else {
             ret.put("enableGps", p.getBoolean("enableGps", false));
             ret.put("gpsIntervalMs", Math.max(500L, p.getLong("gpsIntervalMs", 1000L)));
+            ret.put("capsizeActive", p.getBoolean("capsizeActive", false));
         }
         return ret;
     }
@@ -2929,8 +2942,31 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .setContentIntent(pi)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
-                .setAutoCancel(true)
+                .setOngoing(true)
+                .setAutoCancel(false)
                 .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
+                .build();
+        nm.notify(NOTIF_ID_ALERT, n);
+    }
+
+    /** After tip clears locally, keep phone UI aligned with Manager sticky alert. */
+    private void showCapsizeReportedNotification() {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm == null) return;
+        Intent launch = new Intent(this, MainActivity.class);
+        PendingIntent pi =
+            PendingIntent.getActivity(
+                this, 1, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification n =
+            new NotificationCompat.Builder(this, CHANNEL_ID + "_alert")
+                .setContentTitle("Capsize reported")
+                .setContentText("Manager still alerting until Acknowledge")
+                .setSmallIcon(R.drawable.ic_stat_rnz_alert)
+                .setContentIntent(pi)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .setOngoing(true)
+                .setAutoCancel(false)
                 .build();
         nm.notify(NOTIF_ID_ALERT, n);
     }
@@ -2959,6 +2995,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void cancelAlertNotification() {
+        persistCapsizeActive(false);
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm != null) nm.cancel(NOTIF_ID_ALERT);
     }

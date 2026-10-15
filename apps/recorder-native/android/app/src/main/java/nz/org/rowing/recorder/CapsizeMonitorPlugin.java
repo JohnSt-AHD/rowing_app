@@ -201,6 +201,17 @@ public class CapsizeMonitorPlugin extends Plugin {
         }
     }
 
+    /** Clear sticky crew/help notification after in-app Dismiss (server DELETE is done by WebView). */
+    @PluginMethod
+    public void dismissCrewMessage(PluginCall call) {
+        android.content.Context ctx = getContext();
+        CrewMessageHelper.cancelCrewMessageNotification(ctx);
+        SharedPreferences p =
+                ctx.getSharedPreferences(CapsizeMonitorService.PREFS, android.content.Context.MODE_PRIVATE);
+        p.edit().putInt(CrewMessageHelper.PREFS_LAST_MESSAGE_ID, 0).apply();
+        call.resolve();
+    }
+
     private static JSObject jsonObjectToJSObject(JSONObject obj) throws Exception {
         JSObject out = new JSObject();
         JSONArray names = obj.names();

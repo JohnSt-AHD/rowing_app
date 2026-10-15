@@ -927,6 +927,10 @@ export function mountApp(root: HTMLElement): void {
     if (regattaEl) {
       const text = stats?.regattaMessage?.text?.trim();
       const textEl = regattaEl.querySelector('[data-hud-regatta-text]');
+      const labelEl = regattaEl.querySelector('.session-live-hud__regatta-label');
+      const help = Boolean(text && text.startsWith('Help is on the way'));
+      regattaEl.classList.toggle('session-live-hud__regatta--help', help);
+      if (labelEl) labelEl.textContent = help ? 'Help on the way' : 'Regatta control';
       if (text) {
         regattaEl.removeAttribute('hidden');
         if (textEl) textEl.textContent = text;
@@ -1401,9 +1405,10 @@ export function mountApp(root: HTMLElement): void {
           <span class="session-live-hud__hazard-label">⚠ Hazard zone</span>
           <span class="session-live-hud__hazard-text" data-hud-hazard-text>${hazardText ? esc(hazardText) : ''}</span>
         </div>
-        <div class="session-live-hud__regatta" data-hud-regatta ${regattaText ? '' : 'hidden'} role="status" aria-live="polite">
-          <span class="session-live-hud__regatta-label">Regatta control</span>
+        <div class="session-live-hud__regatta ${regattaText?.startsWith('Help is on the way') ? 'session-live-hud__regatta--help' : ''}" data-hud-regatta ${regattaText ? '' : 'hidden'} role="status" aria-live="polite">
+          <span class="session-live-hud__regatta-label">${regattaText?.startsWith('Help is on the way') ? 'Help on the way' : 'Regatta control'}</span>
           <p class="session-live-hud__regatta-text" data-hud-regatta-text>${regattaText ? esc(regattaText) : ''}</p>
+          <button type="button" class="session-live-hud__regatta-dismiss" data-action="dismiss-regatta">Dismiss</button>
         </div>
         <div class="session-fs-panel ${fsTab === 'metrics' ? 'is-active' : ''}" data-fs-panel="metrics">
           <div class="session-zone-badge" data-hud-zone data-zone="unknown" aria-live="polite">
@@ -2329,6 +2334,18 @@ export function mountApp(root: HTMLElement): void {
     root.querySelectorAll('[data-action="clear-session"]').forEach((el) => {
       el.addEventListener('click', () => {
         void clearSession();
+      });
+    });
+
+    root.querySelector('[data-action="dismiss-regatta"]')?.addEventListener('click', () => {
+      void controller?.dismissRegattaMessage().then(() => {
+        const el = root.querySelector('[data-hud-regatta]') as HTMLElement | null;
+        if (el) {
+          el.setAttribute('hidden', '');
+          el.classList.remove('session-live-hud__regatta--help');
+        }
+        const textEl = root.querySelector('[data-hud-regatta-text]');
+        if (textEl) textEl.textContent = '';
       });
     });
 

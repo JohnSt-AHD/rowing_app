@@ -24,6 +24,7 @@ import {
   showCapsizeAlertNotification,
 } from '../lib/capsize-notification';
 import {
+  dismissNativeCrewMessage,
   getNativeRecordingPulse,
   setNativeEconomyMode,
   setNativeGeofences,
@@ -44,10 +45,12 @@ import {
 } from '../lib/geofence';
 import { fetchGeofences } from '../lib/geofence-service';
 import {
+  clearCrewMessageNotification,
   maybeNotifyGeofenceEntry,
   maybeNotifyRegattaMessage,
 } from '../lib/regatta-notification';
 import {
+  clearRegattaMessage,
   fetchRegattaMessage,
   REGATTA_MESSAGE_POLL_MS,
 } from '../lib/regatta-message-service';
@@ -100,6 +103,8 @@ export type RecorderController = {
   getStats: () => RecorderStats;
   flush: () => Promise<void>;
   connectHr: () => Promise<void>;
+  /** Dismiss sticky crew/help message (local UI + DELETE /api/messages). */
+  dismissRegattaMessage: () => Promise<void>;
 };
 
 export type RecorderHooks = {
@@ -298,6 +303,9 @@ export async function startRecorder(
       if (!nativeCapsizeMonitorOn) {
         void maybeNotifyRegattaMessage(msg, prevId);
       }
+    } else if (!msg && prevId != null && IS_NATIVE) {
+      void clearCrewMessageNotification();
+      void dismissNativeCrewMessage();
     }
     emit();
   };
@@ -788,6 +796,21 @@ export async function startRecorder(
         void getNativeRecordingPulse().then((pulse) => {
           if (!pulse) return;
           stats.nativePulse = pulse;
+          // Native owns tip detection with screen off — mirror into WebView HUD.
+          if (typeof pulse.capsizeActive === 'boolean') {
+            const tipped = pulse.capsizeActive;
+            if (tipped && !capsizeActive) {
+              capsizeActive = true;
+              stats.capsize = true;
+              onLog('CAPSIZE ALERT — native tip detected');
+              onCapsize?.(true);
+            } else if (!tipped && capsizeActive) {
+              capsizeActive = false;
+              stats.capsize = false;
+              onLog('Capsize cleared — boat upright again');
+              onCapsize?.(false);
+            }
+          }
           if (!pulse.lastGps) {
             emit();
             return;
@@ -902,6 +925,21 @@ export async function startRecorder(
       settings.enableHr = true;
       setHrSessionSink(onHrReading);
       await pairHeartRate((m) => onLog(m.startsWith('HR:') ? m : `HR: ${m}`));
+    },
+    async dismissRegattaMessage() {
+      applyRegattaMessage(null);
+      if (IS_NATIVE) {
+        void clearCrewMessageNotification();
+        void dismissNativeCrewMessage();
+      }
+      const ok = await clearRegattaMessage(
+        settings.ingestUrl,
+        settings.deviceId,
+        settings.ingestToken,
+      );
+      if (!ok) {
+        onLog('Could not clear crew message on server — try again.', false);
+      }
     },
     async stopForGeofenceStandby() {
       stopped = true;

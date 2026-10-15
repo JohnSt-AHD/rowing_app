@@ -864,11 +864,16 @@ async function clearCapsizeAlert(deviceId) {
     }
     const data = await res.json();
     const n = data.cleared?.length ?? 0;
+    const helped = Array.isArray(data.helpNotified) ? data.helpNotified.length : 0;
     if (status) {
-      status.textContent =
-        n > 0
-          ? `Capsize alert cleared for ${n} device(s).`
-          : 'No active capsize alerts to clear.';
+      if (n > 0) {
+        status.textContent =
+          helped > 0
+            ? `Acknowledged for ${n} device(s) — help message sent to ${helped}.`
+            : `Acknowledged for ${n} device(s) — help message sent.`;
+      } else {
+        status.textContent = 'No active capsize alerts to clear.';
+      }
       status.classList.remove('err');
     }
     await poll();
@@ -909,10 +914,25 @@ function updateRowingSummary(devices) {
   const capsized = list.filter((d) => d.rowing?.capsize);
   if (!capsized.length) {
     setStatValue(capsizeEl, 'Clear');
-    capsizeEl.classList.remove('hub-stats-item--danger');
+    capsizeEl.classList.remove('hub-stats-item--danger', 'hub-stat--capsize-active');
+    if (capsizeEl instanceof HTMLButtonElement) {
+      capsizeEl.disabled = true;
+      capsizeEl.title = 'No active capsize alerts';
+    }
+    const label = capsizeEl.querySelector('.hub-stat-label');
+    if (label) label.textContent = 'Capsize';
   } else {
-    setStatValue(capsizeEl, `${capsized.length} boat${capsized.length === 1 ? '' : 's'}`);
-    capsizeEl.classList.add('hub-stats-item--danger');
+    setStatValue(capsizeEl, 'Acknowledge');
+    capsizeEl.classList.add('hub-stats-item--danger', 'hub-stat--capsize-active');
+    if (capsizeEl instanceof HTMLButtonElement) {
+      capsizeEl.disabled = false;
+      capsizeEl.title = `Acknowledge ${capsized.length} capsize alert(s) and notify crew`;
+    }
+    const label = capsizeEl.querySelector('.hub-stat-label');
+    if (label) {
+      label.textContent =
+        capsized.length === 1 ? '1 boat' : `${capsized.length} boats`;
+    }
   }
 }
 
@@ -1591,6 +1611,15 @@ function renderDevice(d) {
           ? `<div class="regatta-device-msg" title="Active regatta control message"><span class="regatta-device-msg__label">Regatta</span> ${esc(regattaMsg.text)}</div>`
           : ''
       }
+      ${
+        rowing.capsize
+          ? `<div class="device-card__capsize-actions">
+              <button type="button" class="hub-btn device-card__ack-btn" data-ack-capsize="${esc(d.deviceId)}">
+                Acknowledge — notify crew
+              </button>
+            </div>`
+          : ''
+      }
     </div>
   `;
   return card;
@@ -1693,16 +1722,16 @@ async function poll() {
     lastPollDurationMs = Math.round(performance.now() - pollStarted);
     renderHealthBar(data);
 
-    updateCapsizeBanner(data.devices);
-    updateRowingSummary(data.devices);
-    setCapsizeUiActive((data.devices || []).some((d) => d.rowing?.capsize));
-
     grid.innerHTML = '';
     const devicesForGrid = buildDevicesForGrid(
       data.devices,
       mapPositions,
       data.windowSec ?? Number(windowSec),
     );
+    // Banner uses merged devices so map/DB sticky matches Manager (not sticky-memory alone).
+    updateCapsizeBanner(devicesForGrid);
+    updateRowingSummary(devicesForGrid);
+    setCapsizeUiActive((devicesForGrid || []).some((d) => d.rowing?.capsize));
     if (!devicesForGrid.length) {
       const hint = data.persisted
         ? 'No devices in the last window. Check the phone is recording and Device ID matches.'
@@ -1856,7 +1885,18 @@ function init() {
     if (mapFollowFleet) followActiveDevicesOnMap(latestMapPositions);
   });
   $('#clearCapsizeBtn')?.addEventListener('click', () => void clearCapsizeAlert());
+  $('#capsizeSummary')?.addEventListener('click', () => {
+    if ($('#capsizeSummary')?.classList.contains('hub-stat--capsize-active')) {
+      void clearCapsizeAlert();
+    }
+  });
   $('#capsizeHelpBtn')?.addEventListener('click', () => void sendHelpOnWay());
+  $('#devicesGrid')?.addEventListener('click', (e) => {
+    const btn = e.target instanceof Element ? e.target.closest('[data-ack-capsize]') : null;
+    if (!btn) return;
+    const deviceId = btn.getAttribute('data-ack-capsize');
+    if (deviceId) void clearCapsizeAlert(deviceId);
+  });
   $('#applyBtn')?.addEventListener('click', () => {
     startPolling();
     if (typeof window.reloadDashboardHistory === 'function') {
