@@ -14,7 +14,7 @@ const DEFAULTS = {
   stillVarianceMax: 0.35,
   /** Dot product with upright gravity below this = capsize (~99° when -0.15). */
   capsizeDotThreshold: -0.15,
-  capsizeHoldMs: 1200,
+  capsizeHoldMs: 2500,
   capsizeClearDot: 0.55,
   capsizeClearHoldMs: 1000,
   /**

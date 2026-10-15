@@ -79,7 +79,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final float STILL_VAR_MAX = 0.35f;
     private static final int CALIBRATE_MIN_SAMPLES = 8;
     private static final long CALIBRATE_WINDOW_MS = 2500L;
-    private static final long CAPSIZE_HOLD_MS = 1200L;
+    /** Hold past tip threshold before raising — longer reduces desk/pocket false tips. */
+    private static final long CAPSIZE_HOLD_MS = 2500L;
     /** cos(~99°) — past horizontal; ignores brief vibration spikes. */
     private static final float CAPSIZE_TIP_DOT = -0.15f;
     private static final long CAPSIZE_UPLOAD_MIN_INTERVAL_MS = 4000L;
@@ -972,9 +973,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             if (capsizeActive) {
                 capsizeActive = false;
                 persistCapsizeActive(false);
-                // Keep a sticky "reported" notice so the phone matches Manager until dismissed.
-                // (Manager sticky alert stays until Acknowledge.)
-                showCapsizeReportedNotification();
+                cancelAlertNotification();
+                // Tell Manager/dashboard the boat is upright so sticky false tips clear.
+                final long clearT = t;
+                final float ax = lastAx;
+                final float ay = lastAy;
+                final float az = lastAz;
+                uploadExecutor.execute(() -> enqueueCapsizeClearedSample(clearT, ax, ay, az));
             }
         } else {
             capsizeSinceMs = 0;
@@ -1019,7 +1024,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static boolean sampleHasCapsize(JSONObject sample) {
         if (sample == null) return false;
         JSONObject derived = sample.optJSONObject("derived");
-        return derived != null && derived.optBoolean("capsize", false);
+        if (derived == null) return false;
+        // Capsize tip OR upright-clear must reach Manager even in suppress zones.
+        return derived.optBoolean("capsize", false) || derived.optBoolean("capsizeCleared", false);
     }
 
     private void maybeAutoFlushIngest(boolean force) {
@@ -1284,6 +1291,28 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         } catch (Exception e) {
             recordUploadResult(-1, 1, false);
             Log.e(TAG, "Capsize ingest failed", e);
+        }
+    }
+
+    /** Boat upright again — clears sticky Manager/dashboard alert. */
+    private void enqueueCapsizeClearedSample(long t, float ax, float ay, float az) {
+        try {
+            JSONObject derived = new JSONObject();
+            derived.put("capsizeCleared", true);
+            derived.put("capsize", false);
+            appendEconomyDerived(derived);
+            JSONObject motion = new JSONObject();
+            motion.put("ax", Math.round(ax * 100) / 100.0);
+            motion.put("ay", Math.round(ay * 100) / 100.0);
+            motion.put("az", Math.round(az * 100) / 100.0);
+            JSONObject sample = new JSONObject();
+            sample.put("t", t);
+            sample.put("motion", motion);
+            sample.put("derived", derived);
+            offerIngestSample(sample, true);
+            Log.i(TAG, "Capsize cleared ingest queued");
+        } catch (Exception e) {
+            Log.e(TAG, "Capsize cleared ingest failed", e);
         }
     }
 
@@ -2945,28 +2974,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .setOngoing(true)
                 .setAutoCancel(false)
                 .setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE)
-                .build();
-        nm.notify(NOTIF_ID_ALERT, n);
-    }
-
-    /** After tip clears locally, keep phone UI aligned with Manager sticky alert. */
-    private void showCapsizeReportedNotification() {
-        NotificationManager nm = getSystemService(NotificationManager.class);
-        if (nm == null) return;
-        Intent launch = new Intent(this, MainActivity.class);
-        PendingIntent pi =
-            PendingIntent.getActivity(
-                this, 1, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Notification n =
-            new NotificationCompat.Builder(this, CHANNEL_ID + "_alert")
-                .setContentTitle("Capsize reported")
-                .setContentText("Manager still alerting until Acknowledge")
-                .setSmallIcon(R.drawable.ic_stat_rnz_alert)
-                .setContentIntent(pi)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_STATUS)
-                .setOngoing(true)
-                .setAutoCancel(false)
                 .build();
         nm.notify(NOTIF_ID_ALERT, n);
     }

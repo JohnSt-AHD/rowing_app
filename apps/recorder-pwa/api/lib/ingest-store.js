@@ -8,6 +8,8 @@ const {
 
 const CAPSIZE_ALERT_MAX_AGE_MS = db.CAPSIZE_ALERT_MAX_AGE_MS ?? 12 * 60 * 60 * 1000;
 const CAPSIZE_GPS_BACKFILL_MAX_AGE_MS = 60 * 1000;
+/** After Acknowledge / upright clear, ignore tip samples for this long (stops desk-flip re-arm spam). */
+const CAPSIZE_REARM_COOLDOWN_MS = 60_000;
 const { analyzeMotionWindow, MIN_SPM, MAX_SPM } = require('./motion-analysis');
 const { resolveOrg: resolveOrgFromRequest } = require('./org-auth');
 const { findSuppressRecordingAt } = require('./geofence');
@@ -433,6 +435,27 @@ function sanitizeGpsSampleSource(value) {
 function sampleHasCapsize(sample) {
   const d = sample?.derived || {};
   return d.capsize === true || sample?.capsize === true;
+}
+
+function sampleHasCapsizeCleared(sample) {
+  const d = sample?.derived || {};
+  return d.capsizeCleared === true;
+}
+
+/**
+ * Clear sticky + DB alert for a device without sending help-on-way (rower upright / auto).
+ */
+async function clearCapsizeAlertSilent(orgId, deviceId) {
+  const id = String(deviceId);
+  setCapsizeClear(orgDeviceKey(orgId, id));
+  clearStickyCapsizeAlert(orgId, id);
+  if (db.hasDb()) {
+    try {
+      await db.clearCapsizeAlertDb(orgId, id);
+    } catch (err) {
+      console.error('[ingest-store] silent capsize clear DB failed:', err);
+    }
+  }
 }
 
 /** Prefer compass bow heading; fall back to GPS course when moving. */
@@ -1581,15 +1604,30 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
       suppressedInGeofence: geofenceDropped,
     };
   }
-  let maxCapsizeT = null;
+  // Rower upright again → drop sticky Manager/dashboard alert (desk tests / false tips).
+  let uprightCleared = false;
   for (const sample of clean.samples) {
-    if (!sampleHasCapsize(sample)) continue;
-    const t = Number(sample.t);
-    const clearAt = getCapsizeClearAt(scopedDevice);
-    const orgClearAt = getCapsizeClearAt(orgDeviceKey(orgId, '*'));
-    const latestClear = Math.max(clearAt || 0, orgClearAt || 0);
-    if (latestClear && Number.isFinite(t) && t <= latestClear) continue;
-    if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
+    if (!sampleHasCapsizeCleared(sample)) continue;
+    await clearCapsizeAlertSilent(orgId, deviceId);
+    uprightCleared = true;
+    break;
+  }
+
+  let maxCapsizeT = null;
+  if (!uprightCleared) {
+    for (const sample of clean.samples) {
+      if (!sampleHasCapsize(sample)) continue;
+      const t = Number(sample.t);
+      const clearAt = getCapsizeClearAt(scopedDevice);
+      const orgClearAt = getCapsizeClearAt(orgDeviceKey(orgId, '*'));
+      const latestClear = Math.max(clearAt || 0, orgClearAt || 0);
+      if (latestClear) {
+        // Ignore tips at or before clear, and wall-clock cooldown after clear/ack.
+        if (Number.isFinite(t) && t <= latestClear) continue;
+        if (Date.now() < latestClear + CAPSIZE_REARM_COOLDOWN_MS) continue;
+      }
+      if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
+    }
   }
   backfillCapsizeGpsInMemory(scopedDevice, clean.samples);
 
@@ -1800,7 +1838,7 @@ async function filterSamplesInsideSuppressZones(orgId, scopedDevice, samples) {
       Number.isFinite(lon) &&
       findSuppressRecordingAt(lat, lon, suppressZones)
     ) {
-      if (!sampleHasCapsize(sample)) {
+      if (!sampleHasCapsize(sample) && !sampleHasCapsizeCleared(sample)) {
         dropped++;
         continue;
       }

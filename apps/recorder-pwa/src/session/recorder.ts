@@ -517,8 +517,14 @@ export async function startRecorder(
   };
 
   const queueSample = (sample: TelemetrySample) => {
-    // Boat-park suppress pauses normal telemetry, but capsize must still reach Manager.
-    if (recordingSuppressed && sample.derived?.capsize !== true) return;
+    // Boat-park suppress pauses normal telemetry, but tip / upright-clear must still reach Manager.
+    if (
+      recordingSuppressed &&
+      sample.derived?.capsize !== true &&
+      sample.derived?.capsizeCleared !== true
+    ) {
+      return;
+    }
     batch.push(sample);
     const cap =
       inBoatPark && effectiveUploadIntervalMs > settings.uploadBatchMs
@@ -699,6 +705,15 @@ export async function startRecorder(
     } else if (!metrics.capsize && capsizeActive) {
       capsizeActive = false;
       if (IS_NATIVE) void clearCapsizeAlertNotification();
+      // Clear sticky Manager/dashboard alert when the boat is upright again.
+      queueSample(
+        telemetrySample(r.t, {
+          motion: latestMotion,
+          hr: latestHr,
+          derived: { ...latestDerived, capsize: false, capsizeCleared: true },
+        }),
+      );
+      void pushBatch();
       onLog('Capsize cleared — boat upright again');
       onCapsize?.(false);
     }

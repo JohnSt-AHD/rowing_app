@@ -1764,16 +1764,28 @@ async function persistBatch(orgId, sessionId, deviceId, athleteId, samples, boat
   await backfillCapsizeGpsOnSamples(orgId, deviceId, samples);
   await insertSamples(orgId, sessionId, dev.id, deviceId, samples);
   await updateDeviceLatestGps(orgId, deviceId, samples);
-  let maxCapsizeT = null;
+  let uprightCleared = false;
   for (const sample of samples) {
-    if (sample?.derived?.capsize === true) {
-      const t = Number(sample.t);
-      if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
+    if (sample?.derived?.capsizeCleared === true) {
+      await clearCapsizeAlertDb(orgId, deviceId);
+      uprightCleared = true;
+      break;
+    }
+  }
+
+  let maxCapsizeT = null;
+  if (!uprightCleared) {
+    for (const sample of samples) {
+      if (sample?.derived?.capsize === true) {
+        const t = Number(sample.t);
+        if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
+      }
     }
   }
   const raisedCapsize = maxCapsizeT != null;
   if (raisedCapsize) await raiseCapsizeAlert(orgId, deviceId, maxCapsizeT);
   const cleared = await maintainCapsizeAlerts(orgId, deviceId, { raisedCapsize });
+  if (uprightCleared && !cleared.includes(String(deviceId))) cleared.push(String(deviceId));
   return { ok: true, cleared };
 }
 

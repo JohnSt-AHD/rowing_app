@@ -144,7 +144,7 @@ export function mountApp(root: HTMLElement): void {
     const names = caps.map((d) => deviceDisplayName(d)).filter(Boolean);
     const namePart = names.length ? `: ${names.join(', ')}` : '';
     const n = caps.length || 1;
-    return `${n} CAPSIZE${namePart} — check crew now. Stays on until Acknowledge (even if the boat is upright again).`;
+    return `${n} CAPSIZE${namePart} — check crew now. Clears when the boat is upright again, or tap Acknowledge.`;
   }
 
   function updateCapsizeBanner(): void {
