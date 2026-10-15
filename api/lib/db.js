@@ -1699,6 +1699,8 @@ async function raiseCapsizeAlert(orgId, uniqueId, sampleTms) {
     sampleTms != null && Number.isFinite(Number(sampleTms))
       ? Number(sampleTms)
       : Date.now();
+  // Shared across Vercel instances — block re-arm for 60s after Acknowledge / upright clear.
+  const rearmCooldownMs = 60_000;
   // Bump capsize_alert_at on each new capsize sample so RowSafe can re-alert after acknowledge.
   await sql`
     UPDATE rnz_devices
@@ -1711,7 +1713,10 @@ async function raiseCapsizeAlert(orgId, uniqueId, sampleTms) {
       AND unique_id = ${String(uniqueId)}
       AND (
         capsize_cleared_at IS NULL
-        OR ${t} > (EXTRACT(EPOCH FROM capsize_cleared_at) * 1000)
+        OR (
+          ${t} > (EXTRACT(EPOCH FROM capsize_cleared_at) * 1000)
+          AND capsize_cleared_at < NOW() - (${rearmCooldownMs} * INTERVAL '1 millisecond')
+        )
       )
   `;
 }
@@ -1736,6 +1741,23 @@ async function clearCapsizeAlertDb(orgId, uniqueId) {
         capsize_cleared_at = NOW()
     WHERE org_id = ${orgId} AND capsize_alert_active = true
   `;
+}
+
+/** Wall-clock ms of last Acknowledge / upright clear (0 if never). */
+async function getCapsizeClearedAtMs(orgId, uniqueId) {
+  if (!hasDb() || !uniqueId) return 0;
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const rows = await sql`
+    SELECT capsize_cleared_at
+    FROM rnz_devices
+    WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
+    LIMIT 1
+  `;
+  const at = rows.rows[0]?.capsize_cleared_at;
+  if (!at) return 0;
+  const ms = new Date(at).getTime();
+  return Number.isFinite(ms) ? ms : 0;
 }
 
 async function getCapsizeAlerts(orgId) {
@@ -4060,6 +4082,7 @@ module.exports = {
   heartbeatWalkupSession,
   raiseCapsizeAlert,
   clearCapsizeAlertDb,
+  getCapsizeClearedAtMs,
   getCapsizeAlerts,
   maintainCapsizeAlerts,
   expireStaleCapsizeAlertsDb,

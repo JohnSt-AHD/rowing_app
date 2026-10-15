@@ -1615,12 +1615,21 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
 
   let maxCapsizeT = null;
   if (!uprightCleared) {
+    const clearAt = getCapsizeClearAt(scopedDevice);
+    const orgClearAt = getCapsizeClearAt(orgDeviceKey(orgId, '*'));
+    let dbClearAt = 0;
+    if (db.hasDb()) {
+      try {
+        dbClearAt = (await db.getCapsizeClearedAtMs(orgId, deviceId)) || 0;
+      } catch (err) {
+        console.error('[ingest-store] capsize cleared_at read failed:', err);
+      }
+    }
+    // DB cleared_at is shared across Vercel instances; memory alone is not.
+    const latestClear = Math.max(clearAt || 0, orgClearAt || 0, dbClearAt || 0);
     for (const sample of clean.samples) {
       if (!sampleHasCapsize(sample)) continue;
       const t = Number(sample.t);
-      const clearAt = getCapsizeClearAt(scopedDevice);
-      const orgClearAt = getCapsizeClearAt(orgDeviceKey(orgId, '*'));
-      const latestClear = Math.max(clearAt || 0, orgClearAt || 0);
       if (latestClear) {
         // Ignore tips at or before clear, and wall-clock cooldown after clear/ack.
         if (Number.isFinite(t) && t <= latestClear) continue;
@@ -2217,12 +2226,12 @@ async function listDevices(orgId, opts = {}) {
       warning = `Database read failed: ${err.message}`;
     }
   }
-  // Wipe live-derived tip flags — monitor banners use sticky/DB until Acknowledge.
-  // Must match map: DB ∪ in-memory sticky (sticky alone misses other serverless instances).
+  // Wipe live-derived tip flags. With Postgres, DB is the only sticky source of truth
+  // (in-memory sticky on other Vercel instances can survive Acknowledge and re-alarm).
   for (const dev of byDevice.values()) {
     if (dev.rowing) dev.rowing.capsize = false;
   }
-  if (dbCapsizeAlerts?.size) {
+  if (hasPostgres && dbCapsizeAlerts) {
     forceCapsizeAlertsOnDevices(
       byDevice,
       dbCapsizeAlerts,
@@ -2231,15 +2240,16 @@ async function listDevices(orgId, opts = {}) {
       onlineMs,
       now,
     );
+  } else {
+    forceCapsizeAlertsOnDevices(
+      byDevice,
+      getStickyCapsizeAlerts(orgId),
+      orgId,
+      windowMs,
+      onlineMs,
+      now,
+    );
   }
-  forceCapsizeAlertsOnDevices(
-    byDevice,
-    getStickyCapsizeAlerts(orgId),
-    orgId,
-    windowMs,
-    onlineMs,
-    now,
-  );
 
   // Merge open walk-up (no GPS) sessions into the live fleet as on-water tickets.
   if (hasPostgres) {
@@ -2959,8 +2969,8 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
           p.tiltDeg = tel.tiltDeg ?? p.tiltDeg ?? null;
         }
       }
+      // Postgres: DB sticky only — do not OR in-memory sticky from other instances.
       forceCapsizeAlertsOnPositions(positions, dbCapsizeAlerts);
-      forceCapsizeAlertsOnPositions(positions, getStickyCapsizeAlerts(orgId));
       attachTelemetryToMapPositions(orgId, positions, telemetryByDevice, rowingWindowMs);
       const [pathFixesByDevice, strokeReadingsByDevice] = await Promise.all([
         loadPathPaceFixesByDevice(orgId, PATH_PACE_WINDOW_MS, telemetryByDevice),
@@ -2973,7 +2983,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
         {
           sessionByDevice,
           registryTimes,
-          capsizeAlerts: getStickyCapsizeAlerts(orgId),
+          capsizeAlerts: dbCapsizeAlerts,
           now,
           onlineMs,
         },

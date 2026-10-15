@@ -118,6 +118,8 @@ export function mountApp(root: HTMLElement): void {
   let capsizeAlarmOscillators: OscillatorNode[] = [];
   let capsizeAlarmSeq = 0;
   let capsizeAlarmTimeouts: ReturnType<typeof setTimeout>[] = [];
+  /** After Acknowledge, mute alarm briefly even if a stale sticky poll flickers. */
+  let suppressCapsizeAlarmUntilMs = 0;
 
   function shouldPollLive(): boolean {
     if (isQuietHours()) return false;
@@ -194,6 +196,8 @@ export function mountApp(root: HTMLElement): void {
   }
 
   async function acknowledgeCapsizeAlerts() {
+    stopCapsizeAlarmLoop();
+    suppressCapsizeAlarmUntilMs = Date.now() + 60_000;
     try {
       const result = (await clearCapsizeAlert(settings)) as {
         helpNotified?: string[];
@@ -334,8 +338,11 @@ export function mountApp(root: HTMLElement): void {
 
   function syncCapsizeAlarm() {
     updateCapsizeBanner();
-    if (capsizeCount() > 0) startCapsizeAlarmLoop();
-    else stopCapsizeAlarmLoop();
+    if (capsizeCount() > 0 && Date.now() >= suppressCapsizeAlarmUntilMs) {
+      startCapsizeAlarmLoop();
+    } else {
+      stopCapsizeAlarmLoop();
+    }
   }
 
   async function refreshMonitoringStatus() {

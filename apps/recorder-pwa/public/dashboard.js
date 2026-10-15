@@ -658,6 +658,8 @@ let capsizeAlarmOscillators = [];
 let capsizeAlarmSeq = 0;
 /** @type {ReturnType<typeof setTimeout>[]} */
 let capsizeAlarmTimeouts = [];
+/** After Acknowledge, mute briefly even if a stale sticky poll flickers. */
+let suppressCapsizeAlarmUntilMs = 0;
 
 function clearCapsizeAlarmTimeouts() {
   for (const id of capsizeAlarmTimeouts) clearTimeout(id);
@@ -812,7 +814,8 @@ function updateCapsizeBanner(devices) {
     .join(', ');
   if (clearBtn) clearBtn.disabled = false;
   if (helpBtn) helpBtn.disabled = false;
-  startCapsizeAlarmLoop();
+  if (Date.now() >= suppressCapsizeAlarmUntilMs) startCapsizeAlarmLoop();
+  else stopCapsizeAlarmLoop();
 }
 
 async function sendHelpOnWay() {
@@ -845,6 +848,8 @@ async function sendHelpOnWay() {
 }
 
 async function clearCapsizeAlert(deviceId) {
+  stopCapsizeAlarmLoop();
+  suppressCapsizeAlarmUntilMs = Date.now() + 60_000;
   const btn = $('#clearCapsizeBtn');
   if (btn) btn.disabled = true;
   const status = $('#pollStatus');

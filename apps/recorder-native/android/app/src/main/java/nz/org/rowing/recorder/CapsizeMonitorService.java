@@ -84,6 +84,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** cos(~99°) — past horizontal; ignores brief vibration spikes. */
     private static final float CAPSIZE_TIP_DOT = -0.15f;
     private static final long CAPSIZE_UPLOAD_MIN_INTERVAL_MS = 4000L;
+    /** Min gap between CAPSIZE alert notification sounds (stops tip-threshold chatter). */
+    private static final long CAPSIZE_ALERT_SOUND_MIN_INTERVAL_MS = 45_000L;
     /** Batched ingest — fewer HTTP posts while GPS still samples at gpsIntervalMs. */
     private static final long UPLOAD_FLUSH_INTERVAL_MS = 3_000L;
     private static final int UPLOAD_FLUSH_MAX_SAMPLES = 12;
@@ -174,6 +176,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private boolean capsizeActive;
     private long capsizeSinceMs;
     private long lastCapsizeUploadMs;
+    private long lastCapsizeAlertSoundMs;
     private long lastBatteryReportMs;
     private long lastGpsUploadWallMs;
     /** When a GPS sample was last added to the ingest buffer (not timer intent). */
@@ -995,7 +998,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void onCapsizeTriggered(long t, float ax, float ay, float az, int tiltDeg) {
         Log.w(TAG, "CAPSIZE detected (native)");
-        showAlertNotification();
+        if (t - lastCapsizeAlertSoundMs >= CAPSIZE_ALERT_SOUND_MIN_INTERVAL_MS) {
+            lastCapsizeAlertSoundMs = t;
+            showAlertNotification();
+        }
         if (t - lastCapsizeUploadMs < CAPSIZE_UPLOAD_MIN_INTERVAL_MS) return;
         lastCapsizeUploadMs = t;
         uploadExecutor.execute(() -> enqueueCapsizeSample(t, ax, ay, az, tiltDeg));
