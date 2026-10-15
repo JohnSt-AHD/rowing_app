@@ -19,6 +19,10 @@ import android.hardware.SensorManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -103,8 +107,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final int STROKE_HP_WINDOW_MS = 450;
     private static final int MAX_PENDING_BATCHES = 60;
     private static final int MAX_PENDING_FLUSH_PER_CYCLE = 8;
-    private static final int MAX_PENDING_FLUSH_ON_GPS = 2;
+    private static final int MAX_PENDING_FLUSH_ON_SUCCESS = 4;
     private static final long PENDING_FLUSH_INTERVAL_MS = 45_000L;
+    /** HttpURLConnection connect/read — keep short so a dead PDP cannot stall the uploader. */
+    private static final int INGEST_CONNECT_TIMEOUT_MS = 12_000;
+    private static final int INGEST_READ_TIMEOUT_MS = 15_000;
+    /** Recreate upload thread if a POST exceeds connect+read (+slack). */
+    private static final long UPLOAD_STUCK_MS =
+            INGEST_CONNECT_TIMEOUT_MS + INGEST_READ_TIMEOUT_MS + 8_000L;
+    private static final long NETWORK_RESUME_DEBOUNCE_MS = 2_000L;
     /** Reject stale satellite fix clock for callback-driven uploads. */
     private static final long GPS_MAX_UPLOAD_FIX_AGE_MS = 45_000L;
     /** Timer may repeat last good coords up to this age (indoor / stationary, Traccar-like). */
@@ -156,6 +167,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private PowerManager.WakeLock wakeLock;
     private ExecutorService uploadExecutor;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private long lastNetworkResumeKickMs;
+    /** Wall clock when the current ingest POST started; 0 when idle. */
+    private volatile long uploadAttemptStartedMs;
+    /** Coalesce flush ticks so a long outage cannot flood the single upload thread. */
+    private final AtomicBoolean ingestFlushQueued = new AtomicBoolean(false);
+    private final AtomicBoolean pendingFlushQueued = new AtomicBoolean(false);
+    private final AtomicBoolean networkResumeQueued = new AtomicBoolean(false);
 
     private boolean enableGps;
     private boolean enableMotion = true;
@@ -218,34 +238,60 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private long lastSuccessfulUploadMs;
     private final Runnable ingestFlushRunnable =
             () -> {
-                if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
-                uploadExecutor.execute(
-                        () -> {
-                            maybeRefreshStaleGpsUpload();
-                            maybeAutoFlushIngest(false);
-                            mainHandler.post(CapsizeMonitorService.this::scheduleIngestFlush);
-                        });
+                // Reschedule before HTTP so a hung cellular socket cannot stop the flush loop.
+                scheduleIngestFlush();
+                maybeRecreateStuckUploadExecutor();
+                ExecutorService exec = uploadExecutor;
+                if (exec == null || exec.isShutdown()) return;
+                if (!ingestFlushQueued.compareAndSet(false, true)) return;
+                try {
+                    exec.execute(
+                            () -> {
+                                try {
+                                    maybeRefreshStaleGpsUpload();
+                                    maybeAutoFlushIngest(false);
+                                } finally {
+                                    ingestFlushQueued.set(false);
+                                }
+                            });
+                } catch (Exception e) {
+                    ingestFlushQueued.set(false);
+                }
             };
     private final Runnable heartbeatRunnable =
             () -> {
-                if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
-                uploadExecutor.execute(
+                scheduleHeartbeat();
+                maybeRecreateStuckUploadExecutor();
+                ExecutorService exec = uploadExecutor;
+                if (exec == null || exec.isShutdown()) return;
+                exec.execute(
                         () -> {
                             enqueueHeartbeatSample(System.currentTimeMillis());
                             CrewMessageHelper.pollMessages(getApplicationContext());
                         });
-                scheduleHeartbeat();
             };
     private final Runnable pendingFlushRunnable =
             () -> {
-                if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
-                uploadExecutor.execute(
-                        () -> {
-                            flushPendingIngest(
-                                    getSharedPreferences(PREFS, MODE_PRIVATE),
-                                    MAX_PENDING_FLUSH_PER_CYCLE);
-                            mainHandler.post(CapsizeMonitorService.this::schedulePendingFlush);
-                        });
+                // Reschedule before HTTP — pending retries must keep ticking during outages.
+                schedulePendingFlush();
+                maybeRecreateStuckUploadExecutor();
+                ExecutorService exec = uploadExecutor;
+                if (exec == null || exec.isShutdown()) return;
+                if (!pendingFlushQueued.compareAndSet(false, true)) return;
+                try {
+                    exec.execute(
+                            () -> {
+                                try {
+                                    flushPendingIngest(
+                                            getSharedPreferences(PREFS, MODE_PRIVATE),
+                                            MAX_PENDING_FLUSH_PER_CYCLE);
+                                } finally {
+                                    pendingFlushQueued.set(false);
+                                }
+                            });
+                } catch (Exception e) {
+                    pendingFlushQueued.set(false);
+                }
             };
     private final Runnable gpsFlushRunnable =
             () -> {
@@ -352,6 +398,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         geofenceLoc.getLatitude(), geofenceLoc.getLongitude());
             }
         }
+        registerNetworkCallback();
         schedulePendingFlush();
         scheduleIngestFlush();
         uploadExecutor.execute(() -> enqueueSessionStartSample(System.currentTimeMillis()));
@@ -413,6 +460,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         mainHandler.removeCallbacks(heartbeatRunnable);
         mainHandler.removeCallbacks(pendingFlushRunnable);
         mainHandler.removeCallbacks(gpsFlushRunnable);
+        unregisterNetworkCallback();
         unregisterSensor();
         unregisterLocation();
         releaseWakeLock();
@@ -1061,6 +1109,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (postBatch(p, sessionId, deviceId, toSend)) {
             lastSuccessfulUploadMs = System.currentTimeMillis();
             Log.d(TAG, "Ingest batch OK (" + toSend.length() + " samples)");
+            // Catch up any outage backlog while the link is healthy.
+            flushPendingIngest(p, MAX_PENDING_FLUSH_ON_SUCCESS);
         } else {
             Log.w(TAG, "Ingest batch queued for retry (" + toSend.length() + " samples)");
         }
@@ -1393,6 +1443,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             int sampleCount,
             boolean requeueOnFailure,
             JSONObject requeueBatch) {
+        HttpURLConnection conn = null;
+        uploadAttemptStartedMs = System.currentTimeMillis();
         try {
             String ingestUrl = p.getString("ingestUrl", "");
             if (ingestUrl.isEmpty()) {
@@ -1400,9 +1452,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 return false;
             }
             URL url = new URL(ingestUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(20000);
-            conn.setReadTimeout(20000);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(INGEST_CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(INGEST_READ_TIMEOUT_MS);
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
@@ -1414,7 +1466,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 os.write(body.getBytes(StandardCharsets.UTF_8));
             }
             int code = conn.getResponseCode();
-            conn.disconnect();
             boolean ok = code >= 200 && code < 300;
             recordUploadResult(code, sampleCount, ok);
             if (!ok) {
@@ -1431,6 +1482,14 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 enqueuePendingBatch(p, requeueBatch);
             }
             return false;
+        } finally {
+            uploadAttemptStartedMs = 0L;
+            if (conn != null) {
+                try {
+                    conn.disconnect();
+                } catch (Exception ignored) {
+                }
+            }
         }
     }
 
@@ -2295,8 +2354,137 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void schedulePendingFlush() {
+        if (standbyMode) return;
         mainHandler.removeCallbacks(pendingFlushRunnable);
         mainHandler.postDelayed(pendingFlushRunnable, PENDING_FLUSH_INTERVAL_MS);
+    }
+
+    /**
+     * When cellular data returns after a PDP cut, flush pending + live buffer immediately.
+     * Also abandons a stuck upload thread (HttpURLConnection can hang past timeouts on a dead
+     * interface).
+     */
+    private void kickNetworkResume(String reason) {
+        if (standbyMode) return;
+        long now = System.currentTimeMillis();
+        if (now - lastNetworkResumeKickMs < NETWORK_RESUME_DEBOUNCE_MS) return;
+        lastNetworkResumeKickMs = now;
+        mainHandler.post(
+                () -> {
+                    if (standbyMode) return;
+                    Log.i(TAG, "Network resume (" + reason + ") — flushing ingest");
+                    // Abandon only if a POST is already wedged on the old interface.
+                    maybeRecreateStuckUploadExecutor();
+                    long started = uploadAttemptStartedMs;
+                    if (started > 0L
+                            && System.currentTimeMillis() - started > 5_000L) {
+                        recreateUploadExecutor("network-resume-inflight");
+                    }
+                    if (uploadExecutor == null || uploadExecutor.isShutdown()) {
+                        recreateUploadExecutor("network-resume-missing");
+                    }
+                    ExecutorService exec = uploadExecutor;
+                    if (exec == null || exec.isShutdown()) return;
+                    if (!networkResumeQueued.compareAndSet(false, true)) return;
+                    try {
+                        exec.execute(
+                                () -> {
+                                    try {
+                                        SharedPreferences p =
+                                                getSharedPreferences(PREFS, MODE_PRIVATE);
+                                        flushPendingIngest(p, MAX_PENDING_FLUSH_PER_CYCLE);
+                                        flushIngestBufferNow();
+                                        flushPendingIngest(p, MAX_PENDING_FLUSH_PER_CYCLE);
+                                    } finally {
+                                        networkResumeQueued.set(false);
+                                    }
+                                });
+                    } catch (Exception e) {
+                        networkResumeQueued.set(false);
+                        Log.w(TAG, "Network resume flush enqueue failed", e);
+                    }
+                    schedulePendingFlush();
+                    scheduleIngestFlush();
+                    scheduleHeartbeat();
+                });
+    }
+
+    private synchronized void recreateUploadExecutor(String reason) {
+        if (uploadExecutor != null && !uploadExecutor.isShutdown()) {
+            uploadExecutor.shutdownNow();
+        }
+        uploadExecutor = Executors.newSingleThreadExecutor();
+        uploadAttemptStartedMs = 0L;
+        ingestFlushQueued.set(false);
+        pendingFlushQueued.set(false);
+        networkResumeQueued.set(false);
+        Log.w(TAG, "Upload executor recreated (" + reason + ")");
+    }
+
+    private synchronized void maybeRecreateStuckUploadExecutor() {
+        if (uploadExecutor == null || uploadExecutor.isShutdown()) {
+            recreateUploadExecutor("missing");
+            return;
+        }
+        long started = uploadAttemptStartedMs;
+        boolean stuck =
+                started > 0L && System.currentTimeMillis() - started > UPLOAD_STUCK_MS;
+        if (stuck) {
+            recreateUploadExecutor("stuck>" + UPLOAD_STUCK_MS + "ms");
+        }
+    }
+
+    private void registerNetworkCallback() {
+        if (networkCallback != null) return;
+        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) {
+            Log.w(TAG, "ConnectivityManager unavailable — no network-resume kick");
+            return;
+        }
+        networkCallback =
+                new ConnectivityManager.NetworkCallback() {
+                    @Override
+                    public void onAvailable(@NonNull Network network) {
+                        kickNetworkResume("available");
+                    }
+
+                    @Override
+                    public void onCapabilitiesChanged(
+                            @NonNull Network network, @NonNull NetworkCapabilities caps) {
+                        if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                                && caps.hasCapability(
+                                        NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                            kickNetworkResume("validated");
+                        }
+                    }
+
+                    @Override
+                    public void onLost(@NonNull Network network) {
+                        Log.w(TAG, "Network lost — buffering ingest locally");
+                    }
+                };
+        NetworkRequest request =
+                new NetworkRequest.Builder()
+                        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        .build();
+        try {
+            connectivityManager.registerNetworkCallback(request, networkCallback);
+            Log.i(TAG, "Registered network callback for ingest resume");
+        } catch (Exception e) {
+            Log.w(TAG, "registerNetworkCallback failed", e);
+            networkCallback = null;
+        }
+    }
+
+    private void unregisterNetworkCallback() {
+        if (connectivityManager != null && networkCallback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+            } catch (Exception e) {
+                Log.w(TAG, "unregisterNetworkCallback failed", e);
+            }
+        }
+        networkCallback = null;
     }
 
     private void registerSensors() {
@@ -2678,6 +2866,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             scheduleGpsFlush();
             tickScheduledGpsUpload();
         }
+        registerNetworkCallback();
         schedulePendingFlush();
         scheduleIngestFlush();
         scheduleHeartbeat();
@@ -2701,6 +2890,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         mainHandler.removeCallbacks(ingestFlushRunnable);
         mainHandler.removeCallbacks(pendingFlushRunnable);
         mainHandler.removeCallbacks(gpsFlushRunnable);
+        unregisterNetworkCallback();
         unregisterSensor();
         standbyMode = true;
         standbyAutoStartTriggered = false;
