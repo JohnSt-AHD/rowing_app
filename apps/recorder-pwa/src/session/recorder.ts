@@ -705,7 +705,7 @@ export async function startRecorder(
     } else if (!metrics.capsize && capsizeActive) {
       capsizeActive = false;
       if (IS_NATIVE) void clearCapsizeAlertNotification();
-      // Clear sticky Manager/dashboard alert when the boat is upright again.
+      // Local UX: cancel phone notification. Server sticky stays until coach Acknowledge.
       queueSample(
         telemetrySample(r.t, {
           motion: latestMotion,

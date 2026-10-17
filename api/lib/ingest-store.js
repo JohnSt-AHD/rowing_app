@@ -8,7 +8,7 @@ const {
 
 const CAPSIZE_ALERT_MAX_AGE_MS = db.CAPSIZE_ALERT_MAX_AGE_MS ?? 12 * 60 * 60 * 1000;
 const CAPSIZE_GPS_BACKFILL_MAX_AGE_MS = 60 * 1000;
-/** After Acknowledge / upright clear, ignore tip samples for this long (stops desk-flip re-arm spam). */
+/** After Acknowledge, ignore tip samples for this long (stops desk-flip re-arm spam). */
 const CAPSIZE_REARM_COOLDOWN_MS = 60_000;
 const { analyzeMotionWindow, MIN_SPM, MAX_SPM } = require('./motion-analysis');
 const { resolveOrg: resolveOrgFromRequest } = require('./org-auth');
@@ -443,7 +443,8 @@ function sampleHasCapsizeCleared(sample) {
 }
 
 /**
- * Clear sticky + DB alert for a device without sending help-on-way (rower upright / auto).
+ * Clear sticky + DB alert without sending help-on-way (max-age / maintain paths).
+ * Phone upright (`capsizeCleared`) must NOT call this — sticky stays until Acknowledge.
  */
 async function clearCapsizeAlertSilent(orgId, deviceId) {
   const id = String(deviceId);
@@ -1604,39 +1605,30 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
       suppressedInGeofence: geofenceDropped,
     };
   }
-  // Rower upright again → drop sticky Manager/dashboard alert (desk tests / false tips).
-  let uprightCleared = false;
-  for (const sample of clean.samples) {
-    if (!sampleHasCapsizeCleared(sample)) continue;
-    await clearCapsizeAlertSilent(orgId, deviceId);
-    uprightCleared = true;
-    break;
-  }
-
+  // Phone may send capsizeCleared when upright (local notification UX only).
+  // Sticky Manager/dashboard alert stays until Acknowledge (or 12h max-age).
   let maxCapsizeT = null;
-  if (!uprightCleared) {
-    const clearAt = getCapsizeClearAt(scopedDevice);
-    const orgClearAt = getCapsizeClearAt(orgDeviceKey(orgId, '*'));
-    let dbClearAt = 0;
-    if (db.hasDb()) {
-      try {
-        dbClearAt = (await db.getCapsizeClearedAtMs(orgId, deviceId)) || 0;
-      } catch (err) {
-        console.error('[ingest-store] capsize cleared_at read failed:', err);
-      }
+  const clearAt = getCapsizeClearAt(scopedDevice);
+  const orgClearAt = getCapsizeClearAt(orgDeviceKey(orgId, '*'));
+  let dbClearAt = 0;
+  if (db.hasDb()) {
+    try {
+      dbClearAt = (await db.getCapsizeClearedAtMs(orgId, deviceId)) || 0;
+    } catch (err) {
+      console.error('[ingest-store] capsize cleared_at read failed:', err);
     }
-    // DB cleared_at is shared across Vercel instances; memory alone is not.
-    const latestClear = Math.max(clearAt || 0, orgClearAt || 0, dbClearAt || 0);
-    for (const sample of clean.samples) {
-      if (!sampleHasCapsize(sample)) continue;
-      const t = Number(sample.t);
-      if (latestClear) {
-        // Ignore tips at or before clear, and wall-clock cooldown after clear/ack.
-        if (Number.isFinite(t) && t <= latestClear) continue;
-        if (Date.now() < latestClear + CAPSIZE_REARM_COOLDOWN_MS) continue;
-      }
-      if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
+  }
+  // DB cleared_at is shared across Vercel instances; memory alone is not.
+  const latestClear = Math.max(clearAt || 0, orgClearAt || 0, dbClearAt || 0);
+  for (const sample of clean.samples) {
+    if (!sampleHasCapsize(sample)) continue;
+    const t = Number(sample.t);
+    if (latestClear) {
+      // Ignore tips at or before Acknowledge, and wall-clock cooldown after ack.
+      if (Number.isFinite(t) && t <= latestClear) continue;
+      if (Date.now() < latestClear + CAPSIZE_REARM_COOLDOWN_MS) continue;
     }
+    if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
   }
   backfillCapsizeGpsInMemory(scopedDevice, clean.samples);
 
@@ -2357,7 +2349,8 @@ async function listDevices(orgId, opts = {}) {
     delayedGpsDevices: onlineDevices.filter(
       (d) => (gpsHealthAgeSec(d.gps) ?? 1e9) > 30,
     ).length,
-    capsizeDevices: onlineDevices.filter((d) => d.rowing?.capsize).length,
+    // Sticky tips count even when the phone is offline / underwater.
+    capsizeDevices: devices.filter((d) => d.rowing?.capsize).length,
     avgGpsAgeSec: gpsAges.length
       ? Math.round((gpsAges.reduce((a, b) => a + b, 0) / gpsAges.length) * 10) / 10
       : null,
@@ -2718,12 +2711,63 @@ function attachRowingToMapPositions(positions, rowingByDevice) {
   return positions;
 }
 
-function forceCapsizeAlertsOnPositions(positions, alerts) {
+/**
+ * Stamp sticky CAPSIZE onto map positions. If a tipped device fell out of the
+ * stale/online window (phone dead underwater), re-inject last-known GPS so the
+ * Manager map + banner still see the alert until Acknowledge / 12h max-age.
+ * @param {object[]} positions
+ * @param {Map<string, { active?: boolean, atMs?: number|null }>|null|undefined} alerts
+ * @param {{
+ *   now?: number,
+ *   orgId?: number,
+ *   gpsByDevice?: Map<string, { t?: number, lat: number, lon: number, acc?: number|null, fixMs?: number|null }>,
+ *   onlineMs?: number,
+ * }} [opts]
+ */
+function forceCapsizeAlertsOnPositions(positions, alerts, opts = {}) {
   if (!alerts?.size) return positions;
-  for (const p of positions) {
-    if (alerts.has(p.deviceId)) p.capsize = true;
+  const now = opts.now ?? Date.now();
+  const onlineMs = opts.onlineMs ?? 120_000;
+  const list = Array.isArray(positions) ? positions : [];
+  const byId = new Map(list.map((p) => [String(p.deviceId), p]));
+  for (const p of list) {
+    if (alerts.has(p.deviceId) || alerts.has(String(p.deviceId))) p.capsize = true;
   }
-  return positions;
+  for (const [deviceId, alert] of alerts) {
+    const id = String(deviceId);
+    if (alert?.atMs != null && now - alert.atMs > CAPSIZE_ALERT_MAX_AGE_MS) continue;
+    const existing = byId.get(id);
+    if (existing) {
+      existing.capsize = true;
+      continue;
+    }
+    const gps =
+      opts.gpsByDevice?.get(id) ||
+      (opts.orgId != null ? lastGpsByDevice.get(orgDeviceKey(opts.orgId, id)) : null);
+    if (!gps || gps.lat == null || gps.lon == null) continue;
+    const fixMs = Number(gps.t) || Number(gps.fixMs) || alert?.atMs || now;
+    const lastSeenMs = Math.max(fixMs, alert?.atMs || 0);
+    const injected = {
+      deviceId: id,
+      athleteId: null,
+      latitude: gps.lat,
+      longitude: gps.lon,
+      accuracy: gps.acc ?? null,
+      speed: null,
+      fixMs,
+      fixAgeSec: Math.max(0, Math.round((now - fixMs) / 1000)),
+      lastSeenAgoSec: Math.max(0, Math.round((now - lastSeenMs) / 1000)),
+      online: now - lastSeenMs <= onlineMs,
+      capsize: true,
+      strokeRate: null,
+      strokeRateValid: false,
+      tiltDeg: null,
+      stickyCapsizeInjected: true,
+    };
+    list.push(injected);
+    byId.set(id, injected);
+  }
+  return list;
 }
 
 /**
@@ -2982,7 +3026,19 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
         }
       }
       // Postgres: DB sticky only — do not OR in-memory sticky from other instances.
-      forceCapsizeAlertsOnPositions(positions, dbCapsizeAlerts);
+      // Re-inject last registry GPS for sticky tips missing from the stale window.
+      let registryGpsForSticky = null;
+      try {
+        registryGpsForSticky = await db.getRegistryGpsByDevice(orgId);
+      } catch (err) {
+        console.error('[ingest-store] sticky registry GPS lookup failed:', err);
+      }
+      forceCapsizeAlertsOnPositions(positions, dbCapsizeAlerts, {
+        now,
+        orgId,
+        onlineMs,
+        gpsByDevice: registryGpsForSticky || undefined,
+      });
       attachTelemetryToMapPositions(orgId, positions, telemetryByDevice, rowingWindowMs);
       const [pathFixesByDevice, strokeReadingsByDevice] = await Promise.all([
         loadPathPaceFixesByDevice(orgId, PATH_PACE_WINDOW_MS, telemetryByDevice),
@@ -3021,7 +3077,11 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       tiltDeg: rowing.tiltDeg ?? null,
     };
   });
-  forceCapsizeAlertsOnPositions(mapped, getStickyCapsizeAlerts(orgId));
+  forceCapsizeAlertsOnPositions(mapped, getStickyCapsizeAlerts(orgId), {
+    now,
+    orgId,
+    onlineMs,
+  });
   attachTelemetryToMapPositions(orgId, mapped, telemetryByDevice, rowingWindowMs);
   const [pathFixesByDevice, strokeReadingsByDevice] = await Promise.all([
     loadPathPaceFixesByDevice(orgId, PATH_PACE_WINDOW_MS, telemetryByDevice),

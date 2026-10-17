@@ -1025,7 +1025,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 capsizeActive = false;
                 persistCapsizeActive(false);
                 cancelAlertNotification();
-                // Tell Manager/dashboard the boat is upright so sticky false tips clear.
+                // Local UX telemetry only — Manager sticky stays until coach Acknowledge.
                 final long clearT = t;
                 final float ax = lastAx;
                 final float ay = lastAy;
@@ -1350,7 +1350,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
-    /** Boat upright again — clears sticky Manager/dashboard alert. */
+    /** Boat upright again — local notification UX; server sticky needs Acknowledge. */
     private void enqueueCapsizeClearedSample(long t, float ax, float ay, float az) {
         try {
             JSONObject derived = new JSONObject();

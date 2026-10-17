@@ -121,6 +121,11 @@ export function mountApp(root: HTMLElement): void {
   let capsizeAlarmTimeouts: ReturnType<typeof setTimeout>[] = [];
   /** After Acknowledge, mute alarm briefly even if a stale sticky poll flickers. */
   let suppressCapsizeAlarmUntilMs = 0;
+  /**
+   * Local sticky latch: once Manager sees a tip, keep CAPSIZE until Acknowledge
+   * even if the phone goes offline / drops out of map-positions.
+   */
+  const latchedCapsizeById = new Map<string, FleetDevice>();
 
   function shouldPollLive(): boolean {
     if (isQuietHours()) return false;
@@ -133,13 +138,98 @@ export function mountApp(root: HTMLElement): void {
     else stopPollTimer();
   }
 
-  const capsizeCount = () =>
-    devices.filter((d) => d.rowing?.capsize || positions.some((p) => p.deviceId === d.deviceId && p.capsize)).length;
+  function deviceHasCapsize(d: FleetDevice, pos?: MapPosition[]): boolean {
+    if (d.rowing?.capsize) return true;
+    if (latchedCapsizeById.has(d.deviceId)) return true;
+    const list = pos ?? positions;
+    return list.some((p) => p.deviceId === d.deviceId && p.capsize);
+  }
+
+  /** Remember sticky tips from the latest poll (skipped during Acknowledge mute). */
+  function latchCapsizeFromPoll(devs: FleetDevice[], pos: MapPosition[]): void {
+    if (Date.now() < suppressCapsizeAlarmUntilMs) return;
+    for (const d of devs) {
+      if (!d.rowing?.capsize) continue;
+      latchedCapsizeById.set(d.deviceId, {
+        ...d,
+        rowing: { ...(d.rowing || {}), capsize: true },
+      });
+    }
+    for (const p of pos) {
+      if (!p.capsize) continue;
+      const prev = latchedCapsizeById.get(p.deviceId);
+      if (prev) {
+        latchedCapsizeById.set(p.deviceId, {
+          ...prev,
+          rowing: { ...(prev.rowing || {}), capsize: true },
+        });
+      } else {
+        latchedCapsizeById.set(p.deviceId, {
+          deviceId: p.deviceId,
+          online: false,
+          lastSeenAgoSec: p.lastSeenAgoSec ?? p.fixAgeSec,
+          rowing: { capsize: true },
+        });
+      }
+    }
+  }
+
+  /** Merge latched sticky devices into the fleet so banner/tickets survive disconnect. */
+  function mergeLatchedCapsizeDevices(devs: FleetDevice[]): FleetDevice[] {
+    if (Date.now() < suppressCapsizeAlarmUntilMs || latchedCapsizeById.size === 0) {
+      return devs;
+    }
+    const byId = new Map(devs.map((d) => [d.deviceId, { ...d }]));
+    for (const [id, latched] of latchedCapsizeById) {
+      const cur = byId.get(id);
+      if (cur) {
+        byId.set(id, {
+          ...cur,
+          rowing: { ...(cur.rowing || {}), capsize: true },
+        });
+      } else {
+        byId.set(id, {
+          ...latched,
+          rowing: { ...(latched.rowing || {}), capsize: true },
+        });
+      }
+    }
+    return [...byId.values()];
+  }
+
+  const capsizeCount = () => capsizedDevices().length;
 
   function capsizedDevices(): FleetDevice[] {
-    return devices.filter(
-      (d) => d.rowing?.capsize || positions.some((p) => p.deviceId === d.deviceId && p.capsize),
-    );
+    const byId = new Map<string, FleetDevice>();
+    for (const d of devices) {
+      if (!deviceHasCapsize(d)) continue;
+      byId.set(d.deviceId, {
+        ...d,
+        rowing: { ...(d.rowing || {}), capsize: true },
+      });
+    }
+    for (const p of positions) {
+      if (!p.capsize || byId.has(p.deviceId)) continue;
+      const latched = latchedCapsizeById.get(p.deviceId);
+      byId.set(p.deviceId, {
+        ...(latched || {
+          deviceId: p.deviceId,
+          online: false,
+          lastSeenAgoSec: p.lastSeenAgoSec ?? p.fixAgeSec,
+        }),
+        rowing: { capsize: true },
+      });
+    }
+    if (Date.now() >= suppressCapsizeAlarmUntilMs) {
+      for (const [id, latched] of latchedCapsizeById) {
+        if (byId.has(id)) continue;
+        byId.set(id, {
+          ...latched,
+          rowing: { ...(latched.rowing || {}), capsize: true },
+        });
+      }
+    }
+    return [...byId.values()];
   }
 
   function capsizeBannerText(): string {
@@ -147,7 +237,7 @@ export function mountApp(root: HTMLElement): void {
     const names = caps.map((d) => deviceDisplayName(d)).filter(Boolean);
     const namePart = names.length ? `: ${names.join(', ')}` : '';
     const n = caps.length || 1;
-    return `${n} CAPSIZE${namePart} — check crew now. Clears when the boat is upright again, or tap Acknowledge.`;
+    return `${n} CAPSIZE${namePart} — check crew now. Tap Acknowledge when help is on the way.`;
   }
 
   function updateCapsizeBanner(): void {
@@ -199,6 +289,7 @@ export function mountApp(root: HTMLElement): void {
   async function acknowledgeCapsizeAlerts() {
     stopCapsizeAlarmLoop();
     suppressCapsizeAlarmUntilMs = Date.now() + 60_000;
+    latchedCapsizeById.clear();
     try {
       const result = (await clearCapsizeAlert(settings)) as {
         helpNotified?: string[];
@@ -394,7 +485,14 @@ export function mountApp(root: HTMLElement): void {
         dev = mergeCoachDevicesWithMap(devices, pos);
       }
 
-      devices = dev;
+      latchCapsizeFromPoll(dev, pos);
+      // Stamp map markers from latch so offline tips stay visible after stale drop.
+      if (Date.now() >= suppressCapsizeAlarmUntilMs && latchedCapsizeById.size) {
+        pos = pos.map((p) =>
+          latchedCapsizeById.has(p.deviceId) ? { ...p, capsize: true } : p,
+        );
+      }
+      devices = mergeLatchedCapsizeDevices(dev);
       positions = pos;
       syncMapTracks(pos);
       syncCapsizeAlarm();
@@ -704,6 +802,8 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function isDeviceOnWater(d: FleetDevice, p?: MapPosition): boolean {
+    // Sticky CAPSIZE stays on-water even when the phone dies underwater / goes offline.
+    if (deviceHasCapsize(d) || p?.capsize) return true;
     if (d.noGps && d.online) return true;
     if (!d.online) return false;
     // Use ingest/receive age only — GPS fix clock age can spike and flicker tickets.
@@ -719,12 +819,14 @@ export function mountApp(root: HTMLElement): void {
     const rows: CrewTicketRow[] = [];
     for (const d of devices) {
       const p = posById.get(d.deviceId);
+      const cap = deviceHasCapsize(d) || Boolean(p?.capsize);
       const onWater = isDeviceOnWater(d, p);
       const ago = d.lastSeenAgoSec ?? p?.lastSeenAgoSec ?? p?.fixAgeSec ?? null;
       const stale =
         p != null && (p.telemetryStale === true || isTelemetryStale(ago));
       rows.push({
         ...d,
+        rowing: cap ? { ...(d.rowing || {}), capsize: true } : d.rowing,
         onWater,
         // Keep speed on tickets even when outing identity is missing; mark stale in meta.
         speedMps: onWater && p ? resolveSpeedMps(p) : null,
@@ -736,10 +838,11 @@ export function mountApp(root: HTMLElement): void {
       });
     }
     rows.sort((a, b) => {
-      if (a.onWater !== b.onWater) return a.onWater ? -1 : 1;
       const capA = Boolean(a.rowing?.capsize);
       const capB = Boolean(b.rowing?.capsize);
+      // Capsize first — phone may already be offline / underwater.
       if (capA !== capB) return capA ? -1 : 1;
+      if (a.onWater !== b.onWater) return a.onWater ? -1 : 1;
       return (b.speedMps ?? -1) - (a.speedMps ?? -1) || a.displayName.localeCompare(b.displayName);
     });
     return rows;

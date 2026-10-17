@@ -1481,7 +1481,12 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
 const CAPSIZE_ALERT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 /** Backfill motion-only capsize samples from last GPS within this window (ms). */
 const CAPSIZE_GPS_BACKFILL_MAX_AGE_MS = 60 * 1000;
-/** Continuous rowing at/above min speed for this long clears an active alert (ms). */
+/**
+ * Legacy: sustained rowing used to auto-clear sticky alerts.
+ * Disabled — tip-then-right (and tip-then-row) must still need coach Acknowledge;
+ * only Acknowledge + 12h max-age clear sticky.
+ */
+const CAPSIZE_ROWING_AUTO_CLEAR_ENABLED = false;
 const CAPSIZE_ROWING_CLEAR_MS = 5 * 60 * 1000;
 const CAPSIZE_ROWING_MIN_SPEED_MPS = 1.2;
 /** Latest rowing fix must be this recent for auto-clear (ms). */
@@ -1621,9 +1626,11 @@ async function expireStaleCapsizeAlertsDb(orgId) {
 
 /**
  * Clear active alert when the boat rows normally for CAPSIZE_ROWING_CLEAR_MS after the last capsize sample.
+ * Currently disabled (CAPSIZE_ROWING_AUTO_CLEAR_ENABLED) so sticky stays until Acknowledge.
  * @returns {Promise<boolean>}
  */
 async function evaluateCapsizeAutoClear(orgId, uniqueId) {
+  if (!CAPSIZE_ROWING_AUTO_CLEAR_ENABLED) return false;
   const sql = await getSql();
   await ensureOrgsBootstrapped();
   const meta = await sql`
@@ -1699,7 +1706,7 @@ async function raiseCapsizeAlert(orgId, uniqueId, sampleTms) {
     sampleTms != null && Number.isFinite(Number(sampleTms))
       ? Number(sampleTms)
       : Date.now();
-  // Shared across Vercel instances — block re-arm for 60s after Acknowledge / upright clear.
+  // Shared across Vercel instances — block re-arm for 60s after Acknowledge.
   const rearmCooldownMs = 60_000;
   // Bump capsize_alert_at on each new capsize sample so RowSafe can re-alert after acknowledge.
   await sql`
@@ -1743,7 +1750,7 @@ async function clearCapsizeAlertDb(orgId, uniqueId) {
   `;
 }
 
-/** Wall-clock ms of last Acknowledge / upright clear (0 if never). */
+/** Wall-clock ms of last Acknowledge clear (0 if never). */
 async function getCapsizeClearedAtMs(orgId, uniqueId) {
   if (!hasDb() || !uniqueId) return 0;
   const sql = await getSql();
@@ -1786,28 +1793,18 @@ async function persistBatch(orgId, sessionId, deviceId, athleteId, samples, boat
   await backfillCapsizeGpsOnSamples(orgId, deviceId, samples);
   await insertSamples(orgId, sessionId, dev.id, deviceId, samples);
   await updateDeviceLatestGps(orgId, deviceId, samples);
-  let uprightCleared = false;
-  for (const sample of samples) {
-    if (sample?.derived?.capsizeCleared === true) {
-      await clearCapsizeAlertDb(orgId, deviceId);
-      uprightCleared = true;
-      break;
-    }
-  }
-
+  // capsizeCleared (phone upright) is telemetry/local UX only — do not clear sticky DB alert.
+  // Tip samples in the same batch (or tip-only reconnect) still raise; clear only via Acknowledge / max-age.
   let maxCapsizeT = null;
-  if (!uprightCleared) {
-    for (const sample of samples) {
-      if (sample?.derived?.capsize === true) {
-        const t = Number(sample.t);
-        if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
-      }
+  for (const sample of samples) {
+    if (sample?.derived?.capsize === true) {
+      const t = Number(sample.t);
+      if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
     }
   }
   const raisedCapsize = maxCapsizeT != null;
   if (raisedCapsize) await raiseCapsizeAlert(orgId, deviceId, maxCapsizeT);
   const cleared = await maintainCapsizeAlerts(orgId, deviceId, { raisedCapsize });
-  if (uprightCleared && !cleared.includes(String(deviceId))) cleared.push(String(deviceId));
   return { ok: true, cleared };
 }
 
