@@ -2374,8 +2374,14 @@ async function getLatestSessionCrewMetaByDevice(orgId) {
   const byDevice = new Map();
   for (const row of rows.rows) {
     const uid = String(row.unique_id);
-    const coach = String(row.athlete_id || '').trim() || null;
+    const source = row.source != null ? String(row.source) : null;
     const rowerName = String(row.rower_name || '').trim() || null;
+    // Recorder uploads store coach name in athlete_id. Walk-up stores the rower there —
+    // do not treat that as coach (RowSafe / Manager would mis-label the athlete).
+    const coach =
+      source === 'walkup'
+        ? null
+        : String(row.athlete_id || '').trim() || null;
     const boatClass =
       String(row.boat_class || '').trim() || inferBoatClassFromDeviceId(uid) || null;
     const boatName = String(row.boat_name || '').trim() || null;
@@ -2389,7 +2395,7 @@ async function getLatestSessionCrewMetaByDevice(orgId) {
       boatId,
       boatClass,
       boatName,
-      source: row.source != null ? String(row.source) : null,
+      source,
       sessionId: row.session_id != null ? String(row.session_id) : null,
     });
   }
@@ -2588,7 +2594,14 @@ async function listRegistryDevices(orgId) {
   return rows.rows.map((d) => {
     const uid = String(d.unique_id);
     const meta = crewMeta.get(uid);
-    const coach = meta?.coach || String(d.athlete_id || '').trim() || '';
+    // Prefer session crew meta. Do not fall back to device.athlete_id for walk-up
+    // (that column holds the rower name there).
+    const coach =
+      meta?.coach ||
+      (meta?.source === 'walkup' ? '' : String(d.athlete_id || '').trim()) ||
+      '';
+    // Rower only — never mirror coach into athleteId (RowSafe labels athleteId as Athlete).
+    const rowerName = meta?.rowerName || '';
     // Prefer real outing boat class; else infer from device id so RowSafe cards
     // still show identity without a selected fleet boat.
     const boatClass =
@@ -2603,14 +2616,14 @@ async function listRegistryDevices(orgId) {
       lastUpdate: d.last_seen_at,
       disabled: false,
       attributes: {
-        athleteId: coach,
+        athleteId: rowerName,
         uniqueId: d.unique_id,
         name: displayName,
         coach,
         boatClass,
         // Omit empty boatName — RowSafe treats present empty strings as blank crew.
         ...(boatName ? { boatName } : {}),
-        rowerName: meta?.rowerName || '',
+        rowerName,
         boatId: meta?.boatId != null ? String(meta.boatId) : '',
         ...(meta?.sessionId ? { sessionId: meta.sessionId } : {}),
       },

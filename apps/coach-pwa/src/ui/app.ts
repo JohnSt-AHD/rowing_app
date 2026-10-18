@@ -771,15 +771,18 @@ export function mountApp(root: HTMLElement): void {
   function deviceCrewDetailLine(d: FleetDevice): string {
     const parts: string[] = [];
     const title = deviceDisplayName(d);
-    const coach = String(d.coach ?? d.athleteId ?? '').trim();
+    const coach = String(d.coach ?? '').trim();
+    const athlete = String(d.athleteId ?? '').trim();
     const boatName = String(d.boatName ?? '').trim();
     // Outing boat class is optional — fall back to class encoded in device id (e.g. W1x Emma).
     const boatClass =
       String(d.boatClass ?? '').trim() ||
       parseBoatClass(d.boatClass, d.deviceId, d.name) ||
       '';
-    // Avoid repeating walk-up rower as "coach" when name already shows it.
     if (coach && coach !== title) parts.push(`Coach ${coach}`);
+    if (athlete && athlete !== title && athlete !== coach) {
+      parts.push(`Athlete ${athlete}`);
+    }
     if (boatName && boatName !== title) parts.push(boatName);
     if (boatClass) parts.push(boatClass);
     return parts.join(' · ');

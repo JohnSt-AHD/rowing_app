@@ -1944,12 +1944,18 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
     fixAgeSec != null && gpsIngestAgoSec != null ? fixAgeSec - gpsIngestAgoSec : null;
   const gpsFixAgeSec = stats.gps?.gpsFixAgeSec ?? null;
   const uploadLagSec = stats.gps?.uploadLagSec ?? null;
+  // Ingest `athleteId` historically stores the coach name (recorder Settings → Coach).
+  // Expose that as `coach`. `athleteId` on the wire is the rower only (walk-up / rowerName).
   const coach =
     entry.coach != null && String(entry.coach).trim()
       ? String(entry.coach).trim()
       : entry.athleteId
         ? String(entry.athleteId).trim()
         : null;
+  const rower =
+    entry.rowerName != null && String(entry.rowerName).trim()
+      ? String(entry.rowerName).trim()
+      : null;
   const boatClass =
     entry.boatClass != null && String(entry.boatClass).trim()
       ? String(entry.boatClass).trim()
@@ -1966,7 +1972,7 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
         : null;
   return {
     deviceId: entry.deviceId,
-    athleteId: coach || entry.athleteId || null,
+    athleteId: rower || null,
     name,
     coach,
     boatId: entry.boatId != null ? entry.boatId : null,
@@ -2041,7 +2047,7 @@ function listDevicesFromMemory(opts = {}) {
       {
         deviceId: row.deviceId,
         name: row.deviceId,
-        athleteId: row.athleteId,
+        // Memory sessions store coach in athleteId (ingest field); coach field carries it.
         coach: row.athleteId,
         boatId: row.boatId || null,
         boatClass: row.boatClass || null,
@@ -2119,8 +2125,8 @@ async function listDevices(orgId, opts = {}) {
             {
               deviceId,
               name: deviceId,
-              athleteId: meta?.coach || null,
               coach: meta?.coach || null,
+              rowerName: meta?.rowerName || null,
               boatId: meta?.boatId ?? null,
               boatClass: meta?.boatClass || null,
               boatName: meta?.boatName || null,
@@ -2165,8 +2171,8 @@ async function listDevices(orgId, opts = {}) {
             {
               deviceId,
               name: deviceId,
-              athleteId: meta?.coach || null,
               coach: meta?.coach || null,
+              rowerName: meta?.rowerName || null,
               boatId: meta?.boatId ?? null,
               boatClass: meta?.boatClass || null,
               boatName: meta?.boatName || null,
@@ -2188,14 +2194,15 @@ async function listDevices(orgId, opts = {}) {
         if (meta) {
           if (meta.coach) {
             dev.coach = meta.coach;
-            if (!dev.athleteId) dev.athleteId = meta.coach;
           }
           if (meta.boatClass) dev.boatClass = meta.boatClass;
           if (meta.boatName) dev.boatName = meta.boatName;
           if (meta.boatId != null) dev.boatId = meta.boatId;
           if (meta.sessionId && !dev.sessionId) dev.sessionId = meta.sessionId;
           if (meta.rowerName) {
-            dev.name = meta.rowerName;
+            // Walk-up: show rower as ticket name + athlete; GPS outings keep deviceId as name.
+            dev.athleteId = meta.rowerName;
+            if (meta.source === 'walkup') dev.name = meta.rowerName;
           } else if (!dev.name) {
             dev.name = dev.deviceId;
           }

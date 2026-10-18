@@ -110,6 +110,7 @@ export function settingsFromForm(form: HTMLFormElement): RecorderSettings {
   const boatClass = String(fd.get('boatClass') ?? '').trim();
   const settings = withOriginDefaults({
     deviceId: String(fd.get('deviceId') ?? '').trim(),
+    // Coach name → ingest athleteId (legacy); server exposes it as `coach`, not Athlete.
     athleteId: coachName || coachId,
     coachId,
     boatId,

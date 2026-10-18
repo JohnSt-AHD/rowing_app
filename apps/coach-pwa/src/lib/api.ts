@@ -8,8 +8,9 @@ export type FleetDevice = {
   deviceId: string;
   /** Device / outing name (recorder Name = deviceId). */
   name?: string | null;
+  /** Rower / athlete name when known (walk-up); not the coach. */
   athleteId?: string | null;
-  /** Coach name from latest session. */
+  /** Coach name from latest session (recorder Settings → Coach). */
   coach?: string | null;
   boatId?: number | string | null;
   boatClass?: string | null;

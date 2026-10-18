@@ -65,8 +65,12 @@ export type TelemetryBatch = {
 
 export type RecorderSettings = {
   deviceId: string;
+  /**
+   * Coach display name for the outing. Uploaded as ingest `athleteId` (legacy column
+   * name); the API maps it to `coach` for Manager / RowSafe — not the Athlete label.
+   */
   athleteId: string;
-  /** Coach name from fleet config (stored in athleteId on upload). */
+  /** Coach roster id from fleet config (Manager → Coaches & Boats). */
   coachId?: string;
   /** Selected boat id from fleet config. */
   boatId: string;
