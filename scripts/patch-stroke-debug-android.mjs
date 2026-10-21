@@ -27,14 +27,14 @@ if (!/versionCode\s+\d+/.test(gradle)) {
   gradle = gradle.replace(
     /targetSdkVersion rootProject\.ext\.targetSdkVersion\n/,
     `targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 2
+        versionName "0.1.1"
 `,
   );
 } else {
   gradle = gradle
-    .replace(/versionCode\s+\d+/, 'versionCode 1')
-    .replace(/versionName\s+"[^"]+"/, 'versionName "0.1.0"');
+    .replace(/versionCode\s+\d+/, 'versionCode 2')
+    .replace(/versionName\s+"[^"]+"/, 'versionName "0.1.1"');
 }
 
 if (!/splits\s*\{/.test(gradle)) {

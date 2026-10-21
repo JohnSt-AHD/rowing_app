@@ -105,9 +105,9 @@ async function stopAndExport(): Promise<void> {
     const how = await exportStrokeDebugJson(exp);
     pushLog(
       how === 'shared'
-        ? 'Shared — save the JSON (Files / Drive / email).'
+        ? 'Share sheet opened — pick Drive, Gmail, Files, or Nearby Share.'
         : how === 'downloaded'
-          ? 'Downloaded — check Files / Downloads.'
+          ? 'No share sheet on this build — JSON did not go to Downloads. Install the updated Stroke Debug APK.'
           : 'JSON copied to clipboard.',
     );
   } catch (e) {

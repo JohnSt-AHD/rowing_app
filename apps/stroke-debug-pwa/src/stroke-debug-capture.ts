@@ -239,14 +239,63 @@ export class StrokeDebugCapture {
   }
 }
 
+function isShareCanceled(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return true;
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /cancel/i.test(msg);
+}
+
+async function shareViaCapacitor(
+  name: string,
+  text: string,
+  summary: string,
+): Promise<boolean> {
+  try {
+    const { Capacitor } = await import('@capacitor/core');
+    if (!Capacitor.isNativePlatform()) return false;
+    const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
+    const { Share } = await import('@capacitor/share');
+    const path = `exports/${name}`;
+    await Filesystem.mkdir({
+      path: 'exports',
+      directory: Directory.Cache,
+      recursive: true,
+    }).catch(() => undefined);
+    await Filesystem.writeFile({
+      path,
+      data: text,
+      directory: Directory.Cache,
+      encoding: Encoding.UTF8,
+    });
+    const { uri } = await Filesystem.getUri({
+      path,
+      directory: Directory.Cache,
+    });
+    await Share.share({
+      title: 'CrewSight stroke debug',
+      text: summary,
+      files: [uri],
+      dialogTitle: 'Save or send stroke debug JSON',
+    });
+    return true;
+  } catch (err) {
+    if (isShareCanceled(err)) return true;
+    return false;
+  }
+}
+
 export async function exportStrokeDebugJson(
   data: StrokeDebugExport,
 ): Promise<'shared' | 'downloaded' | 'copied'> {
   const name = `crewsight-stroke-debug-${data.deviceId.replace(/[^\w.-]+/g, '_')}-${data.startedAt}.json`;
   const text = JSON.stringify(data);
-  const blob = new Blob([text], { type: 'application/json' });
-  const file = new File([blob], name, { type: 'application/json' });
+  const summary = `${data.deviceId} · ${data.durationSec}s · ${data.replay.strokeRate ?? '—'} spm`;
 
+  if (await shareViaCapacitor(name, text, summary)) {
+    return 'shared';
+  }
+
+  const blob = new Blob([text], { type: 'application/json' });
   const nav = navigator as Navigator & {
     share?: (data: ShareData & { files?: File[] }) => Promise<void>;
     canShare?: (data: ShareData & { files?: File[] }) => boolean;
@@ -254,19 +303,23 @@ export async function exportStrokeDebugJson(
 
   if (typeof nav.share === 'function') {
     try {
+      let file: File | null = null;
+      try {
+        file = new File([blob], name, { type: 'application/json' });
+      } catch {
+        file = null;
+      }
       const shareData: ShareData & { files?: File[] } = {
         title: 'CrewSight stroke debug',
-        text: `${data.deviceId} · ${data.durationSec}s · ${data.replay.strokeRate ?? '—'} spm`,
-        files: [file],
+        text: summary,
+        ...(file ? { files: [file] } : {}),
       };
       if (!nav.canShare || nav.canShare(shareData)) {
         await nav.share(shareData);
         return 'shared';
       }
     } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') {
-        return 'shared';
-      }
+      if (isShareCanceled(e)) return 'shared';
     }
   }
 
