@@ -10,7 +10,9 @@ import {
 import {
   defaultStartClock,
   deleteSavedWorkout,
+  formatClock,
   formatNzClock,
+  formatRemainDistance,
   loadActiveWorkout,
   loadWorkoutLibrary,
   normalizeWorkout,
@@ -19,6 +21,7 @@ import {
   workoutSummary,
   type SavedWorkout,
   type WorkoutAssignment,
+  type WorkoutPieceResult,
   type WorkoutProgress,
 } from '../lib/workouts';
 
@@ -47,6 +50,21 @@ function phaseLabel(phase: string): string {
   return phase || '—';
 }
 
+function splitToSec(text: string): number | null {
+  const m = /^(\d+):(\d+(?:\.\d+)?)$/.exec(String(text || '').trim());
+  if (!m) return null;
+  const sec = Number(m[1]) * 60 + Number(m[2]);
+  return Number.isFinite(sec) ? sec : null;
+}
+
+function pieceWorkLine(p: WorkoutPieceResult): string {
+  const time = formatClock(p.workSec);
+  const dist = formatRemainDistance(p.workM);
+  if (p.workM >= 50 && p.workSec >= 1) return `${time} · ${dist}`;
+  if (p.workM >= 50) return dist;
+  return time;
+}
+
 export class WorkoutPanel {
   private root: HTMLElement | null = null;
   private draft: SavedWorkout = loadActiveWorkout();
@@ -55,6 +73,8 @@ export class WorkoutPanel {
   private selectedIds = new Set<string>();
   private selectionTouched = false;
   private assignment: WorkoutAssignment | null = null;
+  private view: 'setup' | 'live' = 'setup';
+  private viewTouched = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private clockTimer: ReturnType<typeof setInterval> | null = null;
   private busy = false;
@@ -141,12 +161,20 @@ export class WorkoutPanel {
             <button type="button" class="info-btn" data-info-toggle aria-label="About Workout" aria-expanded="false">i</button>
           </div>
           <p class="coach-logbook-lead info-help" hidden>
-            Set a piece or intervals, pick a New Zealand start time, and send it to your boats.
-            Phones use the same clock time so every crew starts together. Live cards show each boat through work and rest.
+            Setup: compose a piece and send it with a shared New Zealand start time.
+            Live: watch each boat through the current piece and compare completed piece results.
           </p>
         </div>
-        <p class="coach-workout__clock">NZ now <strong data-wo-nz-now>—</strong></p>
+        <div class="coach-workout__toolbar">
+          <div class="coach-scope-toggle" role="group" aria-label="Workout view">
+            <button type="button" class="coach-scope-toggle__btn" data-wo-view="setup">Setup</button>
+            <button type="button" class="coach-scope-toggle__btn" data-wo-view="live">Live</button>
+          </div>
+          <p class="coach-workout__clock">NZ now <strong data-wo-nz-now>—</strong></p>
+        </div>
+        <p class="poll-line" data-wo-status hidden></p>
 
+        <div data-wo-panel="setup">
         <section class="coach-workout__card">
           <h3 class="coach-workout__h">Compose</h3>
           <label class="coach-workout__field">Saved
@@ -203,17 +231,28 @@ export class WorkoutPanel {
             <button type="button" class="coach-btn coach-btn--primary" data-wo-send>Send workout</button>
             <button type="button" class="coach-btn coach-btn--ghost" data-wo-clear>Clear</button>
           </div>
-          <p class="poll-line" data-wo-status hidden></p>
         </section>
+        </div>
 
+        <div data-wo-panel="live" hidden>
         <section class="coach-workout__card coach-workout__card--live">
-          <h3 class="coach-workout__h">Live pieces</h3>
+          <h3 class="coach-workout__h">Now</h3>
           <p class="coach-workout__live-meta" data-wo-live-meta>No workout sent yet.</p>
           <div class="coach-workout__live" data-wo-live></div>
         </section>
+        <section class="coach-workout__card">
+          <h3 class="coach-workout__h">Completed pieces</h3>
+          <p class="coach-workout__hint">Each finished work interval across boats. Fastest /500 m on a piece is highlighted.</p>
+          <div class="coach-workout__results" data-wo-results></div>
+        </section>
+        <div class="coach-workout__actions">
+          <button type="button" class="coach-btn coach-btn--ghost" data-wo-clear-live>Clear workout</button>
+        </div>
+        </div>
       </div>
     `;
     bindInfoToggles(this.root);
+    this.applyView();
   }
 
   private bind() {
@@ -259,7 +298,34 @@ export class WorkoutPanel {
       });
     });
     this.root.querySelector('[data-wo-send]')?.addEventListener('click', () => void this.onSend());
-    this.root.querySelector('[data-wo-clear]')?.addEventListener('click', () => void this.onClear());
+    this.root.querySelectorAll('[data-wo-clear], [data-wo-clear-live]').forEach((btn) => {
+      btn.addEventListener('click', () => void this.onClear());
+    });
+    this.root.querySelectorAll('[data-wo-view]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = (btn as HTMLElement).dataset.woView === 'live' ? 'live' : 'setup';
+        this.viewTouched = true;
+        this.setView(next);
+      });
+    });
+  }
+
+  private setView(view: 'setup' | 'live') {
+    this.view = view;
+    this.applyView();
+    if (view === 'live') this.refreshMonitor();
+  }
+
+  private applyView() {
+    if (!this.root) return;
+    this.root.querySelectorAll<HTMLElement>('[data-wo-panel]').forEach((el) => {
+      el.hidden = el.dataset.woPanel !== this.view;
+    });
+    this.root.querySelectorAll<HTMLButtonElement>('[data-wo-view]').forEach((btn) => {
+      const on = btn.dataset.woView === this.view;
+      btn.classList.toggle('is-active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
   }
 
   private fillRecall() {
@@ -429,7 +495,8 @@ export class WorkoutPanel {
         startAtMs,
         coachName: this.coachName(),
       });
-      this.refreshMonitor();
+      this.viewTouched = true;
+      this.setView('live');
       this.setLine(
         `Sent ${w.name} to ${deviceIds.length} boat${deviceIds.length === 1 ? '' : 's'} · start ${this.startClock} NZ`,
       );
@@ -455,7 +522,8 @@ export class WorkoutPanel {
     try {
       const next = await fetchAssignment(this.getSettings());
       this.assignment = next;
-      this.refreshMonitor();
+      if (!this.viewTouched && next) this.setView('live');
+      else this.refreshMonitor();
     } catch {
       /* keep last */
     }
@@ -515,7 +583,9 @@ export class WorkoutPanel {
     const asg = this.assignment;
     if (!asg) {
       meta.textContent = 'No workout sent yet.';
-      live.innerHTML = '';
+      live.innerHTML =
+        '<p class="coach-workout__empty">Send a workout from Setup to watch boats here.</p>';
+      this.refreshResults([]);
       return;
     }
     const ids = asg.deviceIds.length
@@ -555,5 +625,58 @@ export class WorkoutPanel {
         );
       })
       .join('');
+    this.refreshResults(ids);
+  }
+
+  private refreshResults(ids: string[]) {
+    const host = this.root?.querySelector('[data-wo-results]');
+    if (!host) return;
+    const asg = this.assignment;
+    if (!asg || !ids.length) {
+      host.innerHTML = '<p class="coach-workout__empty">No completed pieces yet.</p>';
+      return;
+    }
+    const rows = Math.max(0, ...ids.map((id) => this.progressFor(id)?.pieces?.length || 0));
+    if (rows <= 0) {
+      host.innerHTML = '<p class="coach-workout__empty">No completed pieces yet — they appear here as each work interval finishes.</p>';
+      return;
+    }
+    const labels = ids.map((id) => {
+      const boat = this.boats.find((b) => b.deviceId === id);
+      return boat?.name || this.progressFor(id)?.name || id;
+    });
+    const head =
+      `<thead><tr><th scope="col">Piece</th>` +
+      labels.map((name) => `<th scope="col">${esc(name)}</th>`).join('') +
+      `</tr></thead>`;
+    const body = Array.from({ length: rows }, (_, i) => {
+      const index = i + 1;
+      const cells = ids.map((id) => {
+        const piece = (this.progressFor(id)?.pieces || []).find((p) => p.index === index);
+        return { id, piece };
+      });
+      let best = Infinity;
+      for (const cell of cells) {
+        const sec = cell.piece ? splitToSec(cell.piece.avgSplit) : null;
+        if (sec != null && sec < best) best = sec;
+      }
+      const tds = cells
+        .map(({ piece }) => {
+          if (!piece) return '<td class="coach-workout__cell--empty">—</td>';
+          const sec = splitToSec(piece.avgSplit);
+          const bestCls = sec != null && sec === best ? ' is-best' : '';
+          return (
+            `<td class="coach-workout__cell${bestCls}">` +
+            `<strong>${esc(piece.avgSplit)}</strong>` +
+            `<small>${esc(piece.avgProg)} · ${esc(piece.hrText)}</small>` +
+            `<small>${esc(pieceWorkLine(piece))}</small>` +
+            `</td>`
+          );
+        })
+        .join('');
+      const label = asg.workout.kind === 'interval' ? `Work ${index}` : 'Piece';
+      return `<tr><th scope="row">${esc(label)}</th>${tds}</tr>`;
+    }).join('');
+    host.innerHTML = `<div class="coach-workout__table-wrap"><table class="coach-workout__table">${head}<tbody>${body}</tbody></table></div>`;
   }
 }

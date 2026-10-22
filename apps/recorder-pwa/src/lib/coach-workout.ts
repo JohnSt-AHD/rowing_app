@@ -1,8 +1,9 @@
+import { formatPrognostic, formatSplit500m, parseBoatClass } from '@rowing/rowing-pace';
 import { loadSettings } from './settings';
 import { fetchCoachAssignment, reportWorkoutProgress } from './workout-api';
-import { armWorkoutAt, setWorkout } from './workout-engine';
+import { armWorkoutAt, setWorkout, workoutPieceLog } from './workout-engine';
 import type { WorkoutHud } from './workout-engine';
-import type { WorkoutAssignment } from './workouts';
+import type { WorkoutAssignment, WorkoutPieceResult } from './workouts';
 
 let lastAssignmentId = '';
 let lastProgressAt = 0;
@@ -45,9 +46,20 @@ export function maybeReportWorkoutProgress(hud: WorkoutHud, now = Date.now()): v
   const deviceId = loadSettings().deviceId.trim();
   if (!deviceId) return;
   lastProgressAt = now;
+  const settings = loadSettings();
+  const boat = parseBoatClass(settings.boatClass, settings.deviceId, settings.athleteId);
+  const pieces: WorkoutPieceResult[] = workoutPieceLog().map((p) => ({
+    index: p.index,
+    finishedAt: p.finishedAt,
+    workSec: p.workSec,
+    workM: p.workM,
+    avgSplit: formatSplit500m(p.avgMps),
+    avgProg: p.avgMps != null && boat ? formatPrognostic(p.avgMps, boat) ?? '—' : '—',
+    hrText: p.hr != null && p.hr > 0 ? String(Math.round(p.hr)) : '—',
+  }));
   void reportWorkoutProgress({
     deviceId,
-    name: loadSettings().deviceId,
+    name: settings.deviceId,
     phase: hud.phase,
     remainLabel: hud.remainLabel,
     remainText: hud.remainText,
@@ -57,6 +69,9 @@ export function maybeReportWorkoutProgress(hud: WorkoutHud, now = Date.now()): v
     avgSplit: hud.avgSplit,
     avgProg: hud.avgProg,
     hrText: hud.hrText,
+    pieceIndex:
+      hud.phase === 'work' ? pieces.length + 1 : hud.phase === 'done' || hud.phase === 'rest' ? pieces.length : 0,
+    pieces,
     updatedAt: now,
   });
 }

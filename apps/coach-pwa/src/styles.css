@@ -2745,10 +2745,22 @@ button.coach-btn.coach-btn--ghost {
   padding-bottom: 1rem;
 }
 
+.coach-workout__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
 .coach-workout__clock {
   margin: 0;
   font-size: 0.86rem;
   color: #3f3f46;
+}
+
+[data-wo-panel][hidden] {
+  display: none !important;
 }
 
 .coach-workout__card {
@@ -2948,6 +2960,57 @@ button.coach-btn.coach-btn--ghost {
   color: #b45309;
   font-style: normal;
   font-weight: 650;
+}
+
+.coach-workout__table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.coach-workout__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.coach-workout__table th,
+.coach-workout__table td {
+  border: 1px solid rgba(17, 17, 17, 0.1);
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.coach-workout__table thead th {
+  background: #f4f4f5;
+  font-size: 0.75rem;
+  position: sticky;
+  top: 0;
+}
+
+.coach-workout__table tbody th {
+  white-space: nowrap;
+  background: #fafafa;
+}
+
+.coach-workout__cell strong,
+.coach-workout__cell small {
+  display: block;
+}
+
+.coach-workout__cell small {
+  color: #4b5563;
+  font-weight: 550;
+}
+
+.coach-workout__cell.is-best {
+  background: #ecfdf3;
+  box-shadow: inset 3px 0 0 #15803d;
+}
+
+.coach-workout__cell--empty {
+  color: #9ca3af;
+  text-align: center;
 }
 
 @media (min-width: 960px) {

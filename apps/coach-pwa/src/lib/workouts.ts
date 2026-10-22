@@ -264,7 +264,8 @@ export function defaultStartClock(ms = Date.now()): string {
 
 /**
  * Convert today's NZ HH:MM[:SS] into a UTC epoch. If that instant is already
- * more than 15s in the past, roll to the next NZ day.
+ * more than 6 hours in the past, roll to the next NZ day. A slightly late
+ * send still starts the same session so Live can show completed pieces.
  */
 export function nzClockToUtcMs(clock: string, now = Date.now()): number {
   const bits = String(clock || '')
@@ -284,9 +285,19 @@ export function nzClockToUtcMs(clock: string, now = Date.now()): number {
     t += delta;
     if (Math.abs(delta) < 400) break;
   }
-  if (t < now - 15_000) t += 24 * 60 * 60 * 1000;
+  if (t < now - 6 * 60 * 60 * 1000) t += 24 * 60 * 60 * 1000;
   return t;
 }
+
+export type WorkoutPieceResult = {
+  index: number;
+  finishedAt: number;
+  workSec: number;
+  workM: number;
+  avgSplit: string;
+  avgProg: string;
+  hrText: string;
+};
 
 export type WorkoutProgress = {
   deviceId: string;
@@ -300,6 +311,8 @@ export type WorkoutProgress = {
   avgSplit: string;
   avgProg: string;
   hrText: string;
+  pieceIndex?: number;
+  pieces?: WorkoutPieceResult[];
   updatedAt: number;
 };
 

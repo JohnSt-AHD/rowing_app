@@ -42,6 +42,15 @@ export type WorkoutResult = {
   intervalsDone: number;
 };
 
+export type WorkoutPieceLog = {
+  index: number;
+  finishedAt: number;
+  workSec: number;
+  workM: number;
+  avgMps: number | null;
+  hr: number | null;
+};
+
 type EngineState = {
   workout: SavedWorkout;
   phase: WorkoutPhase;
@@ -54,8 +63,13 @@ type EngineState = {
   intervalIndex: number;
   speedSum: number;
   speedN: number;
+  intervalSpeedSum: number;
+  intervalSpeedN: number;
+  intervalHrSum: number;
+  intervalHrN: number;
   workMs: number;
   workM: number;
+  pieces: WorkoutPieceLog[];
   lastResult: WorkoutResult | null;
 };
 
@@ -80,11 +94,21 @@ function ensureState(): EngineState {
       intervalIndex: 0,
       speedSum: 0,
       speedN: 0,
+      intervalSpeedSum: 0,
+      intervalSpeedN: 0,
+      intervalHrSum: 0,
+      intervalHrN: 0,
       workMs: 0,
       workM: 0,
+      pieces: [],
       lastResult: null,
     };
   }
+  if (!Array.isArray(state.pieces)) state.pieces = [];
+  if (!Number.isFinite(state.intervalSpeedSum)) state.intervalSpeedSum = 0;
+  if (!Number.isFinite(state.intervalSpeedN)) state.intervalSpeedN = 0;
+  if (!Number.isFinite(state.intervalHrSum)) state.intervalHrSum = 0;
+  if (!Number.isFinite(state.intervalHrN)) state.intervalHrN = 0;
   return state;
 }
 
@@ -125,11 +149,29 @@ function beginWork(s: EngineState, now: number, distanceM: number): void {
   s.workStartedAt = now;
   s.workStartDistance = distanceM;
   s.moveSince = null;
+  s.intervalSpeedSum = 0;
+  s.intervalSpeedN = 0;
+  s.intervalHrSum = 0;
+  s.intervalHrN = 0;
+}
+
+function recordFinishedPiece(s: EngineState, now: number, distanceM: number): void {
+  const avgMps = s.intervalSpeedN > 0 ? s.intervalSpeedSum / s.intervalSpeedN : null;
+  const hr = s.intervalHrN > 0 ? s.intervalHrSum / s.intervalHrN : null;
+  s.pieces.push({
+    index: s.intervalIndex + 1,
+    finishedAt: now,
+    workSec: Math.max(0, now - s.workStartedAt) / 1000,
+    workM: Math.max(0, distanceM - s.workStartDistance),
+    avgMps,
+    hr,
+  });
 }
 
 function finishWorkInterval(s: EngineState, now: number, distanceM: number): void {
   s.workMs += Math.max(0, now - s.workStartedAt);
   s.workM += Math.max(0, distanceM - s.workStartDistance);
+  recordFinishedPiece(s, now, distanceM);
   const w = s.workout;
   if (w.kind === 'interval' && s.intervalIndex + 1 < w.repeats) {
     if (w.restSec <= 0) {
@@ -166,10 +208,19 @@ function resetPiece(s: EngineState): void {
   s.intervalIndex = 0;
   s.speedSum = 0;
   s.speedN = 0;
+  s.intervalSpeedSum = 0;
+  s.intervalSpeedN = 0;
+  s.intervalHrSum = 0;
+  s.intervalHrN = 0;
   s.workMs = 0;
   s.workM = 0;
+  s.pieces = [];
   s.lastResult = null;
   s.moveSince = null;
+}
+
+export function workoutPieceLog(): WorkoutPieceLog[] {
+  return state?.pieces.slice() ?? [];
 }
 
 export function armWorkout(now: number, distanceM: number): void {
@@ -241,6 +292,12 @@ export function tickWorkout(input: WorkoutTickInput): WorkoutHud {
     if (speedMps != null && speedMps >= 0.4) {
       s.speedSum += speedMps;
       s.speedN += 1;
+      s.intervalSpeedSum += speedMps;
+      s.intervalSpeedN += 1;
+    }
+    if (hr != null && hr > 0) {
+      s.intervalHrSum += hr;
+      s.intervalHrN += 1;
     }
     const target = workTarget(s.workout);
     if (target.unit === 'time') {

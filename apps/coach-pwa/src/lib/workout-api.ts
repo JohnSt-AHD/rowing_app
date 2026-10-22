@@ -8,6 +8,7 @@ import {
   workoutSummary,
   type SavedWorkout,
   type WorkoutAssignment,
+  type WorkoutPieceResult,
   type WorkoutProgress,
 } from './workouts';
 
@@ -134,6 +135,44 @@ function progFromMps(mps: number): string {
   return `${Math.round((mps / 4.8) * 100)}%`;
 }
 
+function demoPieces(
+  workout: SavedWorkout,
+  completed: number,
+  speed: number,
+  jitter: number,
+): WorkoutPieceResult[] {
+  const out: WorkoutPieceResult[] = [];
+  for (let i = 1; i <= completed; i++) {
+    const mps = speed - 0.02 + ((i + Math.abs(jitter)) % 4) * 0.018;
+    const workSec =
+      workout.kind === 'interval'
+        ? workout.workUnit === 'distance'
+          ? workout.workValue / Math.max(0.8, mps)
+          : workout.workValue
+        : workout.unit === 'distance'
+          ? workout.target / Math.max(0.8, mps)
+          : workout.target;
+    const workM =
+      workout.kind === 'interval'
+        ? workout.workUnit === 'distance'
+          ? workout.workValue
+          : mps * workSec
+        : workout.unit === 'distance'
+          ? workout.target
+          : mps * workSec;
+    out.push({
+      index: i,
+      finishedAt: Date.now(),
+      workSec,
+      workM,
+      avgSplit: splitFromMps(mps),
+      avgProg: progFromMps(mps),
+      hrText: String(156 + (Math.abs(jitter + i) % 16)),
+    });
+  }
+  return out;
+}
+
 function synthesizeProgress(
   deviceId: string,
   workout: SavedWorkout,
@@ -155,6 +194,8 @@ function synthesizeProgress(
     avgSplit: '—',
     avgProg: '—',
     hrText: '—',
+    pieceIndex: 0,
+    pieces: [],
     updatedAt: now,
   };
   if (remainToStart > 0.4) return base;
@@ -168,46 +209,67 @@ function synthesizeProgress(
     hrText: String(158 + (Math.abs(jitter) % 18)),
   };
 
+  const withPieces = (next: WorkoutProgress, completed: number): WorkoutProgress => ({
+    ...next,
+    pieces: demoPieces(workout, completed, speed, jitter),
+  });
+
   if (workout.kind === 'single') {
     if (workout.unit === 'distance') {
       const doneM = elapsed * speed;
       const remain = Math.max(0, workout.target - doneM);
       if (remain <= 0) {
-        return {
+        return withPieces(
+          {
+            ...base,
+            ...live,
+            phase: 'done',
+            remainLabel: 'Finished',
+            remainText: '0 m',
+            hrText: '—',
+            pieceIndex: 1,
+          },
+          1,
+        );
+      }
+      return withPieces(
+        {
+          ...base,
+          ...live,
+          phase: 'work',
+          remainLabel: 'Distance to go',
+          remainText: formatRemainDistance(remain),
+          pieceIndex: 1,
+        },
+        0,
+      );
+    }
+    const remain = Math.max(0, workout.target - elapsed);
+    if (remain <= 0) {
+      return withPieces(
+        {
           ...base,
           ...live,
           phase: 'done',
           remainLabel: 'Finished',
-          remainText: '0 m',
+          remainText: '0:00',
           hrText: '—',
-        };
-      }
-      return {
+          pieceIndex: 1,
+        },
+        1,
+      );
+    }
+    return withPieces(
+      {
         ...base,
         ...live,
         phase: 'work',
-        remainLabel: 'Distance to go',
-        remainText: formatRemainDistance(remain),
-      };
-    }
-    const remain = Math.max(0, workout.target - elapsed);
-    if (remain <= 0) {
-      return {
-        ...base,
-        ...live,
-        phase: 'done',
-        remainLabel: 'Finished',
-        remainText: '0:00',
-        hrText: '—',
-      };
-    }
-    return {
-      ...base,
-      ...live,
-      phase: 'work',
-      remainLabel: 'Time to go',
-      remainText: formatClock(remain),
-    };
+        remainLabel: 'Time to go',
+        remainText: formatClock(remain),
+        pieceIndex: 1,
+      },
+      0,
+    );
   }
 
   const workSec =
@@ -215,43 +277,55 @@ function synthesizeProgress(
   const cycle = workSec + Math.max(0, workout.restSec);
   const idx = cycle > 0 ? Math.floor(elapsed / cycle) : workout.repeats;
   if (idx >= workout.repeats) {
-    return {
-      ...base,
-      ...live,
-      phase: 'done',
-      remainLabel: 'Finished',
-      remainText: '0:00',
-      intervalText: `${workout.repeats}/${workout.repeats} done`,
-      hrText: '—',
-    };
+    return withPieces(
+      {
+        ...base,
+        ...live,
+        phase: 'done',
+        remainLabel: 'Finished',
+        remainText: '0:00',
+        intervalText: `${workout.repeats}/${workout.repeats} done`,
+        hrText: '—',
+        pieceIndex: workout.repeats,
+      },
+      workout.repeats,
+    );
   }
   const inCycle = cycle > 0 ? elapsed % cycle : 0;
   if (inCycle < workSec) {
     const remainWork = workSec - inCycle;
-    return {
-      ...base,
-      ...live,
-      phase: 'work',
-      remainLabel: workout.workUnit === 'distance' ? 'Distance to go' : 'Time to go',
-      remainText:
-        workout.workUnit === 'distance'
-          ? formatRemainDistance(remainWork * speed)
-          : formatClock(remainWork),
-      intervalText: `Work ${idx + 1}/${workout.repeats}`,
-    };
+    return withPieces(
+      {
+        ...base,
+        ...live,
+        phase: 'work',
+        remainLabel: workout.workUnit === 'distance' ? 'Distance to go' : 'Time to go',
+        remainText:
+          workout.workUnit === 'distance'
+            ? formatRemainDistance(remainWork * speed)
+            : formatClock(remainWork),
+        intervalText: `Work ${idx + 1}/${workout.repeats}`,
+        pieceIndex: idx + 1,
+      },
+      idx,
+    );
   }
-  return {
-    ...base,
-    phase: 'rest',
-    remainLabel: 'Rest',
-    remainText: formatClock(cycle - inCycle),
-    intervalText: `Rest after ${idx + 1}/${workout.repeats}`,
-    liveSplit: '—',
-    liveProg: '—',
-    avgSplit: live.avgSplit,
-    avgProg: live.avgProg,
-    hrText: String(142 + (Math.abs(jitter) % 10)),
-  };
+  return withPieces(
+    {
+      ...base,
+      phase: 'rest',
+      remainLabel: 'Rest',
+      remainText: formatClock(cycle - inCycle),
+      intervalText: `Rest after ${idx + 1}/${workout.repeats}`,
+      liveSplit: '—',
+      liveProg: '—',
+      avgSplit: live.avgSplit,
+      avgProg: live.avgProg,
+      hrText: String(142 + (Math.abs(jitter) % 10)),
+      pieceIndex: idx + 1,
+    },
+    idx + 1,
+  );
 }
 
 function withDemoProgress(assignment: WorkoutAssignment): WorkoutAssignment {
