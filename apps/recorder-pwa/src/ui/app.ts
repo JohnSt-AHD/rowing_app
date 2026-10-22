@@ -77,7 +77,12 @@ import {
   type StandbyController,
   type StandbyStatus,
 } from '../lib/geofence-standby';
-import { clearPendingOutbox, countPendingOutbox, getSession } from '../session/store';
+import {
+  clearPendingOutbox,
+  countPendingOutbox,
+  enqueueTelemetry,
+  getSession,
+} from '../session/store';
 import { flushOutbox } from '../upload/sync';
 import { postSessionEnd } from '../upload/telemetry-api';
 import { repairOversizedPendingOutbox } from '../session/store';
@@ -93,6 +98,29 @@ import {
 } from './session-display';
 import { StrokePeriodSpeedAvg } from '../lib/stroke-speed-smooth';
 import { HistoryPanel } from './history-panel';
+import { syncWorkoutLibrary, uploadWorkoutLibrary } from '../lib/workout-api';
+import {
+  armWorkout,
+  getWorkout,
+  isWorkoutSetupOpen,
+  resetWorkoutEngine,
+  setWorkout,
+  setWorkoutFinishedHandler,
+  setWorkoutSetupOpen,
+  skipWorkoutRest,
+  stopWorkoutPiece,
+  tickWorkout,
+  workoutAvgPrognostic,
+} from '../lib/workout-engine';
+import {
+  deleteSavedWorkout,
+  loadWorkoutLibrary,
+  newWorkoutId,
+  setActiveWorkoutId,
+  upsertSavedWorkout,
+  workoutSummary,
+  type SavedWorkout,
+} from '../lib/workouts';
 import {
   createDemoController,
   demoSessionStartedAt,
@@ -101,7 +129,7 @@ import {
 } from '../lib/demo-mode';
 
 type View = 'record' | 'history' | 'settings';
-type FsTab = 'metrics' | 'speed' | 'map';
+type FsTab = 'metrics' | 'speed' | 'map' | 'workout';
 
 const IS_NATIVE = import.meta.env.VITE_PLATFORM === 'native';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION;
@@ -806,7 +834,7 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function setFsTab(tab: FsTab): void {
-    // Portrait only supports fullscreen metrics; graph/map are landscape-only.
+    // Portrait only supports fullscreen metrics; graph/map/workout are landscape-only.
     const next = !isLandscapeOrientation() && tab !== 'metrics' ? 'metrics' : tab;
     fsTab = next;
     root.querySelectorAll('[data-fs-tab]').forEach((btn) => {
@@ -831,6 +859,111 @@ export function mountApp(root: HTMLElement): void {
   function refreshFsPanels(): void {
     if (fsTab === 'speed') refreshSpeedChart();
     if (fsTab === 'map') ensureSessionMap();
+  }
+
+  function readWorkoutForm(form: HTMLFormElement): SavedWorkout {
+    const fd = new FormData(form);
+    const prev = getWorkout();
+    const kind = String(fd.get('kind') || prev.kind) === 'interval' ? 'interval' : 'single';
+    const unit = String(fd.get('unit') || prev.unit) === 'distance' ? 'distance' : 'time';
+    const workUnit = String(fd.get('workUnit') || prev.workUnit) === 'distance' ? 'distance' : 'time';
+    const startMode = String(fd.get('startMode') || prev.startMode) === 'moving' ? 'moving' : 'countdown';
+    const targetRaw = Number(fd.get('target'));
+    const workRaw = Number(fd.get('workValue'));
+    const target = unit === 'time' ? Math.round((Number.isFinite(targetRaw) ? targetRaw : 20) * 60) : targetRaw;
+    const workValue =
+      workUnit === 'time' ? Math.round((Number.isFinite(workRaw) ? workRaw : 1) * 60) : workRaw;
+    return {
+      ...prev,
+      name: String(fd.get('name') || prev.name).trim() || prev.name,
+      kind,
+      unit,
+      target: Number.isFinite(target) && target > 0 ? target : prev.target,
+      startMode,
+      countdownSec: Number(fd.get('countdownSec')) || prev.countdownSec,
+      workUnit,
+      workValue: Number.isFinite(workValue) && workValue > 0 ? workValue : prev.workValue,
+      restSec: Number.isFinite(Number(fd.get('restSec')))
+        ? Number(fd.get('restSec'))
+        : prev.restSec,
+      repeats: Number(fd.get('repeats')) || prev.repeats,
+      updatedAt: Date.now(),
+    };
+  }
+
+  function setWorkoutStatus(msg: string): void {
+    const el = root.querySelector('[data-workout-status]');
+    if (el) el.textContent = msg;
+  }
+
+  function bindWorkoutControls(): void {
+    const form = root.querySelector('[data-workout-form]') as HTMLFormElement | null;
+    const toggleKind = () => {
+      if (!form) return;
+      const interval = (form.querySelector('[name="kind"]:checked') as HTMLInputElement | null)?.value === 'interval';
+      const single = form.querySelector('[data-workout-single]') as HTMLElement | null;
+      const fields = form.querySelector('[data-workout-interval-fields]') as HTMLElement | null;
+      if (single) single.hidden = interval;
+      if (fields) fields.hidden = !interval;
+    };
+    form?.querySelectorAll('[name="kind"]').forEach((el) => {
+      el.addEventListener('change', toggleKind);
+    });
+    form?.querySelector('[name="recall"]')?.addEventListener('change', (ev) => {
+      const id = (ev.target as HTMLSelectElement).value;
+      const found = loadWorkoutLibrary().find((w) => w.id === id);
+      if (!found) return;
+      setActiveWorkoutId(found.id);
+      setWorkout(found);
+      render();
+    });
+    root.querySelector('[data-workout-setup]')?.addEventListener('click', () => {
+      setWorkoutSetupOpen(true);
+      render();
+    });
+    root.querySelector('[data-workout-close-setup]')?.addEventListener('click', () => {
+      if (form) setWorkout(readWorkoutForm(form));
+      setWorkoutSetupOpen(false);
+      render();
+    });
+    root.querySelector('[data-workout-save]')?.addEventListener('click', () => {
+      if (!form) return;
+      const next = { ...readWorkoutForm(form), id: getWorkout().id || newWorkoutId() };
+      upsertSavedWorkout(next);
+      setWorkout(next);
+      setWorkoutStatus(`Saved ${next.name}`);
+      render();
+    });
+    root.querySelector('[data-workout-delete]')?.addEventListener('click', () => {
+      deleteSavedWorkout(getWorkout().id);
+      setWorkout(loadWorkoutLibrary()[0] || getWorkout());
+      setWorkoutStatus('Deleted');
+      render();
+    });
+    root.querySelector('[data-workout-upload]')?.addEventListener('click', () => {
+      if (form) {
+        const next = readWorkoutForm(form);
+        upsertSavedWorkout(next);
+        setWorkout(next);
+      }
+      void uploadWorkoutLibrary(loadWorkoutLibrary())
+        .then(() => setWorkoutStatus('Uploaded to this token'))
+        .catch((e) => setWorkoutStatus(e instanceof Error ? e.message : String(e)));
+    });
+    root.querySelector('[data-workout-arm]')?.addEventListener('click', () => {
+      if (form && isWorkoutSetupOpen()) setWorkout(readWorkoutForm(form));
+      const stats = controller?.getStats();
+      armWorkout(Date.now(), stats?.distanceM ?? 0);
+      setWorkoutSetupOpen(false);
+      render();
+    });
+    root.querySelector('[data-workout-stop]')?.addEventListener('click', () => {
+      stopWorkoutPiece();
+    });
+    root.querySelector('[data-workout-skip]')?.addEventListener('click', () => {
+      const stats = controller?.getStats();
+      skipWorkoutRest(Date.now(), stats?.distanceM ?? 0);
+    });
   }
 
   function updateLiveHud(): void {
@@ -880,6 +1013,31 @@ export function mountApp(root: HTMLElement): void {
         lon: stats.lastGps?.lon,
         strokeRateSpm: liveSpm,
       });
+    }
+
+    const wo = tickWorkout({
+      now: Date.now(),
+      speedMps: stats?.speedMps ?? null,
+      distanceM: stats?.distanceM ?? 0,
+      hr: stats?.lastHr ?? null,
+      boatClass: boat,
+    });
+    setHudText('[data-workout-remain]', wo.remainText);
+    setHudText('[data-workout-remain-label]', wo.remainLabel);
+    setHudText('[data-workout-interval]', wo.intervalText);
+    setHudText('[data-workout-hr]', wo.hrText);
+    setHudText('[data-workout-split]', wo.liveSplit);
+    setHudText('[data-workout-prog]', wo.liveProg);
+    setHudText('[data-workout-avg-split]', wo.avgSplit);
+    setHudText('[data-workout-avg-prog]', wo.avgProg);
+    const skipBtn = root.querySelector('[data-workout-skip]') as HTMLButtonElement | null;
+    const stopBtn = root.querySelector('[data-workout-stop]') as HTMLButtonElement | null;
+    const armBtn = root.querySelector('[data-workout-arm]') as HTMLButtonElement | null;
+    if (skipBtn) skipBtn.hidden = wo.phase !== 'rest';
+    if (stopBtn) stopBtn.hidden = wo.phase === 'idle' || wo.phase === 'done';
+    if (armBtn) {
+      armBtn.hidden = wo.phase !== 'idle' && wo.phase !== 'done';
+      armBtn.textContent = wo.phase === 'done' ? 'Start again' : 'Start piece';
     }
 
     const paceProgPct =
@@ -1373,6 +1531,87 @@ export function mountApp(root: HTMLElement): void {
     `;
   }
 
+  function workoutPanelHtml(): string {
+    const w = getWorkout();
+    const lib = loadWorkoutLibrary();
+    const setup = isWorkoutSetupOpen();
+    const minVal = w.kind === 'single' && w.unit === 'time' ? Math.round(w.target / 60) : w.target;
+    const workMin =
+      w.workUnit === 'time' ? Math.round(w.workValue / 60) || w.workValue / 60 : w.workValue;
+    return `
+      <div class="session-fs-panel session-workout ${fsTab === 'workout' ? 'is-active' : ''}" data-fs-panel="workout">
+        <div class="session-workout__hud" data-workout-hud ${setup ? 'hidden' : ''}>
+          <div class="session-workout__bar">
+            <button type="button" class="session-workout__setup-btn" data-workout-setup>Setup</button>
+            <span class="session-workout__phase" data-workout-interval>${esc(workoutSummary(w))}</span>
+          </div>
+          <div class="session-workout__remain">
+            <span class="session-workout__remain-value" data-workout-remain>—</span>
+            <span class="session-workout__remain-label" data-workout-remain-label>Time to go</span>
+          </div>
+          <div class="session-workout__metrics">
+            <div class="session-metric"><span class="session-metric__value" data-workout-hr>—</span><span class="session-metric__label">HR</span></div>
+            <div class="session-metric"><span class="session-metric__value" data-workout-split>—</span><span class="session-metric__prog" data-workout-prog>—</span><span class="session-metric__label">Speed</span></div>
+            <div class="session-metric"><span class="session-metric__value" data-workout-avg-split>—</span><span class="session-metric__prog" data-workout-avg-prog>—</span><span class="session-metric__label">Piece avg</span></div>
+          </div>
+          <div class="session-workout__actions">
+            <button type="button" class="hub-btn hub-btn--primary" data-workout-arm>Start piece</button>
+            <button type="button" class="hub-btn hub-btn--ghost" data-workout-skip hidden>Skip rest</button>
+            <button type="button" class="hub-btn hub-btn--ghost" data-workout-stop hidden>Stop piece</button>
+          </div>
+        </div>
+        <form class="session-workout__setup" data-workout-form ${setup ? '' : 'hidden'}>
+          <div class="session-workout__setup-top">
+            <strong>Workout setup</strong>
+            <button type="button" class="session-workout__setup-btn" data-workout-close-setup>Back</button>
+          </div>
+          <label>Saved
+            <select name="recall">
+              ${lib
+                .map(
+                  (item) =>
+                    `<option value="${esc(item.id)}"${item.id === w.id ? ' selected' : ''}>${esc(item.name)} · ${esc(workoutSummary(item))}</option>`,
+                )
+                .join('')}
+            </select>
+          </label>
+          <label>Name <input name="name" value="${esc(w.name)}" maxlength="40" /></label>
+          <fieldset>
+            <legend>Type</legend>
+            <label><input type="radio" name="kind" value="single"${w.kind === 'single' ? ' checked' : ''} /> Piece</label>
+            <label><input type="radio" name="kind" value="interval"${w.kind === 'interval' ? ' checked' : ''} /> Intervals</label>
+          </fieldset>
+          <fieldset>
+            <legend>Start</legend>
+            <label><input type="radio" name="startMode" value="countdown"${w.startMode === 'countdown' ? ' checked' : ''} /> Countdown</label>
+            <label><input type="radio" name="startMode" value="moving"${w.startMode === 'moving' ? ' checked' : ''} /> When moving</label>
+            <label>Countdown s <input name="countdownSec" type="number" min="0" max="30" value="${w.countdownSec}" /></label>
+          </fieldset>
+          <fieldset data-workout-single ${w.kind === 'interval' ? 'hidden' : ''}>
+            <legend>Piece</legend>
+            <label><input type="radio" name="unit" value="time"${w.unit === 'time' ? ' checked' : ''} /> Time (min)</label>
+            <label><input type="radio" name="unit" value="distance"${w.unit === 'distance' ? ' checked' : ''} /> Distance (m)</label>
+            <label>Target <input name="target" type="number" min="1" step="1" value="${minVal}" /></label>
+          </fieldset>
+          <fieldset data-workout-interval-fields ${w.kind === 'single' ? 'hidden' : ''}>
+            <legend>Intervals</legend>
+            <label><input type="radio" name="workUnit" value="time"${w.workUnit === 'time' ? ' checked' : ''} /> Work time (min)</label>
+            <label><input type="radio" name="workUnit" value="distance"${w.workUnit === 'distance' ? ' checked' : ''} /> Work distance (m)</label>
+            <label>Work <input name="workValue" type="number" min="1" step="0.1" value="${workMin}" /></label>
+            <label>Rest (s) <input name="restSec" type="number" min="0" step="1" value="${w.restSec}" /></label>
+            <label>Repeats <input name="repeats" type="number" min="1" max="40" value="${w.repeats}" /></label>
+          </fieldset>
+          <div class="session-workout__setup-actions">
+            <button type="button" class="hub-btn hub-btn--primary" data-workout-save>Save</button>
+            <button type="button" class="hub-btn hub-btn--ghost" data-workout-upload>Upload</button>
+            <button type="button" class="hub-btn hub-btn--ghost" data-workout-delete>Delete</button>
+          </div>
+          <p class="session-workout__hint" data-workout-status></p>
+        </form>
+      </div>
+    `;
+  }
+
   function liveHudHtml(): string {
     const liveStats = controller?.getStats();
     const regattaText = liveStats?.regattaMessage?.text?.trim() || '';
@@ -1389,6 +1628,7 @@ export function mountApp(root: HTMLElement): void {
             <button type="button" class="session-fs-tab" data-fs-tab="metrics" aria-selected="${fsTab === 'metrics' ? 'true' : 'false'}">Metrics</button>
             <button type="button" class="session-fs-tab" data-fs-tab="speed" aria-selected="${fsTab === 'speed' ? 'true' : 'false'}">Graph</button>
             <button type="button" class="session-fs-tab" data-fs-tab="map" aria-selected="${fsTab === 'map' ? 'true' : 'false'}">Map</button>
+            <button type="button" class="session-fs-tab" data-fs-tab="workout" aria-selected="${fsTab === 'workout' ? 'true' : 'false'}">Workout</button>
             ${
               isDemoMode()
                 ? `<button type="button" class="session-fs-tab" data-nav="history">History</button>
@@ -1444,6 +1684,7 @@ export function mountApp(root: HTMLElement): void {
             ${metricsBlockHtml('overlay')}
           </div>
         </div>
+        ${workoutPanelHtml()}
       </section>
     `;
   }
@@ -1988,6 +2229,7 @@ export function mountApp(root: HTMLElement): void {
     strokeRateAvg.clear();
     clearSessionSpeedBuffer();
     destroySessionMap();
+    resetWorkoutEngine();
     fsTab = 'metrics';
     controller = null;
     recording = false;
@@ -2067,6 +2309,8 @@ export function mountApp(root: HTMLElement): void {
             strokeRateAvg.clear();
             clearSessionSpeedBuffer();
             destroySessionMap();
+            resetWorkoutEngine();
+            setWorkoutFinishedHandler(null);
             fsTab = 'metrics';
             await exitStageFullscreen();
             stopBackgroundSession();
@@ -2114,6 +2358,22 @@ export function mountApp(root: HTMLElement): void {
     recording = true;
     backgroundStatus = 'foreground';
     markRecordingActive(controller.sessionId, s.deviceId, sessionStartedAt);
+    setWorkoutFinishedHandler((result) => {
+      if (isDemoMode() || !controller) return;
+      const boatClass = parseBoatClass(s.boatClass, s.deviceId, s.athleteId);
+      void enqueueTelemetry(controller.sessionId, [
+        {
+          t: Date.now(),
+          derived: {
+            heartbeat: true,
+            workout: {
+              ...result,
+              avgPrognosticPct: workoutAvgPrognostic(boatClass),
+            },
+          },
+        },
+      ]).catch(() => {});
+    });
 
     await startBackgroundSession(s, {
       onFlush: () => controller!.flush(),
@@ -2380,6 +2640,8 @@ export function mountApp(root: HTMLElement): void {
         channelCoursePrev = null;
         channelCourseDeg = null;
         destroySessionMap();
+        resetWorkoutEngine();
+        setWorkoutFinishedHandler(null);
         fsTab = 'metrics';
         await exitStageFullscreen();
         stopBackgroundSession();
@@ -2401,9 +2663,13 @@ export function mountApp(root: HTMLElement): void {
     root.querySelectorAll('[data-fs-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const tab = btn.getAttribute('data-fs-tab') as FsTab | null;
-        if (tab === 'metrics' || tab === 'speed' || tab === 'map') setFsTab(tab);
+        if (tab === 'metrics' || tab === 'speed' || tab === 'map' || tab === 'workout') {
+          setFsTab(tab);
+        }
       });
     });
+
+    bindWorkoutControls();
 
     root.querySelectorAll('[data-action="clear-session"]').forEach((el) => {
       el.addEventListener('click', () => {
@@ -2437,6 +2703,7 @@ export function mountApp(root: HTMLElement): void {
   });
 
   render();
+  void syncWorkoutLibrary();
   if (isDemoMode()) {
     startDemoSession();
     return;

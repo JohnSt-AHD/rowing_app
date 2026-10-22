@@ -16,6 +16,7 @@
     "api/map-positions.js": { "maxDuration": 20 },
     "api/capsize-clear.js": { "maxDuration": 20 },
     "api/capsize-day-log.js": { "maxDuration": 15 },
+    "api/workouts.js": { "maxDuration": 15 },
     "api/geofences.js": { "maxDuration": 30 },
     "api/timing-lines.js": { "maxDuration": 30 },
     "api/messages.js": { "maxDuration": 15 },

@@ -42,6 +42,8 @@ export type DerivedSample = {
   batteryPct?: number;
   /** Inside a dashboard boat-park geofence (economy mode). */
   inBoatPark?: boolean;
+  /** Completed or snapshot CrewSight workout (piece / intervals). */
+  workout?: Record<string, unknown>;
 };
 
 export type TelemetrySample = {

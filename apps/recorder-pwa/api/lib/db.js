@@ -523,6 +523,7 @@ async function ensureOrgsBootstrapped() {
 
   await ensureCapsizeNotifyEmailsTable();
   await ensureCapsizeDayLogTable();
+  await ensureWorkoutLibraryTable();
   await ensureFleetConfigTables();
   // Production DBs skip full initSchema DDL; keep walk-up / hazard columns applied.
   await ensureWalkupSessionColumns();
@@ -830,6 +831,44 @@ async function acknowledgeCapsizeDayLog(orgId, deviceIds, ackedBy, ackSource) {
 
 async function markCapsizeDayLogCleared(orgId, deviceIds, ackedBy, ackSource) {
   return setCapsizeDayLogStatus(orgId, deviceIds, 'cleared', ackedBy, ackSource);
+}
+
+async function ensureWorkoutLibraryTable() {
+  if (!hasDb()) return;
+  const sql = await getSql();
+  if (!sql) return;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_workout_library (
+      org_id INTEGER PRIMARY KEY REFERENCES rnz_orgs(id) ON DELETE CASCADE,
+      payload JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+}
+
+async function listWorkoutLibrary(orgId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  await ensureWorkoutLibraryTable();
+  const rows = await sql`
+    SELECT payload FROM rnz_workout_library WHERE org_id = ${orgId} LIMIT 1
+  `;
+  const payload = rows.rows[0]?.payload;
+  return Array.isArray(payload) ? payload : [];
+}
+
+async function saveWorkoutLibrary(orgId, workouts) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  await ensureWorkoutLibraryTable();
+  const payload = JSON.stringify(Array.isArray(workouts) ? workouts : []);
+  await sql.query(
+    `INSERT INTO rnz_workout_library (org_id, payload, updated_at)
+     VALUES ($1, $2::jsonb, NOW())
+     ON CONFLICT (org_id) DO UPDATE
+     SET payload = EXCLUDED.payload, updated_at = NOW()`,
+    [orgId, payload],
+  );
 }
 
 async function ensureFleetConfigTables() {
@@ -4434,6 +4473,8 @@ module.exports = {
   upsertCapsizeDayLogActive,
   acknowledgeCapsizeDayLog,
   markCapsizeDayLogCleared,
+  listWorkoutLibrary,
+  saveWorkoutLibrary,
   listCapsizeNotifyEmails,
   addCapsizeNotifyEmail,
   removeCapsizeNotifyEmail,
