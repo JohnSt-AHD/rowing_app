@@ -871,6 +871,44 @@ async function saveWorkoutLibrary(orgId, workouts) {
   );
 }
 
+async function ensureWorkoutAssignmentTable() {
+  if (!hasDb()) return;
+  const sql = await getSql();
+  if (!sql) return;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_workout_assignment (
+      org_id INTEGER PRIMARY KEY REFERENCES rnz_orgs(id) ON DELETE CASCADE,
+      payload JSONB,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+}
+
+async function getWorkoutAssignment(orgId) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  await ensureWorkoutAssignmentTable();
+  const rows = await sql`
+    SELECT payload FROM rnz_workout_assignment WHERE org_id = ${orgId} LIMIT 1
+  `;
+  const payload = rows.rows[0]?.payload;
+  return payload && typeof payload === 'object' ? payload : null;
+}
+
+async function saveWorkoutAssignment(orgId, assignment) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  await ensureWorkoutAssignmentTable();
+  const payload = assignment == null ? null : JSON.stringify(assignment);
+  await sql.query(
+    `INSERT INTO rnz_workout_assignment (org_id, payload, updated_at)
+     VALUES ($1, $2::jsonb, NOW())
+     ON CONFLICT (org_id) DO UPDATE
+     SET payload = EXCLUDED.payload, updated_at = NOW()`,
+    [orgId, payload],
+  );
+}
+
 async function ensureFleetConfigTables() {
   if (!hasDb()) return;
   const sql = await getSql();
@@ -4475,6 +4513,8 @@ module.exports = {
   markCapsizeDayLogCleared,
   listWorkoutLibrary,
   saveWorkoutLibrary,
+  getWorkoutAssignment,
+  saveWorkoutAssignment,
   listCapsizeNotifyEmails,
   addCapsizeNotifyEmail,
   removeCapsizeNotifyEmail,

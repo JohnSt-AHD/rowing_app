@@ -256,13 +256,12 @@ body {
   -webkit-text-fill-color: #111111;
   border: 1px solid transparent;
   border-radius: 10px;
-  padding: 0.55rem 0.15rem;
-  font-size: 0.78rem;
+  padding: 0.55rem 0.1rem;
   line-height: 1.15;
   font-weight: 650;
   white-space: nowrap;
   font-family: inherit;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   cursor: pointer;
   min-height: 44px;
   letter-spacing: -0.01em;
@@ -2733,4 +2732,226 @@ button.coach-btn.coach-btn--ghost {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
+}
+
+.coach-panel--workout {
+  max-width: 720px;
+}
+
+.coach-workout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-bottom: 1rem;
+}
+
+.coach-workout__clock {
+  margin: 0;
+  font-size: 0.86rem;
+  color: #3f3f46;
+}
+
+.coach-workout__card {
+  background: #fff;
+  border: 1px solid var(--coach-border, rgba(17, 17, 17, 0.1));
+  border-radius: 12px;
+  padding: 0.75rem 0.85rem;
+}
+
+.coach-workout__h {
+  margin: 0 0 0.55rem;
+  font-size: 0.92rem;
+}
+
+.coach-workout__hint {
+  margin: 0 0 0.45rem;
+  font-size: 0.8rem;
+  color: #4b5563;
+}
+
+.coach-workout__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.4rem 0;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.coach-workout__field input,
+.coach-workout__field select,
+.coach-workout__clock-row input {
+  min-height: 42px;
+  border: 1px solid rgba(17, 17, 17, 0.16);
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  font: inherit;
+}
+
+.coach-workout__fieldset {
+  border: 1px solid rgba(17, 17, 17, 0.1);
+  border-radius: 10px;
+  margin: 0.45rem 0;
+  padding: 0.5rem 0.65rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.85rem;
+}
+
+.coach-workout__fieldset[hidden] {
+  display: none !important;
+}
+
+.coach-workout__fieldset legend {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.coach-workout__actions,
+.coach-workout__select-row,
+.coach-workout__clock-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.coach-workout__clock-row input {
+  flex: 1 1 8rem;
+}
+
+.coach-workout__boats {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.coach-workout__boat {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid rgba(17, 17, 17, 0.08);
+  border-radius: 10px;
+  background: #fafafa;
+}
+
+.coach-workout__boat strong,
+.coach-workout__boat small {
+  display: block;
+}
+
+.coach-workout__boat small {
+  font-weight: 500;
+  color: #4b5563;
+}
+
+.coach-workout__empty {
+  color: #4b5563;
+  font-size: 0.85rem;
+}
+
+.coach-workout__live-meta {
+  margin: 0 0 0.55rem;
+  font-size: 0.82rem;
+  color: #3f3f46;
+}
+
+.coach-workout__live {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.55rem;
+}
+
+.coach-workout__boat-card {
+  border: 1px solid rgba(17, 17, 17, 0.1);
+  border-radius: 12px;
+  padding: 0.6rem 0.7rem;
+  background: #f8fafc;
+}
+
+.coach-workout__boat-card[data-phase='work'] {
+  background: #ecfdf3;
+  border-color: rgba(21, 128, 61, 0.25);
+}
+
+.coach-workout__boat-card[data-phase='rest'] {
+  background: #fff7ed;
+  border-color: rgba(194, 65, 12, 0.22);
+}
+
+.coach-workout__boat-card[data-phase='done'] {
+  background: #eef2ff;
+}
+
+.coach-workout__boat-card[data-phase='countdown'] {
+  background: #eff6ff;
+}
+
+.coach-workout__boat-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.4rem;
+  align-items: baseline;
+}
+
+.coach-workout__phase {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.coach-workout__interval {
+  margin: 0.25rem 0 0.15rem;
+  font-size: 0.78rem;
+  color: #4b5563;
+}
+
+.coach-workout__remain {
+  margin: 0.15rem 0 0.45rem;
+}
+
+.coach-workout__remain span {
+  display: block;
+  font-size: 1.45rem;
+  font-weight: 750;
+  line-height: 1.1;
+}
+
+.coach-workout__remain small {
+  color: #4b5563;
+}
+
+.coach-workout__boat-card dl {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.3rem;
+  margin: 0;
+}
+
+.coach-workout__boat-card dt {
+  font-size: 0.68rem;
+  color: #6b7280;
+}
+
+.coach-workout__boat-card dd {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.coach-workout__stale {
+  color: #b45309;
+  font-style: normal;
+  font-weight: 650;
+}
+
+@media (min-width: 960px) {
+  .coach-panel--workout {
+    max-width: none;
+  }
 }

@@ -5,6 +5,7 @@ import { ClubAdminPanel } from './club-admin-panel';
 import { HistoryPanel } from './history-panel';
 import { LiveDataPanel } from './live-data-panel';
 import { LogbookPanel } from './logbook-panel';
+import { WorkoutPanel, type WorkoutBoat } from './workout-panel';
 import {
   clearLiveSpeedBuffers,
   liveDeviceColor,
@@ -83,7 +84,7 @@ import {
   onQuietHoursChange,
 } from '../lib/quiet-hours';
 
-type Tab = 'dashboard' | 'map' | 'live' | 'logbook' | 'history' | 'settings';
+type Tab = 'dashboard' | 'map' | 'live' | 'workout' | 'logbook' | 'history' | 'settings';
 
 type CrewTicketRow = FleetDevice & {
   onWater: boolean;
@@ -175,6 +176,7 @@ export function mountApp(root: HTMLElement): void {
   let historyPanel: HistoryPanel | null = null;
   let liveDataPanel: LiveDataPanel | null = null;
   let logbookPanel: LogbookPanel | null = null;
+  let workoutPanel: WorkoutPanel | null = null;
   /** Capsize alarm: beep + voice + beep, every 5s until cleared. */
   const CAPSIZE_ALARM_EVERY_MS = 5000;
   const CAPSIZE_ALARM_BEEP_MS = 400;
@@ -196,7 +198,13 @@ export function mountApp(root: HTMLElement): void {
   function shouldPollLive(): boolean {
     if (isQuietHours()) return false;
     if (!settings.apiBaseUrl) return false;
-    return monitoring || tab === 'live' || tab === 'dashboard' || tab === 'map';
+    return (
+      monitoring ||
+      tab === 'live' ||
+      tab === 'dashboard' ||
+      tab === 'map' ||
+      tab === 'workout'
+    );
   }
 
   function syncPollTimer() {
@@ -622,6 +630,7 @@ export function mountApp(root: HTMLElement): void {
       updateMapPanelExtras();
       updateMap();
       liveDataPanel?.processPositions(pos);
+      workoutPanel?.setBoats(workoutBoats());
 
       if (errors.length && !pos.length && !dev.length) {
         const joined = errors.join(' · ');
@@ -1388,7 +1397,15 @@ export function mountApp(root: HTMLElement): void {
       setStatus(QUIET_HOURS_MESSAGE);
       return;
     }
-    if (!monitoring && tab !== 'live' && tab !== 'dashboard' && tab !== 'map') return;
+    if (
+      !monitoring &&
+      tab !== 'live' &&
+      tab !== 'dashboard' &&
+      tab !== 'map' &&
+      tab !== 'workout'
+    ) {
+      return;
+    }
     settings = loadSettings();
     if (IS_NATIVE && settings.apiBaseUrl && monitoring) {
       await startNativeMonitoring(settings.apiBaseUrl, settings.ingestToken);
@@ -1449,6 +1466,33 @@ export function mountApp(root: HTMLElement): void {
       );
     }
     return liveDataPanel;
+  }
+
+  function workoutBoats(): WorkoutBoat[] {
+    return devices
+      .filter((d) => !isCoachDevice(d))
+      .map((d) => ({
+        deviceId: d.deviceId,
+        name: String(d.name || d.deviceId),
+        athleteId: d.athleteId,
+        coach: d.coach,
+        boatClass: d.boatClass,
+        onWater: Boolean(
+          d.online ||
+            (typeof d.lastSeenAgoSec === 'number' && d.lastSeenAgoSec <= ONLINE_SEC) ||
+            positions.some((p) => p.deviceId === d.deviceId),
+        ),
+      }));
+  }
+
+  function ensureWorkoutPanel(): WorkoutPanel {
+    if (!workoutPanel) {
+      workoutPanel = new WorkoutPanel(
+        () => loadSettings(),
+        (msg, err) => setStatus(msg, err),
+      );
+    }
+    return workoutPanel;
   }
 
   function ensureLogbookPanel(): LogbookPanel {
@@ -1652,6 +1696,9 @@ export function mountApp(root: HTMLElement): void {
           <p class="poll-line" data-poll-status hidden></p>
           <div class="live-data-panel-root" data-live-root></div>
         </section>
+        <section class="coach-panel coach-panel--workout" data-panel="workout" ${tab === 'workout' ? '' : 'hidden'}>
+          <div data-workout-root></div>
+        </section>
         <section class="coach-panel" data-panel="logbook" ${tab === 'logbook' ? '' : 'hidden'}>
           <div data-logbook-root></div>
         </section>
@@ -1702,6 +1749,7 @@ export function mountApp(root: HTMLElement): void {
           <button type="button" class="coach-tab coach-tab--home ${tab === 'dashboard' ? 'active' : ''}" data-tab="dashboard">Home</button>
           <button type="button" class="coach-tab ${tab === 'map' ? 'active' : ''}" data-tab="map">Map</button>
           <button type="button" class="coach-tab ${tab === 'live' ? 'active' : ''}" data-tab="live">Live data</button>
+          <button type="button" class="coach-tab ${tab === 'workout' ? 'active' : ''}" data-tab="workout">Workout</button>
           <button type="button" class="coach-tab ${tab === 'logbook' ? 'active' : ''}" data-tab="logbook">Logbook</button>
           <button type="button" class="coach-tab ${tab === 'history' ? 'active' : ''}" data-tab="history">History</button>
         </nav>
@@ -1763,6 +1811,7 @@ export function mountApp(root: HTMLElement): void {
         const next = (btn as HTMLElement).dataset.tab as Tab;
         historyPanel?.prepareForRender(next);
         liveDataPanel?.prepareForRender(next);
+        workoutPanel?.prepareForRender(next);
         logbookPanel?.prepareForRender(next);
         tab = next;
         render();
@@ -1776,8 +1825,13 @@ export function mountApp(root: HTMLElement): void {
           updateDashboardPanel();
           void pollLive();
         }
-        if (tab === 'live' || tab === 'map') {
+        if (tab === 'live' || tab === 'map' || tab === 'workout') {
           void pollLive();
+        }
+        if (tab === 'workout') {
+          const panel = ensureWorkoutPanel();
+          panel.setBoats(workoutBoats());
+          panel.onTabShown();
         }
         if (tab === 'logbook') {
           void ensureLogbookPanel().onTabShown();
@@ -1814,6 +1868,16 @@ export function mountApp(root: HTMLElement): void {
       if (historyRoot) {
         panel.mount(historyRoot);
         panel.onHistoryTabShown();
+      }
+    }
+
+    if (tab === 'workout') {
+      const woRoot = root.querySelector('[data-workout-root]') as HTMLElement | null;
+      if (woRoot) {
+        const panel = ensureWorkoutPanel();
+        panel.mount(woRoot);
+        panel.setBoats(workoutBoats());
+        panel.onTabShown();
       }
     }
 

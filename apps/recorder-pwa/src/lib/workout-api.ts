@@ -4,6 +4,8 @@ import { loadSettings } from './settings';
 import {
   mergeRemoteWorkouts,
   type SavedWorkout,
+  type WorkoutAssignment,
+  type WorkoutProgress,
   saveWorkoutLibrary,
 } from './workouts';
 
@@ -51,4 +53,24 @@ export async function syncWorkoutLibrary(): Promise<SavedWorkout[]> {
     /* keep local */
   }
   return [];
+}
+
+export async function fetchCoachAssignment(deviceId: string): Promise<WorkoutAssignment | null> {
+  if (isDemoMode() || !deviceId) return null;
+  const res = await fetch(
+    `${apiBase()}/api/workouts?deviceId=${encodeURIComponent(deviceId)}`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) return null;
+  const data = (await res.json()) as { assignment?: WorkoutAssignment | null };
+  return data.assignment || null;
+}
+
+export async function reportWorkoutProgress(progress: WorkoutProgress): Promise<void> {
+  if (isDemoMode() || !progress.deviceId) return;
+  await fetch(`${apiBase()}/api/workouts`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'progress', ...progress }),
+  }).catch(() => {});
 }

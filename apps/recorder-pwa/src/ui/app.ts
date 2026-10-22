@@ -98,6 +98,11 @@ import {
 } from './session-display';
 import { StrokePeriodSpeedAvg } from '../lib/stroke-speed-smooth';
 import { HistoryPanel } from './history-panel';
+import {
+  maybeReportWorkoutProgress,
+  pollCoachWorkout,
+  resetCoachWorkoutPoll,
+} from '../lib/coach-workout';
 import { syncWorkoutLibrary, uploadWorkoutLibrary } from '../lib/workout-api';
 import {
   armWorkout,
@@ -1039,6 +1044,14 @@ export function mountApp(root: HTMLElement): void {
       armBtn.hidden = wo.phase !== 'idle' && wo.phase !== 'done';
       armBtn.textContent = wo.phase === 'done' ? 'Start again' : 'Start piece';
     }
+    maybeReportWorkoutProgress(wo);
+    void pollCoachWorkout(stats?.distanceM ?? 0).then((asg) => {
+      if (asg) {
+        pushLog(
+          `Coach ${asg.coachName || 'Coach'} sent ${asg.workout.name} · start ${asg.startClock || 'now'} NZ`,
+        );
+      }
+    });
 
     const paceProgPct =
       avgMps != null && boat ? prognosticPercent(avgMps, boat) : null;
@@ -2230,6 +2243,7 @@ export function mountApp(root: HTMLElement): void {
     clearSessionSpeedBuffer();
     destroySessionMap();
     resetWorkoutEngine();
+    resetCoachWorkoutPoll();
     fsTab = 'metrics';
     controller = null;
     recording = false;
@@ -2310,6 +2324,7 @@ export function mountApp(root: HTMLElement): void {
             clearSessionSpeedBuffer();
             destroySessionMap();
             resetWorkoutEngine();
+            resetCoachWorkoutPoll();
             setWorkoutFinishedHandler(null);
             fsTab = 'metrics';
             await exitStageFullscreen();
@@ -2641,6 +2656,7 @@ export function mountApp(root: HTMLElement): void {
         channelCourseDeg = null;
         destroySessionMap();
         resetWorkoutEngine();
+        resetCoachWorkoutPoll();
         setWorkoutFinishedHandler(null);
         fsTab = 'metrics';
         await exitStageFullscreen();
@@ -2704,6 +2720,17 @@ export function mountApp(root: HTMLElement): void {
 
   render();
   void syncWorkoutLibrary();
+  const pollHubAssignment = () => {
+    if (recording) return;
+    void pollCoachWorkout(0).then((asg) => {
+      if (!asg) return;
+      pushLog(
+        `Coach ${asg.coachName || 'Coach'} sent ${asg.workout.name} · start ${asg.startClock || 'now'} NZ`,
+      );
+    });
+  };
+  pollHubAssignment();
+  setInterval(pollHubAssignment, 3000);
   if (isDemoMode()) {
     startDemoSession();
     return;

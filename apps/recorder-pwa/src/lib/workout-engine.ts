@@ -161,8 +161,7 @@ function completeWorkout(s: EngineState, now: number): void {
   onFinished?.(result);
 }
 
-export function armWorkout(now: number, distanceM: number): void {
-  const s = ensureState();
+function resetPiece(s: EngineState): void {
   s.setupOpen = false;
   s.intervalIndex = 0;
   s.speedSum = 0;
@@ -171,9 +170,30 @@ export function armWorkout(now: number, distanceM: number): void {
   s.workM = 0;
   s.lastResult = null;
   s.moveSince = null;
+}
+
+export function armWorkout(now: number, distanceM: number): void {
+  const s = ensureState();
+  resetPiece(s);
   if (s.workout.startMode === 'countdown' && s.workout.countdownSec > 0) {
     s.phase = 'countdown';
     s.countdownEndsAt = now + s.workout.countdownSec * 1000;
+    return;
+  }
+  if (s.workout.startMode === 'moving') {
+    s.phase = 'waiting';
+    return;
+  }
+  beginWork(s, now, distanceM);
+}
+
+/** Start every boat at the same wall-clock instant (device time of day). */
+export function armWorkoutAt(startAtMs: number, now: number, distanceM: number): void {
+  const s = ensureState();
+  resetPiece(s);
+  if (Number.isFinite(startAtMs) && startAtMs - now > 400) {
+    s.phase = 'countdown';
+    s.countdownEndsAt = startAtMs;
     return;
   }
   if (s.workout.startMode === 'moving') {

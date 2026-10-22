@@ -1,7 +1,7 @@
 /** Saved CrewSight pieces / intervals (this phone + optional org upload). */
 
 export type WorkoutUnit = 'time' | 'distance';
-export type WorkoutStartMode = 'countdown' | 'moving';
+export type WorkoutStartMode = 'countdown' | 'moving' | 'clock';
 export type WorkoutKind = 'single' | 'interval';
 
 export type SavedWorkout = {
@@ -97,7 +97,8 @@ function normalizeWorkout(raw: Partial<SavedWorkout> | null | undefined): SavedW
   const kind: WorkoutKind = raw.kind === 'interval' ? 'interval' : 'single';
   const unit: WorkoutUnit = raw.unit === 'distance' ? 'distance' : 'time';
   const workUnit: WorkoutUnit = raw.workUnit === 'distance' ? 'distance' : 'time';
-  const startMode: WorkoutStartMode = raw.startMode === 'moving' ? 'moving' : 'countdown';
+  const startMode: WorkoutStartMode =
+    raw.startMode === 'moving' ? 'moving' : raw.startMode === 'clock' ? 'clock' : 'countdown';
   const target = Number(raw.target);
   const workValue = Number(raw.workValue);
   const restSec = Number(raw.restSec);
@@ -225,3 +226,91 @@ export function workoutSummary(w: SavedWorkout): string {
   }
   return w.unit === 'distance' ? formatRemainDistance(w.target) : formatClock(w.target);
 }
+
+const NZ_TZ = 'Pacific/Auckland';
+
+function nzParts(ms: number): Record<string, string> {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: NZ_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const out: Record<string, string> = {};
+  for (const p of fmt.formatToParts(new Date(ms))) {
+    if (p.type !== 'literal') out[p.type] = p.value === '24' ? '00' : p.value;
+  }
+  return out;
+}
+
+function pad2(n: number): string {
+  return String(Math.max(0, Math.round(n))).padStart(2, '0');
+}
+
+/** Current NZ wall-clock HH:MM:SS. */
+export function formatNzClock(ms = Date.now()): string {
+  const p = nzParts(ms);
+  return `${p.hour}:${p.minute}:${p.second}`;
+}
+
+/** Default send time: two minutes from now, NZ clock. */
+export function defaultStartClock(ms = Date.now()): string {
+  return formatNzClock(ms + 120_000);
+}
+
+/**
+ * Convert today's NZ HH:MM[:SS] into a UTC epoch. If that instant is already
+ * more than 15s in the past, roll to the next NZ day.
+ */
+export function nzClockToUtcMs(clock: string, now = Date.now()): number {
+  const bits = String(clock || '')
+    .trim()
+    .split(':')
+    .map((x) => Number(x));
+  const hh = Number.isFinite(bits[0]) ? bits[0] : 0;
+  const mm = Number.isFinite(bits[1]) ? bits[1] : 0;
+  const ss = Number.isFinite(bits[2]) ? bits[2] : 0;
+  const today = nzParts(now);
+  const want = `${today.year}-${today.month}-${today.day}T${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
+  let t = now;
+  for (let i = 0; i < 10; i++) {
+    const p = nzParts(t);
+    const got = `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}`;
+    const delta = Date.parse(`${want}Z`) - Date.parse(`${got}Z`);
+    t += delta;
+    if (Math.abs(delta) < 400) break;
+  }
+  if (t < now - 15_000) t += 24 * 60 * 60 * 1000;
+  return t;
+}
+
+export type WorkoutProgress = {
+  deviceId: string;
+  name?: string;
+  phase: string;
+  remainLabel: string;
+  remainText: string;
+  intervalText: string;
+  liveSplit: string;
+  liveProg: string;
+  avgSplit: string;
+  avgProg: string;
+  hrText: string;
+  updatedAt: number;
+};
+
+export type WorkoutAssignment = {
+  id: string;
+  workout: SavedWorkout;
+  deviceIds: string[];
+  startAtMs: number;
+  startClock: string;
+  tz: string;
+  coachName: string;
+  sentAt: number;
+  progress: Record<string, WorkoutProgress>;
+};
