@@ -35,6 +35,7 @@ import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
+import com.google.android.gms.location.CurrentLocationRequest;
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
@@ -122,8 +123,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long GPS_MAX_SCHEDULED_CACHE_AGE_MS = 30L * 60L * 1000L;
     /** Use wall clock when Android fix time lags more than this (KRI model). */
     private static final long GPS_STALE_FIX_CLOCK_MS = 8_000L;
-    /** Fused may deliver slightly aged fixes to refresh cache while stationary. */
-    private static final long FUSED_MAX_UPDATE_AGE_MS = 5L * 60L * 1000L;
+    /** Reject fused last-known older than this — 5 min made the live pin trail Maps. */
+    private static final long FUSED_MAX_UPDATE_AGE_MS = 10_000L;
     /** Ignore duplicate coords within this window (repeat fused callbacks). */
     private static final long GPS_COORD_DEDUPE_MS = 500L;
     private static final String PENDING_BATCHES_KEY = "pendingIngestBatches";
@@ -307,6 +308,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         final float hdg;
         final float alt;
         final long t;
+        final long rawFixMs;
 
         GpsWindowFix(Location loc, long ingestT) {
             lat = loc.getLatitude();
@@ -316,6 +318,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             hdg = loc.hasBearing() && loc.getBearing() >= 0f ? loc.getBearing() : -1f;
             alt = loc.hasAltitude() ? (float) loc.getAltitude() : Float.NaN;
             t = ingestT;
+            long raw = loc.getTime();
+            rawFixMs = raw > 0L ? raw : ingestT;
         }
     }
 
@@ -552,6 +556,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void cacheGpsLocation(Location location) {
         if (!enableGps || location == null) return;
+        long rawFix = location.getTime();
+        if (latestGpsLocation != null && latestGpsRawFixClockMs > 0L) {
+            if (rawFix <= 0L || rawFix < latestGpsRawFixClockMs) {
+                return;
+            }
+        }
         latestGpsLocation = location;
         latestGpsCachedWallMs = System.currentTimeMillis();
         String provider = location.getProvider();
@@ -561,7 +571,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 && !"cached".equals(provider)) {
             latestGpsProvider = provider;
         }
-        long rawFix = location.getTime();
         long now = System.currentTimeMillis();
         if (rawFix > 0L && rawFix <= now + 5_000L) {
             latestGpsRawFixClockMs = rawFix;
@@ -571,7 +580,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void deliverLocation(Location location) {
         if (!enableGps || location == null) return;
-        lastFusedDeliveryWallMs = System.currentTimeMillis();
+        if (isGpsFixRecentForMap(location)) {
+            lastFusedDeliveryWallMs = System.currentTimeMillis();
+        }
         savePulseDiagnostics();
         cacheGpsLocation(location);
         if (standbyMode) {
@@ -667,13 +678,24 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void addFixToGpsWindow(Location location) {
         if (!enableGps || location == null || !isGpsFixUsable(location)) return;
+        if (!isGpsFixRecentForMap(location)) return;
         long now = System.currentTimeMillis();
         if (now - lastWindowCollectWallMs < GPS_COLLECT_INTERVAL_MS) return;
         lastWindowCollectWallMs = now;
+        pruneStaleGpsWindow(now);
         if (gpsWindowBuffer.size() >= GPS_WINDOW_MAX) {
             gpsWindowBuffer.remove(0);
         }
         gpsWindowBuffer.add(new GpsWindowFix(location, ingestTimeMs(location)));
+    }
+
+    private void pruneStaleGpsWindow(long now) {
+        for (int i = gpsWindowBuffer.size() - 1; i >= 0; i--) {
+            GpsWindowFix f = gpsWindowBuffer.get(i);
+            if (f.rawFixMs > 0L && now - f.rawFixMs > FUSED_MAX_UPDATE_AGE_MS) {
+                gpsWindowBuffer.remove(i);
+            }
+        }
     }
 
     private static float fixWeight(float accM) {
@@ -694,6 +716,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private Location weightedAverageWindowLocation() {
+        pruneStaleGpsWindow(System.currentTimeMillis());
         if (gpsWindowBuffer.isEmpty()) return null;
         if (gpsWindowBuffer.size() == 1) {
             return windowFixToLocation(gpsWindowBuffer.get(0));
@@ -831,13 +854,44 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** Raw Android fix clock — used when seeding fused/legacy cache. */
     private static boolean isGpsFixFresh(Location location) {
         if (location == null) return false;
-        return System.currentTimeMillis() - location.getTime() <= GPS_MAX_UPLOAD_FIX_AGE_MS;
+        return rawFixAgeMs(location) <= GPS_MAX_UPLOAD_FIX_AGE_MS;
+    }
+
+    private static long rawFixAgeMs(Location location) {
+        if (location == null) return Long.MAX_VALUE;
+        long fixTime = location.getTime();
+        if (fixTime <= 0L) return Long.MAX_VALUE;
+        long now = System.currentTimeMillis();
+        if (fixTime > now + 5_000L) return 0L;
+        return now - fixTime;
+    }
+
+    /** Live map window — do not average a last-known lock that Maps has already left. */
+    private static boolean isGpsFixRecentForMap(Location location) {
+        return isGpsFixUsable(location) && rawFixAgeMs(location) <= FUSED_MAX_UPDATE_AGE_MS;
+    }
+
+    private static Location pickNewestLocation(LocationResult result) {
+        if (result == null) return null;
+        Location best = null;
+        long bestRt = Long.MIN_VALUE;
+        for (Location loc : result.getLocations()) {
+            if (loc == null) continue;
+            long rt = loc.getElapsedRealtimeNanos();
+            if (rt <= 0L) {
+                long t = loc.getTime();
+                rt = t > 0L ? t * 1_000_000L : Long.MIN_VALUE;
+            }
+            if (best == null || rt >= bestRt) {
+                best = loc;
+                bestRt = rt;
+            }
+        }
+        return best != null ? best : result.getLastLocation();
     }
 
     private static Location copyLocationForUpload(Location source) {
-        Location out = new Location(source);
-        out.setTime(System.currentTimeMillis());
-        return out;
+        return new Location(source);
     }
 
     /** Timer uploads: fresh fix, or recent cached coords (indoor / stationary). */
@@ -854,13 +908,17 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return Math.abs(a.getLatitude() - lat) < 1e-6 && Math.abs(a.getLongitude() - lon) < 1e-6;
     }
 
-    /** Timer-driven upload — upload first from window/cache, then refresh fix (KRI). */
+    /** Timer-driven upload from the live fused stream. Poll only if callbacks stall. */
     private void tickScheduledGpsUpload() {
         if (!enableGps) return;
         uploadWindowAverageGps(true);
+        long now = System.currentTimeMillis();
+        if (lastFusedDeliveryWallMs > 0L && now - lastFusedDeliveryWallMs <= FUSED_MAX_UPDATE_AGE_MS) {
+            return;
+        }
         requestFreshGpsLocation(
                 loc -> {
-                    if (loc != null) {
+                    if (loc != null && isGpsFixRecentForMap(loc)) {
                         cacheGpsLocation(loc);
                         addFixToGpsWindow(loc);
                     }
@@ -898,8 +956,14 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                     finish.accept(null);
                 };
         mainHandler.postDelayed(timeout, 4_000L);
+        CurrentLocationRequest request =
+                new CurrentLocationRequest.Builder()
+                        .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                        .setMaxUpdateAgeMillis(FUSED_MAX_UPDATE_AGE_MS)
+                        .setDurationMillis(4_000L)
+                        .build();
         fusedClient
-                .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                .getCurrentLocation(request, null)
                 .addOnSuccessListener(
                         loc -> {
                             mainHandler.removeCallbacks(timeout);
@@ -2611,8 +2675,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 new LocationCallback() {
                     @Override
                     public void onLocationResult(@NonNull LocationResult result) {
-                        Location loc = result.getLastLocation();
-                        if (loc != null) deliverLocation(loc);
+                        Location loc = pickNewestLocation(result);
+                        if (loc == null) return;
+                        if (standbyMode || isGpsFixRecentForMap(loc)) {
+                            deliverLocation(loc);
+                        }
                     }
                 };
         fusedClient
@@ -2628,10 +2695,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .getLastLocation()
                 .addOnSuccessListener(
                         loc -> {
-                            if (loc != null && isGpsFixFresh(loc)) {
+                            if (loc != null && isGpsFixRecentForMap(loc)) {
                                 deliverLocation(loc);
-                            } else if (loc != null) {
-                                cacheGpsLocation(loc);
                             }
                         });
     }
