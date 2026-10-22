@@ -13,6 +13,7 @@ const CAPSIZE_REARM_COOLDOWN_MS = 60_000;
 const { analyzeMotionWindow, MIN_SPM, MAX_SPM } = require('./motion-analysis');
 const { resolveOrg: resolveOrgFromRequest } = require('./org-auth');
 const { findSuppressRecordingAt } = require('./geofence');
+const capsizeDayLog = require('./capsize-day-log');
 
 /** Last known GPS per org:device — used to suppress motion/HR while parked. */
 const lastGpsByDevice = globalThis.__rnzLastGpsByDevice ?? new Map();
@@ -240,6 +241,11 @@ function applyCapsizeAlertClears(orgId, clearedIds) {
     const uid = String(id);
     clearStickyCapsizeAlert(orgId, uid);
     setCapsizeClear(orgDeviceKey(orgId, uid));
+  }
+  if (clearedIds?.length) {
+    void capsizeDayLog
+      .markCleared(orgId, clearedIds.map((id) => String(id)), 'Cleared automatically', 'remote')
+      .catch((err) => console.error('[ingest-store] capsize day-log clear failed:', err));
   }
 }
 
@@ -1641,26 +1647,40 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
 
   if (maxCapsizeT != null) {
     const newlyRaised = raiseStickyCapsizeAlert(orgId, deviceId, maxCapsizeT);
+    let lat = null;
+    let lon = null;
+    for (let i = clean.samples.length - 1; i >= 0; i--) {
+      const s = clean.samples[i];
+      if (!sampleHasCapsize(s)) continue;
+      const fix = gpsFromSample(s);
+      if (fix) {
+        lat = fix.lat;
+        lon = fix.lon;
+        break;
+      }
+    }
+    if (lat == null || lon == null) {
+      const cached = lastGpsByDevice.get(scopedDevice);
+      if (cached && cached.lat != null && cached.lon != null) {
+        lat = cached.lat;
+        lon = cached.lon;
+      }
+    }
+    const boatName = String(
+      boatMeta?.boatName || boatMeta?.name || athleteId || deviceId || '',
+    ).trim();
+    try {
+      await capsizeDayLog.upsertActive(orgId, {
+        deviceId: String(deviceId),
+        name: boatName || String(deviceId),
+        lat,
+        lon,
+        startedAt: maxCapsizeT,
+      });
+    } catch (err) {
+      console.error('[ingest-store] capsize day-log upsert failed:', err);
+    }
     if (newlyRaised) {
-      let lat = null;
-      let lon = null;
-      for (let i = clean.samples.length - 1; i >= 0; i--) {
-        const s = clean.samples[i];
-        if (!sampleHasCapsize(s)) continue;
-        const fix = gpsFromSample(s);
-        if (fix) {
-          lat = fix.lat;
-          lon = fix.lon;
-          break;
-        }
-      }
-      if (lat == null || lon == null) {
-        const cached = lastGpsByDevice.get(scopedDevice);
-        if (cached && cached.lat != null && cached.lon != null) {
-          lat = cached.lat;
-          lon = cached.lon;
-        }
-      }
       try {
         const { notifyCapsizeRaised } = require('./capsize-notify');
         void notifyCapsizeRaised({
@@ -2907,7 +2927,7 @@ async function listCapsizeAlertDeviceIds(orgId, deviceId) {
  * Dismiss capsize alert on the monitor (per device or all currently alerting).
  * By default notifies each cleared device with the help-on-the-way crew message first.
  * @param {string} [deviceId]
- * @param {{ notifyHelp?: boolean }} [options]
+ * @param {{ notifyHelp?: boolean, ackedBy?: string, ackSource?: string }} [options]
  */
 async function clearCapsizeAlert(orgId, deviceId, options = {}) {
   const notifyHelp = options?.notifyHelp !== false;
@@ -2925,6 +2945,18 @@ async function clearCapsizeAlert(orgId, deviceId, options = {}) {
         console.error('[ingest-store] Help-on-way message failed for', id, err);
       }
     }
+  }
+
+  const ackIds = deviceId ? [String(deviceId)] : toClear;
+  try {
+    await capsizeDayLog.acknowledge(
+      orgId,
+      ackIds.length ? ackIds : null,
+      options?.ackedBy,
+      options?.ackSource || 'manager',
+    );
+  } catch (err) {
+    console.error('[ingest-store] capsize day-log ack failed:', err);
   }
 
   if (deviceId) {

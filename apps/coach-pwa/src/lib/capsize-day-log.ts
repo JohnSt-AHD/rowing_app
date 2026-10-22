@@ -134,6 +134,19 @@ export function replaceCapsizeDayLogForDemo(events: CapsizeLogEntry[]): void {
   saveStore({ day: nzDayKey(), events });
 }
 
+export function replaceCapsizeDayLogFromServer(events: CapsizeLogEntry[]): void {
+  if (!Array.isArray(events)) return;
+  const today = nzDayKey();
+  const local = loadStore();
+  const serverIds = new Set(events.map((e) => e.id));
+  const serverDevices = new Set(events.map((e) => e.deviceId));
+  const keepLocal = local.events.filter((e) => {
+    if (serverIds.has(e.id) || serverDevices.has(e.deviceId)) return false;
+    return e.status === 'active' && Date.now() - e.startedAt < 30_000;
+  });
+  saveStore({ day: today, events: [...events, ...keepLocal] });
+}
+
 export function formatNzTime(ms: number): string {
   return new Intl.DateTimeFormat('en-NZ', {
     timeZone: 'Pacific/Auckland',
@@ -142,4 +155,20 @@ export function formatNzTime(ms: number): string {
     second: '2-digit',
     hour12: false,
   }).format(new Date(ms));
+}
+
+export function formatCapsizeAckLine(e: CapsizeLogEntry): string {
+  if (e.status === 'acknowledged') {
+    const when = e.ackedAt ? formatNzTime(e.ackedAt) : '';
+    const who = e.ackedBy || (e.ackSource === 'rowsafe' ? 'RowSafe' : 'CrewSight Manager');
+    const via =
+      e.ackSource === 'rowsafe' ? ' (RowSafe)' : e.ackSource === 'manager' ? ' (Manager)' : '';
+    return `Acknowledged ${when} by ${who}${via}`.replace(/\s+/g, ' ').trim();
+  }
+  if (e.status === 'cleared') {
+    return `Cleared ${e.ackedAt ? formatNzTime(e.ackedAt) : ''} · ${e.ackedBy || 'RowSafe or another Manager'}`
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  return 'Active — not acknowledged';
 }

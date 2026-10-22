@@ -522,6 +522,7 @@ async function ensureOrgsBootstrapped() {
   }
 
   await ensureCapsizeNotifyEmailsTable();
+  await ensureCapsizeDayLogTable();
   await ensureFleetConfigTables();
   // Production DBs skip full initSchema DDL; keep walk-up / hazard columns applied.
   await ensureWalkupSessionColumns();
@@ -628,6 +629,207 @@ async function ensureCapsizeNotifyEmailsTable() {
     CREATE INDEX IF NOT EXISTS idx_rnz_capsize_notify_emails_org
       ON rnz_capsize_notify_emails (org_id)
   `;
+}
+
+async function ensureCapsizeDayLogTable() {
+  if (!hasDb()) return;
+  const sql = await getSql();
+  if (!sql) return;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rnz_capsize_day_log (
+      id TEXT PRIMARY KEY,
+      org_id INTEGER NOT NULL REFERENCES rnz_orgs(id) ON DELETE CASCADE,
+      day_key TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      name TEXT,
+      lat DOUBLE PRECISION,
+      lon DOUBLE PRECISION,
+      started_at TIMESTAMPTZ NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      acked_at TIMESTAMPTZ,
+      acked_by TEXT,
+      ack_source TEXT
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_rnz_capsize_day_log_org_day
+      ON rnz_capsize_day_log (org_id, day_key, started_at DESC)
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_rnz_capsize_day_log_active
+      ON rnz_capsize_day_log (org_id, day_key, device_id)
+      WHERE status = 'active'
+  `;
+}
+
+function mapCapsizeDayLogRow(row) {
+  if (!row) return null;
+  const startedAt = row.started_at ? new Date(row.started_at).getTime() : null;
+  const ackedAt = row.acked_at ? new Date(row.acked_at).getTime() : null;
+  return {
+    id: String(row.id),
+    deviceId: String(row.device_id),
+    name: String(row.name || row.device_id),
+    lat: row.lat != null && Number.isFinite(Number(row.lat)) ? Number(row.lat) : null,
+    lon: row.lon != null && Number.isFinite(Number(row.lon)) ? Number(row.lon) : null,
+    startedAt: Number.isFinite(startedAt) ? startedAt : Date.now(),
+    status: String(row.status || 'active'),
+    ackedAt: Number.isFinite(ackedAt) ? ackedAt : undefined,
+    ackedBy: row.acked_by ? String(row.acked_by) : undefined,
+    ackSource: row.ack_source ? String(row.ack_source) : undefined,
+  };
+}
+
+async function listCapsizeDayLog(orgId, dayKey) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  await ensureCapsizeDayLogTable();
+  const rows = await sql`
+    SELECT id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+    FROM rnz_capsize_day_log
+    WHERE org_id = ${orgId} AND day_key = ${dayKey}
+    ORDER BY started_at DESC
+  `;
+  return rows.rows.map(mapCapsizeDayLogRow);
+}
+
+async function upsertCapsizeDayLogActive(orgId, input) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  await ensureCapsizeDayLogTable();
+  const deviceId = String(input.deviceId || '').trim();
+  if (!deviceId) return null;
+  const startedAtMs =
+    input.startedAt != null && Number.isFinite(Number(input.startedAt))
+      ? Number(input.startedAt)
+      : Date.now();
+  const dayKey = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Pacific/Auckland',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(startedAtMs));
+  const name = String(input.name || deviceId).trim() || deviceId;
+  const lat = input.lat != null && Number.isFinite(Number(input.lat)) ? Number(input.lat) : null;
+  const lon = input.lon != null && Number.isFinite(Number(input.lon)) ? Number(input.lon) : null;
+
+  const recent = await sql`
+    SELECT id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+    FROM rnz_capsize_day_log
+    WHERE org_id = ${orgId}
+      AND day_key = ${dayKey}
+      AND device_id = ${deviceId}
+      AND status <> 'active'
+      AND acked_at IS NOT NULL
+      AND acked_at > NOW() - INTERVAL '60 seconds'
+    ORDER BY acked_at DESC
+    LIMIT 1
+  `;
+  if (recent.rows[0]) return mapCapsizeDayLogRow(recent.rows[0]);
+
+  const updated = await sql`
+    UPDATE rnz_capsize_day_log
+    SET
+      name = COALESCE(${name}, name),
+      lat = COALESCE(${lat}, lat),
+      lon = COALESCE(${lon}, lon)
+    WHERE org_id = ${orgId}
+      AND day_key = ${dayKey}
+      AND device_id = ${deviceId}
+      AND status = 'active'
+    RETURNING id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+  `;
+  if (updated.rows[0]) return mapCapsizeDayLogRow(updated.rows[0]);
+
+  const id = `${dayKey}:${deviceId}:${startedAtMs}`;
+  try {
+    const inserted = await sql`
+      INSERT INTO rnz_capsize_day_log (
+        id, org_id, day_key, device_id, name, lat, lon, started_at, status
+      )
+      VALUES (
+        ${id},
+        ${orgId},
+        ${dayKey},
+        ${deviceId},
+        ${name},
+        ${lat},
+        ${lon},
+        to_timestamp(${startedAtMs} / 1000.0),
+        'active'
+      )
+      RETURNING id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+    `;
+    return mapCapsizeDayLogRow(inserted.rows[0]);
+  } catch (err) {
+    const existing = await sql`
+      SELECT id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+      FROM rnz_capsize_day_log
+      WHERE org_id = ${orgId}
+        AND day_key = ${dayKey}
+        AND device_id = ${deviceId}
+        AND status = 'active'
+      ORDER BY started_at DESC
+      LIMIT 1
+    `;
+    if (existing.rows[0]) return mapCapsizeDayLogRow(existing.rows[0]);
+    throw err;
+  }
+}
+
+async function setCapsizeDayLogStatus(orgId, deviceIds, status, ackedBy, ackSource) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  await ensureCapsizeDayLogTable();
+  const dayKey = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Pacific/Auckland',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+  const ids = Array.isArray(deviceIds) ? deviceIds.map((id) => String(id)).filter(Boolean) : null;
+  if (ids && !ids.length) return 0;
+  if (!ids) {
+    const rows = await sql`
+      UPDATE rnz_capsize_day_log
+      SET
+        status = ${status},
+        acked_at = NOW(),
+        acked_by = ${ackedBy},
+        ack_source = ${ackSource}
+      WHERE org_id = ${orgId}
+        AND day_key = ${dayKey}
+        AND status = 'active'
+      RETURNING id
+    `;
+    return rows.rowCount ?? rows.rows.length ?? 0;
+  }
+  let count = 0;
+  for (const id of ids) {
+    const rows = await sql`
+      UPDATE rnz_capsize_day_log
+      SET
+        status = ${status},
+        acked_at = NOW(),
+        acked_by = ${ackedBy},
+        ack_source = ${ackSource}
+      WHERE org_id = ${orgId}
+        AND day_key = ${dayKey}
+        AND status = 'active'
+        AND device_id = ${id}
+      RETURNING id
+    `;
+    count += rows.rowCount ?? rows.rows.length ?? 0;
+  }
+  return count;
+}
+
+async function acknowledgeCapsizeDayLog(orgId, deviceIds, ackedBy, ackSource) {
+  return setCapsizeDayLogStatus(orgId, deviceIds, 'acknowledged', ackedBy, ackSource);
+}
+
+async function markCapsizeDayLogCleared(orgId, deviceIds, ackedBy, ackSource) {
+  return setCapsizeDayLogStatus(orgId, deviceIds, 'cleared', ackedBy, ackSource);
 }
 
 async function ensureFleetConfigTables() {
@@ -4227,6 +4429,11 @@ module.exports = {
   broadcastRegattaMessage,
   clearRegattaMessage,
   ensureCapsizeNotifyEmailsTable,
+  ensureCapsizeDayLogTable,
+  listCapsizeDayLog,
+  upsertCapsizeDayLogActive,
+  acknowledgeCapsizeDayLog,
+  markCapsizeDayLogCleared,
   listCapsizeNotifyEmails,
   addCapsizeNotifyEmail,
   removeCapsizeNotifyEmail,

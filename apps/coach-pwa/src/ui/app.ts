@@ -14,6 +14,7 @@ import {
 } from '../lib/live-speed-buffer';
 import {
   clearCapsizeAlert,
+  fetchCapsizeDayLog,
   fetchDevices,
   fetchFleetConfig,
   fetchMapPositions,
@@ -55,10 +56,12 @@ import {
 import { demoMapPositions, isDemoMode } from '../lib/demo-mode';
 import {
   acknowledgeCapsizeLog,
+  formatCapsizeAckLine,
   formatNzTime,
   listCapsizeDayLog,
   markMissingCapsizesClearedRemote,
   replaceCapsizeDayLogForDemo,
+  replaceCapsizeDayLogFromServer,
   upsertActiveCapsize,
 } from '../lib/capsize-day-log';
 import {
@@ -380,14 +383,23 @@ export function mountApp(root: HTMLElement): void {
     return `<span class="coach-topbar__monitoring" aria-live="polite">Monitoring</span>`;
   }
 
+  function managerAckName(): string {
+    const name = String(settings.coachName || '').trim();
+    return name || 'CrewSight Manager';
+  }
+
   async function acknowledgeCapsizeAlerts() {
     stopCapsizeAlarmLoop();
     suppressCapsizeAlarmUntilMs = Date.now() + 60_000;
     latchedCapsizeById.clear();
     try {
       const ids = capsizedDevices().map((d) => d.deviceId);
-      acknowledgeCapsizeLog(ids, 'CrewSight Manager', 'manager');
-      const result = (await clearCapsizeAlert(settings)) as {
+      const ackedBy = managerAckName();
+      acknowledgeCapsizeLog(ids, ackedBy, 'manager');
+      const result = (await clearCapsizeAlert(settings, undefined, {
+        ackedBy,
+        ackSource: 'manager',
+      })) as {
         helpNotified?: string[];
         cleared?: string[];
       };
@@ -556,10 +568,17 @@ export function mountApp(root: HTMLElement): void {
       const settled = await Promise.allSettled([
         fetchDevices(settings),
         fetchMapPositions(settings),
+        fetchCapsizeDayLog(settings),
       ]);
       const devResult = settled[0];
       const posResult = settled[1];
+      const logResult = settled[2];
       const errors: string[] = [];
+      let usedServerLog = false;
+      if (logResult.status === 'fulfilled' && logResult.value) {
+        replaceCapsizeDayLogFromServer(logResult.value);
+        usedServerLog = true;
+      }
 
       // Keep last good map/devices on a failed poll so Lou (etc.) does not flash off.
       let pos: MapPosition[] = positions;
@@ -588,7 +607,7 @@ export function mountApp(root: HTMLElement): void {
 
       latchCapsizeFromPoll(dev, pos);
       recordLiveSpeedSamples(pos);
-      syncCapsizeDayLog(dev, pos);
+      syncCapsizeDayLog(dev, pos, { skipRemoteClear: usedServerLog });
       // Stamp map markers from latch so offline tips stay visible after stale drop.
       if (Date.now() >= suppressCapsizeAlarmUntilMs && latchedCapsizeById.size) {
         pos = pos.map((p) =>
@@ -1206,7 +1225,11 @@ export function mountApp(root: HTMLElement): void {
     }
   }
 
-  function syncCapsizeDayLog(devs: FleetDevice[], pos: MapPosition[]): void {
+  function syncCapsizeDayLog(
+    devs: FleetDevice[],
+    pos: MapPosition[],
+    opts: { skipRemoteClear?: boolean } = {},
+  ): void {
     const posById = new Map(pos.map((p) => [p.deviceId, p]));
     const activeIds: string[] = [];
     const seen = new Set<string>();
@@ -1229,7 +1252,7 @@ export function mountApp(root: HTMLElement): void {
       if (!p.capsize) continue;
       consider(p.deviceId, p.deviceId, p);
     }
-    markMissingCapsizesClearedRemote(activeIds);
+    if (!opts.skipRemoteClear) markMissingCapsizesClearedRemote(activeIds);
   }
 
   function updateHomeCapsizeUi(): void {
@@ -1262,16 +1285,7 @@ export function mountApp(root: HTMLElement): void {
                 e.lat != null && e.lon != null
                   ? `${e.lat.toFixed(4)}, ${e.lon.toFixed(4)}`
                   : 'No GPS';
-              let ack = 'Active — not acknowledged';
-              if (e.status === 'acknowledged') {
-                const who =
-                  e.ackSource === 'rowsafe'
-                    ? 'RowSafe'
-                    : e.ackedBy || 'CrewSight Manager';
-                ack = `Acknowledged ${e.ackedAt ? formatNzTime(e.ackedAt) : ''} by ${who}`;
-              } else if (e.status === 'cleared') {
-                ack = `Cleared ${e.ackedAt ? formatNzTime(e.ackedAt) : ''} · ${e.ackedBy || 'RowSafe or another Manager'}`;
-              }
+              const ack = formatCapsizeAckLine(e);
               return (
                 `<li class="home-capsize-log__item home-capsize-log__item--${e.status}">` +
                 `<strong>${esc(e.name)}</strong>` +

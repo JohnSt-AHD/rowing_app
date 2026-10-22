@@ -33,6 +33,10 @@ module.exports = async function handler(req, res) {
   // Escape hatch: { notifyHelp: false }.
   const notifyHelp = body?.notifyHelp !== false;
 
-  const result = await store.clearCapsizeAlert(org.id, deviceId, { notifyHelp });
+  const result = await store.clearCapsizeAlert(org.id, deviceId, {
+    notifyHelp,
+    ackedBy: body?.ackedBy,
+    ackSource: body?.ackSource,
+  });
   return res.status(200).json({ ok: true, ...result });
 };

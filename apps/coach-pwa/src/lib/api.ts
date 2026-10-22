@@ -208,13 +208,47 @@ export async function fetchTimingLines(settings: CoachSettings): Promise<TimingL
   return (await res.json()) as TimingLinesPayload;
 }
 
-export async function clearCapsizeAlert(settings: CoachSettings, deviceId?: string) {
+export type CapsizeAckSource = 'manager' | 'rowsafe' | 'remote';
+
+export type CapsizeDayLogEntry = {
+  id: string;
+  deviceId: string;
+  name: string;
+  lat: number | null;
+  lon: number | null;
+  startedAt: number;
+  status: 'active' | 'acknowledged' | 'cleared';
+  ackedAt?: number;
+  ackedBy?: string;
+  ackSource?: CapsizeAckSource;
+};
+
+export async function fetchCapsizeDayLog(
+  settings: CoachSettings,
+): Promise<CapsizeDayLogEntry[] | null> {
+  if (isDemoMode()) return null;
+  const url = `${apiBase(settings)}/api/capsize-day-log`;
+  const res = await fetch(url, { headers: authHeaders(settings) });
+  if (!res.ok) throw new Error(`Capsize log ${res.status}`);
+  const data = (await res.json()) as { events?: CapsizeDayLogEntry[] };
+  return Array.isArray(data.events) ? data.events : [];
+}
+
+export async function clearCapsizeAlert(
+  settings: CoachSettings,
+  deviceId?: string,
+  meta?: { ackedBy?: string; ackSource?: CapsizeAckSource },
+) {
   if (isDemoMode()) return { ok: true, helpNotified: [], cleared: deviceId ? [deviceId] : [] };
   const url = `${apiBase(settings)}/api/capsize-clear`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { ...authHeaders(settings), 'Content-Type': 'application/json' },
-    body: JSON.stringify(deviceId ? { deviceId } : {}),
+    body: JSON.stringify({
+      ...(deviceId ? { deviceId } : {}),
+      ackedBy: meta?.ackedBy,
+      ackSource: meta?.ackSource || 'manager',
+    }),
   });
   if (!res.ok) throw new Error(`Clear capsize ${res.status}`);
   return res.json();
