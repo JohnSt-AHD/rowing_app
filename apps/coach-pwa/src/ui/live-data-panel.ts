@@ -8,7 +8,9 @@ import {
   type MapPosition,
   type TimingLine,
 } from '../lib/api';
+import { coursePrognosticBandsMps, drawPaceDistanceChart } from '../lib/course-chart';
 import { drawMultiSeriesChart, prognosticBandsKmh } from '../lib/history-charts';
+import { parseBoatClass } from '@rowing/rowing-pace';
 import {
   buildDeviceTrack,
   colorForDevice,
@@ -16,6 +18,7 @@ import {
   defaultSelection,
   filterTracks,
   formatDuration,
+  maxDistance,
   formatPrognosticPct,
   formatSpeedKmh,
   formatSplitSec,
@@ -52,11 +55,15 @@ import { colorForDevice as courseColorForDevice, CourseRaceEngine } from '../lib
 import { resolveSpeedMps } from '../lib/map-smooth';
 import type { CoachSettings } from '../lib/settings';
 import { liveDeviceColor, registerLiveDevice } from '../lib/live-speed-buffer';
+import { HistoryTimeline } from '../lib/history-timeline';
 
 const LS_COURSE = 'coach_race_course';
 const LS_REVERSE = 'coach_race_reverse';
 const LS_ROLLING = 'coach_race_rolling';
 const LS_LIVE_DEVICE = 'coach_live_device';
+const LS_LIVE_VIEW = 'coach_live_view';
+
+type LiveView = 'stats' | 'course';
 const HISTORY_POLL_MS = 8000;
 const MAX_LIVE_POINTS = 12000;
 
@@ -130,29 +137,49 @@ const PANEL_HTML = `
             <option value="">Waiting for devices…</option>
           </select>
         </label>
-        <button type="button" class="coach-btn coach-btn--ghost history-select-bar__more" data-course-toggle aria-expanded="false" title="Course options">Course</button>
-      </div>
-      <div class="live-course-extra" data-course-extra hidden>
-        <div class="race-toolbar race-toolbar--live">
-          <label class="race-field">
-            <span class="race-field__label">Course</span>
-            <select class="race-select" data-race-course aria-label="Timing course"></select>
-          </label>
-          <div class="race-toolbar__row">
-            <label class="race-check"><input type="checkbox" data-race-reverse /> Reverse</label>
-            <label class="race-check"><input type="checkbox" data-race-rolling checked /> Rolling start</label>
-            <button type="button" class="coach-btn coach-btn--ghost" data-race-reset>Reset</button>
-          </div>
+        <label class="history-select-bar__field history-select-bar__field--course" data-course-field>
+          <span>Course</span>
+          <select class="race-select" data-race-course aria-label="Timing course"></select>
+        </label>
+        <div class="history-select-bar__course-opts" data-course-opts>
+          <label class="race-check"><input type="checkbox" data-race-reverse /> Reverse</label>
+          <label class="race-check"><input type="checkbox" data-race-rolling checked /> Rolling start</label>
+          <button type="button" class="coach-btn coach-btn--ghost" data-race-reset>Reset</button>
         </div>
-        <p class="race-meta" data-race-meta>Load timing lines using your ingest token.</p>
-        <p class="poll-line" data-race-status hidden></p>
-        <div class="race-splits" data-race-splits></div>
+        <div class="coach-scope-toggle" role="group" aria-label="Live data view">
+          <button type="button" class="coach-scope-toggle__btn" data-live-view="stats">Live stats</button>
+          <button type="button" class="coach-scope-toggle__btn" data-live-view="course">Course</button>
+        </div>
       </div>
       <p class="history-select-bar__status" data-live-status aria-live="polite"></p>
+      <p class="race-meta" data-race-meta hidden>Load timing lines using your ingest token.</p>
+      <p class="poll-line" data-race-status hidden></p>
     </div>
 
-    <div class="history-review__body" data-review-body>
+    <div class="live-course-view" data-course-view hidden>
+      <div class="live-course-layout">
+        <section class="race-chart-card">
+          <h3 class="race-section-title">Pace vs distance</h3>
+          <div class="race-chart-wrap">
+            <canvas class="race-chart" data-course-chart aria-label="Pace versus distance with prognostic lines"></canvas>
+          </div>
+        </section>
+        <div class="live-course-lower">
+          <section class="race-map-card">
+            <h3 class="race-section-title">Course map</h3>
+            <div class="race-map" data-course-map></div>
+          </section>
+          <section class="race-table-card">
+            <h3 class="race-section-title">Live splits &amp; rating</h3>
+            <div class="race-splits" data-race-splits></div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div class="history-review__body" data-review-body data-live-stats>
       <p class="poll-line history-main__hint" data-track-hint>Select a device to follow live metrics, map, and charts.</p>
+      <div class="history-review__timeline" data-timeline-mount hidden></div>
       <div class="history-swipe" data-swipe hidden>
         <div class="history-swipe__track" data-swipe-track>
           <section class="history-pane" data-pane="metrics" aria-label="Metrics">
@@ -202,6 +229,11 @@ export class LiveDataPanel {
   private deviceLayer: L.LayerGroup | null = null;
   private trackLine: L.Polyline | null = null;
   private deviceMarkers = new Map<string, L.Marker>();
+  private courseMap: L.Map | null = null;
+  private courseLineLayer: L.LayerGroup | null = null;
+  private courseDeviceLayer: L.LayerGroup | null = null;
+  private courseDeviceMarkers = new Map<string, L.Marker>();
+  private liveView: LiveView = 'stats';
   private orgSlug = '';
   private linesLoaded = false;
   private lastPositions: MapPosition[] = [];
@@ -216,6 +248,9 @@ export class LiveDataPanel {
   private sessionFromIso = '';
   private track: DeviceTrack | null = null;
   private selection: HistorySelection | null = null;
+  private timeline: HistoryTimeline | null = null;
+  private lastTrackTMin = 0;
+  private lastTrackTMax = 0;
   private swipeEl: HTMLElement | null = null;
   private activePane: PaneId = 'metrics';
   private chartResizeObserver: ResizeObserver | null = null;
@@ -234,7 +269,9 @@ export class LiveDataPanel {
       this.visible = false;
       this.stopHistoryPoll();
       this.teardownMap();
+      this.teardownCourseMap();
       this.teardownChartObserver();
+      this.timeline = null;
       this.swipeEl = null;
       this.root = null;
     }
@@ -242,28 +279,45 @@ export class LiveDataPanel {
 
   mount(container: HTMLElement) {
     this.root = container;
-    const needsDomSetup = !container.querySelector('[data-live-review]');
+    const needsDomSetup =
+      !container.querySelector('[data-live-review]') ||
+      !container.querySelector('[data-select-bar] [data-race-course]') ||
+      !container.querySelector('[data-timeline-mount]');
     if (needsDomSetup) {
+      this.teardownMap();
+      this.teardownCourseMap();
       container.innerHTML = PANEL_HTML;
       this.loadPrefs();
       this.bind();
+      this.ensureTimeline();
       void this.reloadLines();
+    } else {
+      this.ensureTimeline();
     }
     this.swipeEl = this.q<HTMLElement>('[data-swipe]');
     this.bindChartResizeObserver();
     this.syncDeviceSelect(this.lastPositions);
     this.syncSwipeUi();
+    this.syncLiveViewUi();
     this.updateTrackHint();
   }
 
   onTabShown() {
     this.visible = true;
-    this.ensureMap();
+    if (!this.linesLoaded) void this.reloadLines();
+    this.syncLiveViewUi();
     this.refreshCourseView();
     this.rebuildTrackAndViews();
     this.startHistoryPoll();
     void this.refreshHistoryFromApi();
-    setTimeout(() => this.map?.invalidateSize(), 150);
+    window.setTimeout(() => {
+      this.map?.invalidateSize();
+      this.courseMap?.invalidateSize();
+    }, 80);
+    window.setTimeout(() => {
+      this.map?.invalidateSize();
+      this.courseMap?.invalidateSize();
+    }, 280);
   }
 
   processPositions(positions: MapPosition[], nowMs = Date.now()) {
@@ -332,6 +386,7 @@ export class LiveDataPanel {
           : `Org ${this.orgSlug || '—'} · no timing lines yet${persisted}`,
       );
       this.refreshCourseView();
+      if (this.visible && this.liveView === 'stats') this.renderMap();
     } catch (e) {
       this.linesLoaded = false;
       this.setRaceMeta(e instanceof Error ? e.message : 'Failed to load timing lines', true);
@@ -350,14 +405,11 @@ export class LiveDataPanel {
       this.selectDevice(id);
     });
 
-    this.root.querySelector('[data-course-toggle]')?.addEventListener('click', () => {
-      const extra = this.q<HTMLElement>('[data-course-extra]');
-      const btn = this.q<HTMLButtonElement>('[data-course-toggle]');
-      if (!extra || !btn) return;
-      const open = extra.hasAttribute('hidden');
-      extra.toggleAttribute('hidden', !open);
-      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-      btn.classList.toggle('coach-btn--active', open);
+    this.root.querySelectorAll('[data-live-view]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = (btn as HTMLElement).dataset.liveView === 'course' ? 'course' : 'stats';
+        this.setLiveView(next);
+      });
     });
 
     this.root.querySelector('[data-race-course]')?.addEventListener('change', (ev) => {
@@ -366,14 +418,14 @@ export class LiveDataPanel {
       localStorage.setItem(LS_COURSE, v);
       this.engine.resetSession();
       this.refreshCourseView();
-      this.renderMap();
+      if (this.liveView === 'stats') this.renderMap();
     });
     this.root.querySelector('[data-race-reverse]')?.addEventListener('change', (ev) => {
       this.engine.courseReversed = (ev.target as HTMLInputElement).checked;
       localStorage.setItem(LS_REVERSE, this.engine.courseReversed ? '1' : '0');
       this.engine.resetSession();
       this.refreshCourseView();
-      this.renderMap();
+      if (this.liveView === 'stats') this.renderMap();
     });
     this.root.querySelector('[data-race-rolling]')?.addEventListener('change', (ev) => {
       this.engine.rollingStartEnabled = (ev.target as HTMLInputElement).checked;
@@ -418,6 +470,7 @@ export class LiveDataPanel {
       this.engine.rollingStartEnabled = localStorage.getItem(LS_ROLLING) !== '0';
       this.engine.selectedCourse = localStorage.getItem(LS_COURSE) || '';
       this.selectedDeviceId = localStorage.getItem(LS_LIVE_DEVICE) || '';
+      this.liveView = localStorage.getItem(LS_LIVE_VIEW) === 'course' ? 'course' : 'stats';
     } catch {
       /* ignore */
     }
@@ -443,6 +496,9 @@ export class LiveDataPanel {
     this.openSessionId = '';
     this.sessionFromIso = '';
     this.historyMeta = { boatClass: null, athleteId: null };
+    this.selection = null;
+    this.lastTrackTMin = 0;
+    this.lastTrackTMax = 0;
     this.setLiveStatus(id ? `Following ${id}…` : '');
     void this.refreshHistoryFromApi();
     this.rebuildTrackAndViews();
@@ -568,6 +624,7 @@ export class LiveDataPanel {
       this.track = null;
       this.selection = null;
       this.updateTrackHint();
+      if (this.visible) this.renderMap();
       return;
     }
     const live = this.livePoints.get(this.selectedDeviceId) ?? [];
@@ -576,6 +633,7 @@ export class LiveDataPanel {
       this.track = null;
       this.selection = null;
       this.updateTrackHint();
+      if (this.visible) this.renderMap();
       return;
     }
     const idx = registerLiveDevice(this.selectedDeviceId);
@@ -588,17 +646,100 @@ export class LiveDataPanel {
         athleteId: this.historyMeta.athleteId,
       },
     );
-    this.selection = defaultSelection([this.track]);
+    this.selection = this.preserveLiveSelection(this.track);
+    this.syncTimeline();
     this.updateTrackHint();
     this.scheduleRefreshViews();
   }
 
+  private preserveLiveSelection(track: DeviceTrack): HistorySelection {
+    const next = defaultSelection([track]);
+    const prev = this.selection;
+    const prevMax = this.lastTrackTMax;
+    const prevMin = this.lastTrackTMin;
+    this.lastTrackTMin = track.tMin;
+    this.lastTrackTMax = track.tMax;
+    if (!prev || prevMax <= 0) return next;
+    const followEnd = prev.t1 >= prevMax - 4000;
+    const followStart = Math.abs(prev.t0 - prevMin) < 4000;
+    const t0 = followStart ? next.t0 : Math.min(Math.max(prev.t0, next.t0), next.t1 - 1000);
+    const t1 = followEnd ? next.t1 : Math.max(Math.min(prev.t1, next.t1), t0 + 1000);
+    return {
+      ...prev,
+      t0,
+      t1,
+    };
+  }
+
+  private ensureTimeline() {
+    const mount = this.q<HTMLElement>('[data-timeline-mount]');
+    if (!mount || this.timeline) return;
+    this.timeline = new HistoryTimeline(mount, {
+      onChange: (sel) => {
+        this.selection = sel;
+        this.scheduleRefreshViews();
+      },
+    });
+    this.syncTimeline();
+  }
+
+  private syncTimeline() {
+    if (!this.timeline || !this.track || !this.selection) return;
+    this.timeline.setSelection(this.selection, {
+      tMin: this.track.tMin,
+      tMax: this.track.tMax,
+      totalDistM: maxDistance([this.track]),
+    });
+  }
+
+  private setLiveView(next: LiveView) {
+    if (this.liveView === next) return;
+    this.liveView = next;
+    try {
+      localStorage.setItem(LS_LIVE_VIEW, next);
+    } catch {
+      /* ignore */
+    }
+    this.syncLiveViewUi();
+    if (next === 'course') {
+      this.refreshCourseView();
+    } else {
+      this.rebuildTrackAndViews();
+      window.setTimeout(() => this.map?.invalidateSize(), 80);
+    }
+  }
+
+  private syncLiveViewUi() {
+    const courseOn = this.liveView === 'course';
+    this.root?.querySelectorAll<HTMLButtonElement>('[data-live-view]').forEach((btn) => {
+      const on = btn.dataset.liveView === this.liveView;
+      btn.classList.toggle('is-active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    this.q<HTMLElement>('[data-live-review]')?.classList.toggle('is-course-view', courseOn);
+    this.q<HTMLElement>('[data-course-view]')?.toggleAttribute('hidden', !courseOn);
+    this.q<HTMLElement>('[data-live-stats]')?.toggleAttribute('hidden', courseOn);
+    this.q<HTMLElement>('[data-course-opts]')?.toggleAttribute('hidden', !courseOn);
+    this.q<HTMLElement>('[data-course-field]')?.toggleAttribute('hidden', !courseOn);
+    this.q<HTMLElement>('[data-live-status]')?.toggleAttribute('hidden', courseOn);
+    this.updateTrackHint();
+    if (courseOn) {
+      window.setTimeout(() => this.courseMap?.invalidateSize(), 80);
+      window.setTimeout(() => this.courseMap?.invalidateSize(), 280);
+    }
+  }
+
   private updateTrackHint() {
     const hint = this.q<HTMLElement>('[data-track-hint]');
-    const has = Boolean(this.track?.points.length);
-    if (hint) hint.hidden = has;
-    this.q('[data-swipe]')?.toggleAttribute('hidden', !has);
-    this.q('[data-swipe-footer]')?.toggleAttribute('hidden', !has);
+    const hasTrack = Boolean(this.track?.points.length);
+    const courseOn = this.liveView === 'course';
+    const showSwipe = !courseOn && hasTrack;
+    if (hint) {
+      hint.hidden = courseOn || hasTrack;
+    }
+    this.q('[data-swipe]')?.toggleAttribute('hidden', !showSwipe);
+    this.q('[data-swipe-footer]')?.toggleAttribute('hidden', !showSwipe);
+    this.q('[data-timeline-mount]')?.toggleAttribute('hidden', !showSwipe);
   }
 
   private setLiveStatus(msg: string) {
@@ -618,9 +759,13 @@ export class LiveDataPanel {
   }
 
   private refreshViews() {
+    if (this.liveView === 'course') {
+      this.refreshCourseView();
+      return;
+    }
+    this.renderMap();
     if (!this.selection || !this.track) return;
     this.renderStats();
-    this.renderMap();
     this.renderCharts();
   }
 
@@ -640,7 +785,11 @@ export class LiveDataPanel {
     host.innerHTML = `
       <div class="history-stats__bar">
         <h2 class="history-stats__title">Live stats</h2>
-        <span class="history-stats__range">outing so far · ${esc(formatDuration(s.durationSec))}</span>
+        <span class="history-stats__range">${esc(
+          this.selection.distanceMode
+            ? `${Math.round(this.selection.distStartM)}–${Math.round(this.selection.distStartM + this.selection.distWindowM)} m window`
+            : `${formatDuration((this.selection.t1 - this.selection.t0) / 1000)} selected`,
+        )}</span>
       </div>
       <div class="history-stats__grid">
         <article class="history-stats__card" style="--device-color: ${esc(s.color)}; border-left-color: ${esc(s.color)}">
@@ -795,13 +944,21 @@ export class LiveDataPanel {
 
   private bindChartResizeObserver() {
     this.teardownChartObserver();
-    const swipe = this.q<HTMLElement>('[data-swipe]');
-    if (!swipe || typeof ResizeObserver === 'undefined') return;
+    if (typeof ResizeObserver === 'undefined') return;
     this.chartResizeObserver = new ResizeObserver(() => {
+      if (this.liveView === 'course') {
+        const course = this.engine.getCourse();
+        if (course) this.drawCourseChart(course);
+        if (this.courseMap) window.setTimeout(() => this.courseMap?.invalidateSize(), 40);
+        return;
+      }
       if (this.track && this.selection) this.renderCharts();
       if (this.map) window.setTimeout(() => this.map?.invalidateSize(), 40);
     });
-    this.chartResizeObserver.observe(swipe);
+    const swipe = this.q<HTMLElement>('[data-swipe]');
+    const courseWrap = this.q<HTMLElement>('[data-course-view]');
+    if (swipe) this.chartResizeObserver.observe(swipe);
+    if (courseWrap) this.chartResizeObserver.observe(courseWrap);
   }
 
   private teardownChartObserver() {
@@ -818,6 +975,121 @@ export class LiveDataPanel {
       this.trackLayer = null;
       this.lineLayer = null;
       this.deviceLayer = null;
+    }
+  }
+
+  private teardownCourseMap() {
+    this.courseDeviceMarkers.clear();
+    if (this.courseMap) {
+      this.courseMap.remove();
+      this.courseMap = null;
+      this.courseLineLayer = null;
+      this.courseDeviceLayer = null;
+    }
+  }
+
+  private ensureCourseMap() {
+    const el = this.q<HTMLElement>('[data-course-map]');
+    if (!el || typeof L === 'undefined') return;
+    if (!this.courseMap) {
+      this.courseMap = L.map(el, { preferCanvas: true, zoomControl: true });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap',
+      }).addTo(this.courseMap);
+      this.courseLineLayer = L.layerGroup().addTo(this.courseMap);
+      this.courseDeviceLayer = L.layerGroup().addTo(this.courseMap);
+    }
+  }
+
+  private renderCourseMap() {
+    this.ensureCourseMap();
+    if (!this.courseMap || !this.courseLineLayer || !this.courseDeviceLayer) return;
+
+    this.courseLineLayer.clearLayers();
+    const course = this.engine.getCourse();
+    if (course) {
+      for (const line of course.lines) {
+        const style =
+          line.lineType === 'start'
+            ? { color: '#22c55e', weight: 3 }
+            : line.lineType === 'finish'
+              ? { color: '#ef4444', weight: 3 }
+              : { color: '#3b82f6', weight: 2, dashArray: '8 6' };
+        const label =
+          line.distanceM != null
+            ? `${line.name} (${markerLabelM(line, course, this.engine.courseReversed)})`
+            : line.name;
+        L.polyline(
+          [
+            [line.lat1, line.lon1],
+            [line.lat2, line.lon2],
+          ],
+          style,
+        )
+          .bindTooltip(label, { sticky: true })
+          .addTo(this.courseLineLayer);
+      }
+    }
+
+    const bounds: L.LatLng[] = [];
+    this.updateCourseMapDevices(course, bounds);
+    if (course) {
+      const cb = courseBounds(course);
+      cb.forEach((ll) => bounds.push(L.latLng(ll[0], ll[1])));
+    }
+    if (bounds.length >= 2) {
+      this.courseMap.fitBounds(L.latLngBounds(bounds), { padding: [28, 28] });
+    } else if (bounds.length === 1) {
+      this.courseMap.setView(bounds[0], 16);
+    }
+    window.setTimeout(() => this.courseMap?.invalidateSize(), 50);
+  }
+
+  private updateCourseMapDevices(course: ParsedCourse | null, bounds: L.LatLng[]) {
+    if (!this.courseMap || !this.courseDeviceLayer) return;
+    const seen = new Set<string>();
+    for (const p of this.lastPositions) {
+      const id = p.deviceId;
+      if (!id || this.engine.hiddenDevices.has(id)) continue;
+      if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) continue;
+      if (course) {
+        const along = effectiveAlong(
+          p.latitude,
+          p.longitude,
+          course,
+          this.engine.courseReversed,
+        );
+        if (along == null || along < -80 || along > course.totalDist + 120) continue;
+      }
+      seen.add(id);
+      const color = courseColorForDevice(id);
+      const ll = L.latLng(p.latitude, p.longitude);
+      bounds.push(ll);
+      let marker = this.courseDeviceMarkers.get(id);
+      const icon = L.divIcon({
+        className: 'race-device-marker',
+        html: `<span style="background:${color}"></span>`,
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
+      });
+      if (marker) {
+        marker.setLatLng(ll);
+        marker.setIcon(icon);
+      } else {
+        marker = L.marker(ll, { icon }).bindTooltip(id, {
+          direction: 'top',
+          offset: [0, -8],
+        });
+        this.courseDeviceLayer.addLayer(marker);
+        this.courseDeviceMarkers.set(id, marker);
+      }
+    }
+    for (const [id, marker] of this.courseDeviceMarkers) {
+      if (!seen.has(id)) {
+        this.courseDeviceLayer.removeLayer(marker);
+        this.courseDeviceMarkers.delete(id);
+      }
     }
   }
 
@@ -853,11 +1125,11 @@ export class LiveDataPanel {
   }
 
   private setRaceMeta(msg: string, err = false) {
-    const el = this.root?.querySelector('[data-race-meta]');
-    if (el) {
-      el.textContent = msg;
-      el.classList.toggle('poll-line--warn', err);
-    }
+    const el = this.root?.querySelector('[data-race-meta]') as HTMLElement | null;
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.toggle('poll-line--warn', err);
+    el.hidden = !err;
   }
 
   private setRaceStatus(msg: string, err = false) {
@@ -884,15 +1156,39 @@ export class LiveDataPanel {
     if (!course) {
       this.renderSplits(null);
       this.setRaceStatus('Select a course with start/finish lines (optional).');
+      if (this.liveView === 'course') this.renderCourseMap();
       return;
     }
     this.renderSplits(course);
-    const n = this.engine.visibleDeviceIdsByProg().length;
-    this.setRaceStatus(
-      `${course.group} · ${Math.round(course.totalDist)} m · ${n} boat${n === 1 ? '' : 's'} on course` +
-        (this.engine.courseReversed ? ' · reverse' : '') +
-        (this.engine.rollingStartEnabled ? ' · rolling start' : ''),
+    this.drawCourseChart(course);
+    if (this.liveView === 'course') this.renderCourseMap();
+  }
+
+  private courseBoatClass(): string | null {
+    const focus = this.selectedDeviceId
+      ? this.lastPositions.find((p) => p.deviceId === this.selectedDeviceId)
+      : null;
+    const fromFocus = parseBoatClass(
+      focus?.boatClass,
+      this.selectedDeviceId,
+      focus?.athleteId,
     );
+    if (fromFocus) return fromFocus;
+    for (const p of this.lastPositions) {
+      const cls = parseBoatClass(p.boatClass, p.deviceId, p.athleteId);
+      if (cls) return cls;
+    }
+    return null;
+  }
+
+  private drawCourseChart(course: ParsedCourse) {
+    const canvas = this.q<HTMLCanvasElement>('[data-course-chart]');
+    if (!canvas) return;
+    const boatClass = this.courseBoatClass();
+    drawPaceDistanceChart(canvas, this.engine, course, {
+      prognosticBands: coursePrognosticBandsMps(boatClass),
+      bandLabel: boatClass ? `${boatClass} prognostic` : 'No boat class — bands unavailable',
+    });
   }
 
   private renderSplits(course: ParsedCourse | null) {

@@ -1104,9 +1104,17 @@ function gpsStatusLabel(state) {
   return 'Last known (>5min)';
 }
 
-function markerIcon(state, capsize = false, stale = false) {
-  const visual = capsize ? 'capsize' : state;
-  const size = capsize ? 24 : 14;
+function isCoachMapItem(p) {
+  const src = String(p?.source || '').toLowerCase();
+  if (src === 'manager' || src === 'coach') return true;
+  if (String(p?.role || '').toLowerCase() === 'coach') return true;
+  if (String(p?.boatClass || '').toLowerCase() === 'coach') return true;
+  return /^coach\s/i.test(String(p?.deviceId || '').trim());
+}
+
+function markerIcon(state, capsize = false, stale = false, coach = false) {
+  const visual = capsize ? 'capsize' : coach ? 'coach' : state;
+  const size = capsize ? 24 : coach ? 16 : 14;
   const half = size / 2;
   const staleFlag = stale
     ? `<span class="map-marker-stale-flag">Stale</span>`
@@ -1143,7 +1151,10 @@ function popupHtml(p) {
     ? '<br><span class="map-popup-note">Smoothed position (display only)</span>'
     : '';
   const compareNote = isCompareDevice(p.deviceId)
-    ? '<br><span class="map-popup-compare">Purple dot = H6 refresh-rate lerp test</span>'
+    ? '<br><span class="map-popup-compare">Purple dot = H6 lerp test</span>'
+    : '';
+  const coachNote = isCoachMapItem(p)
+    ? '<br><span class="map-popup-coach">Coach / Manager tablet</span>'
     : '';
   const hr = p.hr != null ? `<br>HR: ${p.hr} bpm` : '';
   const spmVal = strokeRateForPosition(p);
@@ -1168,7 +1179,7 @@ function popupHtml(p) {
     paceMps != null && window.RowingSpeed
       ? `<br>Pace: ${window.RowingSpeed.formatPaceWithPrognostic(paceMps, p.deviceId, p.athleteId, { suffix: true })}`
       : '';
-  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}${staleNote}<br>GPS fix ${fmtAgoSec(dispAge ?? p.fixAgeSec)} · seen ${fmtAgoSec(p.lastSeenAgoSec)}${smoothNote}${compareNote}${hb}${bat}${pace}${hr}${spm}${tilt}${cap}</div>`;
+  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}${staleNote}<br>GPS fix ${fmtAgoSec(dispAge ?? p.fixAgeSec)} · seen ${fmtAgoSec(p.lastSeenAgoSec)}${smoothNote}${compareNote}${coachNote}${hb}${bat}${isCoachMapItem(p) ? '' : pace}${hr}${isCoachMapItem(p) ? '' : spm}${tilt}${cap}</div>`;
 }
 
 function updateMap(positions) {
@@ -1191,7 +1202,7 @@ function updateMap(positions) {
     const latlng = L.latLng(lat, lon);
     let marker = deviceMarkers.get(p.deviceId);
     const state = gpsFixState(p);
-    const icon = markerIcon(state, Boolean(p.capsize), isDataStale(p));
+    const icon = markerIcon(state, Boolean(p.capsize), isDataStale(p), isCoachMapItem(p));
 
     if (marker) {
       marker.setLatLng(latlng);

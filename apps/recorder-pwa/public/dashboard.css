@@ -146,6 +146,30 @@
   background: #4ade80;
 }
 
+.map-marker--coach {
+  width: 14px;
+  height: 14px;
+  background: #f59e0b;
+  transform: rotate(45deg);
+  border: 2px solid #fff;
+  box-shadow:
+    0 0 0 1px rgba(180, 83, 9, 0.55),
+    0 0 10px rgba(245, 158, 11, 0.45);
+}
+
+.map-marker-wrap--coach {
+  z-index: 940 !important;
+}
+
+.map-legend-item--coach {
+  color: #d97706;
+}
+
+.map-popup-coach {
+  font-size: 12px;
+  color: #b45309;
+}
+
 .map-marker--compare {
   width: 16px;
   height: 16px;

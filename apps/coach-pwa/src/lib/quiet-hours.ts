@@ -1,3 +1,5 @@
+import { isDemoMode } from './demo-mode';
+
 /** Overnight monitoring pause — 6pm–6am Pacific/Auckland. */
 export const QUIET_HOURS_TIMEZONE = 'Pacific/Auckland';
 export const QUIET_HOURS_START = 18;
@@ -16,6 +18,7 @@ function hourInTz(date = new Date()): number {
 }
 
 export function isQuietHours(date = new Date()): boolean {
+  if (isDemoMode()) return false;
   const h = hourInTz(date);
   return h >= QUIET_HOURS_START || h < QUIET_HOURS_END;
 }

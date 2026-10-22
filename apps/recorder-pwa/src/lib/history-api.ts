@@ -1,5 +1,6 @@
 import type { RecorderSettings } from '@rowing/telemetry-types';
 import { normalizeIngestUrl } from '../upload/telemetry-api';
+import { demoSessionDashboard, demoSessionsList, isDemoMode } from './demo-mode';
 
 export type SessionSummary = {
   session_id: string;
@@ -103,6 +104,7 @@ export async function listSessions(
   settings: RecorderSettings,
   deviceId: string,
 ): Promise<SessionsListResult> {
+  if (isDemoMode()) return demoSessionsList(deviceId);
   const base = apiBaseFromSettings(settings);
   if (!base) throw new Error('Set URL in Settings before loading history');
   const url = `${base}/api/history?list=sessions&uniqueId=${encodeURIComponent(deviceId)}`;
@@ -123,6 +125,7 @@ export async function loadSessionDashboard(
   settings: RecorderSettings,
   sessionId: string,
 ): Promise<DashboardHistoryPayload> {
+  if (isDemoMode()) return demoSessionDashboard(sessionId);
   const base = apiBaseFromSettings(settings);
   if (!base) throw new Error('Set URL in Settings before loading history');
   const url = `${base}/api/history?format=dashboard&sessionId=${encodeURIComponent(sessionId)}`;

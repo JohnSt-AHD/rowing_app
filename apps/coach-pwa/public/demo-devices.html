@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CrewSight · interactive demo</title>
+    <link rel="icon" type="image/png" href="icons/icon-192.png" />
+    <style>
+      :root {
+        --navy: #0a1628;
+        --gold: #d4af37;
+        --gold-soft: #f4e4a6;
+        --mist: #e6e7e8;
+        --text: #e8f4fc;
+        --muted: #94a3b8;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        background:
+          radial-gradient(1200px 600px at 20% -10%, rgba(0, 229, 255, 0.12), transparent 55%),
+          radial-gradient(900px 500px at 90% 10%, rgba(212, 175, 55, 0.1), transparent 50%),
+          linear-gradient(180deg, #061018 0%, var(--navy) 45%, #071422 100%);
+        color: var(--text);
+      }
+      .page {
+        min-height: 100vh;
+        padding: 1rem clamp(12px, 2vw, 28px) 1.25rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+      }
+      header.hero {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        min-width: 0;
+      }
+      .brand img {
+        width: 56px;
+        height: 56px;
+        object-fit: contain;
+      }
+      .brand h1 {
+        margin: 0;
+        font-size: 1.25rem;
+        letter-spacing: -0.02em;
+      }
+      .brand p {
+        margin: 0.15rem 0 0;
+        color: var(--muted);
+        font-size: 0.9rem;
+        line-height: 1.35;
+      }
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+        align-items: center;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.32rem 0.65rem;
+        border-radius: 999px;
+        border: 1px solid rgba(212, 175, 55, 0.55);
+        background: rgba(212, 175, 55, 0.14);
+        color: var(--gold-soft);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      button.ghost {
+        appearance: none;
+        border: 1px solid rgba(232, 244, 252, 0.18);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 0.4rem 0.7rem;
+        font: inherit;
+        font-size: 0.8rem;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button.ghost[aria-pressed='true'] {
+        border-color: rgba(212, 175, 55, 0.7);
+        background: rgba(212, 175, 55, 0.16);
+        color: var(--gold-soft);
+      }
+      .stage-wrap {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+      }
+      .stage {
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        gap: 1.6rem;
+        transform-origin: top center;
+      }
+      .frame {
+        display: flex;
+        flex-direction: column;
+        gap: 0.45rem;
+      }
+      .frame-label {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.75rem;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--gold);
+      }
+      .frame-label span { color: var(--muted); font-weight: 600; letter-spacing: 0; text-transform: none; }
+      .bezel {
+        position: relative;
+        background: #111318;
+        border: 3px solid #2a3038;
+        box-shadow: 0 22px 50px rgba(0, 0, 0, 0.38);
+        overflow: hidden;
+      }
+      .bezel--tablet {
+        width: 1024px;
+        height: 768px;
+        border-radius: 22px;
+        padding: 14px;
+      }
+      .bezel--tablet.is-portrait {
+        width: 768px;
+        height: 1024px;
+      }
+      .bezel--phone {
+        width: 844px;
+        height: 390px;
+        border-radius: 28px;
+        padding: 10px 16px;
+      }
+      .screen {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        border-radius: 10px;
+        background: var(--mist);
+        display: block;
+      }
+      .bezel--phone .screen { background: #0a1628; }
+      .hint {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+        max-width: 46rem;
+        line-height: 1.4;
+      }
+      .hint a { color: var(--gold-soft); }
+      .client-status {
+        min-height: 1.1em;
+        font-size: 0.75rem;
+        color: #fca5a5;
+      }
+      @media (max-width: 1100px) {
+        .stage { flex-direction: column; align-items: center; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div class="brand">
+          <img src="assets/crewsight/crewsight-logo-icon-only-manager-color.png" alt="" />
+          <div>
+            <h1>CrewSight interactive demo</h1>
+            <p>Manager tablet + recorder phone with sample Karapiro data. Click through the pages — nothing is saved to your club token.</p>
+          </div>
+        </div>
+        <div class="hero-actions">
+          <span class="pill">Sample data</span>
+          <button type="button" class="ghost" id="tabletOrient" aria-pressed="false">Tablet portrait</button>
+        </div>
+      </header>
+      <p class="hint">
+        Local URL: <a id="selfLink" href="./demo-devices.html">demo-devices.html</a>.
+        Manager is the real app at <code>?demo=1</code>. Client needs the recorder dev server on port 5173
+        (<code>npm run dev</code>) unless you pass <code>?client=</code>.
+      </p>
+      <div class="stage-wrap">
+        <div class="stage" id="stage">
+          <section class="frame">
+            <div class="frame-label">Manager APK <span id="tabletSize">1024 × 768 tablet</span></div>
+            <div class="bezel bezel--tablet" id="tabletBezel">
+              <iframe class="screen" id="managerFrame" title="CrewSight Manager tablet demo"></iframe>
+            </div>
+          </section>
+          <section class="frame">
+            <div class="frame-label">Client APK <span>844 × 390 landscape</span></div>
+            <div class="bezel bezel--phone">
+              <iframe class="screen" id="clientFrame" title="CrewSight recorder landscape demo"></iframe>
+            </div>
+            <p class="client-status" id="clientStatus" hidden></p>
+          </section>
+        </div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        const params = new URLSearchParams(location.search);
+        const host = location.hostname;
+        const local = host === 'localhost' || host === '127.0.0.1';
+        const managerUrl = new URL('./', location.href);
+        managerUrl.searchParams.set('demo', '1');
+
+        const override = (params.get('client') || '').trim();
+        let clientOrigin;
+        if (override) {
+          clientOrigin = override.replace(/\/$/, '');
+        } else if (local && location.port === '5185') {
+          clientOrigin = 'http://localhost:5173';
+        } else if (local && location.port === '5173') {
+          clientOrigin = location.origin;
+        } else {
+          clientOrigin = 'https://rowing-app-recorder-pwa.vercel.app';
+        }
+        const clientUrl = new URL('/', clientOrigin.endsWith('/') ? clientOrigin : clientOrigin + '/');
+        if (override && /demo=/.test(override)) {
+          document.getElementById('clientFrame').src = override;
+        } else {
+          clientUrl.searchParams.set('demo', '1');
+          document.getElementById('clientFrame').src = clientUrl.href;
+        }
+        document.getElementById('managerFrame').src = managerUrl.href;
+        document.getElementById('selfLink').href = location.href;
+
+        const status = document.getElementById('clientStatus');
+        const clientFrame = document.getElementById('clientFrame');
+        let loaded = false;
+        clientFrame.addEventListener('load', () => {
+          loaded = true;
+          status.hidden = true;
+        });
+        window.setTimeout(() => {
+          if (loaded) return;
+          status.hidden = false;
+          status.textContent =
+            'Client iframe has not loaded. Start the recorder with npm run dev (port 5173), or open this page with ?client=https://your-recorder-host';
+        }, 4000);
+
+        const bezel = document.getElementById('tabletBezel');
+        const size = document.getElementById('tabletSize');
+        const toggle = document.getElementById('tabletOrient');
+        toggle.addEventListener('click', () => {
+          const portrait = !bezel.classList.contains('is-portrait');
+          bezel.classList.toggle('is-portrait', portrait);
+          toggle.setAttribute('aria-pressed', portrait ? 'true' : 'false');
+          toggle.textContent = portrait ? 'Tablet landscape' : 'Tablet portrait';
+          size.textContent = portrait ? '768 × 1024 tablet' : '1024 × 768 tablet';
+          fit();
+        });
+
+        const stage = document.getElementById('stage');
+        function fit() {
+          stage.style.transform = 'none';
+          const wrap = stage.parentElement;
+          const availW = wrap.clientWidth - 8;
+          const availH = Math.max(280, window.innerHeight - 170);
+          const naturalW = stage.scrollWidth;
+          const naturalH = stage.scrollHeight;
+          const s = Math.min(1, availW / naturalW, availH / naturalH);
+          stage.style.transform = 'scale(' + s.toFixed(4) + ')';
+          stage.style.marginBottom = ((naturalH * s) - naturalH) + 'px';
+        }
+        window.addEventListener('resize', fit);
+        requestAnimationFrame(fit);
+      })();
+    </script>
+  </body>
+</html>

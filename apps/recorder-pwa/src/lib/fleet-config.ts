@@ -1,5 +1,6 @@
 import { DEFAULT_INGEST_URL } from '@rowing/telemetry-types';
 import { loadSettings } from './settings';
+import { isDemoMode } from './demo-mode';
 
 export type FleetCoach = {
   id: string;
@@ -90,10 +91,12 @@ function formatClassShort(boatClass: string): string {
 
 /** Sync snapshot of last known coaches/boats (localStorage or built-in defaults). */
 export function getCachedFleetConfig(): FleetConfig {
+  if (isDemoMode()) return defaultFleetConfig();
   return readCache() ?? defaultFleetConfig();
 }
 
 export async function fetchFleetConfig(force = false): Promise<FleetConfig> {
+  if (isDemoMode()) return defaultFleetConfig();
   if (!force) {
     const cached = readCache();
     if (cached) return cached;

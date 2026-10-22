@@ -2,6 +2,13 @@
 
 /* CrewSight Manager — light layout (AHD hub white) */
 
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
 .coach-app {
   --coach-border: rgba(51, 49, 50, 0.12);
   --coach-border-strong: rgba(51, 49, 50, 0.22);
@@ -141,6 +148,32 @@
   box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.25);
 }
 
+.coach-demo-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(212, 175, 55, 0.22);
+  border: 1px solid rgba(212, 175, 55, 0.65);
+  color: #f4e4a6;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.coach-demo-note {
+  margin: 0 0 0.85rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 10px;
+  background: rgba(212, 175, 55, 0.14);
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  color: #1a1b1d;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
 .coach-sticky-chrome {
   position: relative;
   z-index: 40;
@@ -270,16 +303,78 @@
 .live-data-panel-root .history-review {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
-.live-course-extra {
-  margin-top: 0.55rem;
-  padding-top: 0.55rem;
-  border-top: 1px solid var(--coach-border);
+.live-course-view {
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  overflow: hidden;
 }
 
-.live-course-extra[hidden] {
+.live-course-view[hidden] {
   display: none !important;
+}
+
+.live-course-layout {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.live-course-layout .race-chart-card {
+  flex: 0 0 34%;
+  min-height: 140px;
+  max-height: 42%;
+  display: flex;
+  flex-direction: column;
+}
+
+.live-course-layout .race-chart-wrap {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 120px;
+}
+
+.live-course-lower {
+  flex: 1 1 0;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+@media (min-width: 960px) {
+  .live-course-lower {
+    flex-direction: row;
+  }
+
+  .live-course-lower .race-map-card,
+  .live-course-lower .race-table-card {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .live-course-lower .race-map {
+    flex: 1 1 0;
+    height: auto;
+    min-height: 200px;
+  }
+
+  .live-course-lower .race-splits {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: auto;
+  }
 }
 
 .race-toolbar--live {
@@ -469,15 +564,30 @@
   font-family: inherit;
 }
 
+.race-chart-card {
+  flex: 0 0 auto;
+}
+
 .race-chart-wrap {
   width: 100%;
-  overflow-x: auto;
+  height: min(28vh, 16rem);
+  min-height: 140px;
+  overflow: hidden;
 }
 
 .race-chart {
   display: block;
   width: 100%;
+  height: 100%;
   max-width: 100%;
+}
+
+.race-table-card {
+  background: #ffffff;
+  border: 1px solid var(--coach-border);
+  border-radius: 12px;
+  padding: 0.65rem 0.75rem 0.75rem;
+  min-height: 0;
 }
 
 .race-device-marker span {
@@ -868,7 +978,8 @@
   color: #111111;
 }
 
-.form-row > input {
+.form-row > input,
+.form-row > select {
   grid-column: 2;
   width: 100%;
   max-width: 15rem;
@@ -885,6 +996,27 @@
   caret-color: #111111;
   font: inherit;
   font-weight: 500;
+}
+
+.form-row > .coach-check {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.5rem;
+  font-size: 13px;
+  font-weight: 600;
+  color: #111111;
+}
+
+.form-row > .coach-check input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+}
+
+.coach-location-status {
+  margin: 0 0 1.1rem;
 }
 
 .form-row__help,
@@ -974,7 +1106,9 @@
     grid-template-columns: 1fr;
   }
 
-  .form-row > input {
+  .form-row > input,
+  .form-row > select,
+  .form-row > .coach-check {
     grid-column: 1;
     max-width: none;
   }
@@ -998,6 +1132,14 @@
   -webkit-text-fill-color: #111111;
   font: inherit;
   font-weight: 600;
+}
+
+.history-select-bar__field--course .race-select {
+  min-height: 40px;
+  padding: 0.4rem 0.45rem;
+  background: #f7f7f8;
+  font-size: 0.85rem;
+  font-weight: 650;
 }
 
 .race-select option {
@@ -1089,9 +1231,33 @@
   color: #3f4349;
 }
 
-.history-select-bar__field--device {
-  flex: 0 1 46%;
-  max-width: 14rem;
+.history-select-bar__field--device,
+.history-select-bar__field--course {
+  flex: 1 1 10rem;
+  max-width: 16rem;
+}
+
+.history-select-bar__course-opts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.7rem;
+  padding-bottom: 0.15rem;
+}
+
+.history-select-bar__course-opts[hidden],
+.history-select-bar__field--course[hidden],
+.live-data-panel:not(.is-course-view) .history-select-bar__field--course,
+.live-data-panel:not(.is-course-view) .history-select-bar__course-opts {
+  display: none !important;
+}
+
+.live-data-panel .history-select-bar__row {
+  flex-wrap: wrap;
+}
+
+.live-data-panel .coach-scope-toggle {
+  margin-left: auto;
 }
 
 .history-select-bar__field--session {
@@ -1147,6 +1313,10 @@
   flex-direction: column;
   gap: 0.4rem;
   overflow: hidden;
+}
+
+.history-review__body[hidden] {
+  display: none !important;
 }
 
 .history-review__timeline {
@@ -1700,6 +1870,238 @@ button.coach-btn.coach-btn--ghost {
   padding-bottom: 0.5rem;
 }
 
+.coach-dashboard__ticket-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.coach-dashboard__stage {
+  display: none;
+}
+
+.coach-dashboard__map-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.coach-map--home {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 160px;
+  max-height: none;
+  margin: 0;
+}
+
+.home-capsize-card {
+  padding: 0.45rem 0.55rem;
+  border-radius: 10px;
+  border: 1px solid rgba(180, 35, 24, 0.4);
+  background: rgba(180, 35, 24, 0.1);
+  color: #7f1d1d;
+}
+
+.home-capsize-card[hidden] {
+  display: none;
+}
+
+.home-capsize-card strong {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.home-capsize-card p {
+  margin: 0.25rem 0 0;
+  font-size: 0.72rem;
+  font-weight: 650;
+  white-space: pre-line;
+  line-height: 1.35;
+}
+
+.home-capsize-log {
+  min-height: 0;
+}
+
+.home-capsize-log__title {
+  margin: 0 0 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #111;
+}
+
+.home-capsize-log ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 6.5rem;
+  overflow: auto;
+}
+
+.home-capsize-log__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid var(--coach-border);
+  font-size: 0.68rem;
+  line-height: 1.25;
+}
+
+.home-capsize-log__item--active {
+  border-color: rgba(180, 35, 24, 0.4);
+}
+
+.home-capsize-log__item--acknowledged {
+  border-color: rgba(31, 107, 74, 0.35);
+}
+
+.home-capsize-log__empty {
+  font-size: 0.72rem;
+  color: #1a1b1d;
+  padding: 0.35rem 0;
+}
+
+.coach-dashboard__chart-pane {
+  min-height: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--coach-border);
+  background: #0a1628;
+}
+
+.coach-dashboard__chart-pane canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@media (min-width: 960px) {
+  .coach-panel--dashboard {
+    max-width: none;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+
+  .coach-panel--dashboard .coach-dashboard {
+    flex: 1 1 auto;
+    height: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr);
+    gap: 0.75rem;
+    padding-bottom: 0;
+  }
+
+  .coach-dashboard__tickets [data-ashore-section] {
+    display: none;
+  }
+
+  .coach-dashboard__tickets {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .coach-dashboard__ticket-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+
+  .coach-dashboard__tickets .home-capsize-card,
+  .coach-dashboard__tickets .home-capsize-log {
+    flex: 0 0 auto;
+  }
+
+  .home-capsize-log ul {
+    max-height: 8.5rem;
+  }
+
+  .coach-dashboard__stage {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    gap: 0.55rem;
+  }
+
+  .coach-dashboard__map-pane,
+  .coach-dashboard__chart-pane {
+    flex: 1 1 0;
+    min-height: 0;
+  }
+
+  .coach-dashboard__map-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .coach-panel--map,
+  .coach-panel--live,
+  .coach-panel--history {
+    max-width: none;
+    width: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 auto;
+    padding-bottom: 0.45rem;
+  }
+
+  .coach-panel--map .coach-map-panel-tools {
+    flex-shrink: 0;
+    margin-bottom: 0.45rem;
+  }
+
+  .coach-panel--map .coach-map {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    margin-bottom: 0;
+  }
+
+  .coach-panel--live .live-data-panel-root,
+  .coach-panel--history .history-panel,
+  .coach-panel--live .history-review,
+  .coach-panel--history .history-review {
+    flex: 1 1 0;
+    min-height: 0;
+    height: auto;
+  }
+
+  .coach-panel--live .live-data-panel-root,
+  .coach-panel--live .history-review {
+    height: 100%;
+  }
+
+  .live-course-view {
+    flex: 1 1 0;
+    min-height: 0;
+  }
+}
+
 .coach-dashboard__summary {
   display: flex;
   gap: 0.5rem;
@@ -1728,6 +2130,35 @@ button.coach-btn.coach-btn--ghost {
 .coach-dash-pill--water strong {
   color: #15803d;
   -webkit-text-fill-color: #15803d;
+}
+
+.coach-scope-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--coach-border);
+  border-radius: 999px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.coach-scope-toggle__btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: #1a1b1d;
+  cursor: pointer;
+}
+
+.coach-scope-toggle__btn + .coach-scope-toggle__btn {
+  border-left: 1px solid var(--coach-border);
+}
+
+.coach-scope-toggle__btn.is-active {
+  background: #111111;
+  color: #fff;
 }
 
 .coach-ticket-section__title {
@@ -1763,6 +2194,15 @@ button.coach-btn.coach-btn--ghost {
 .crew-ticket--water {
   border-color: rgba(31, 107, 74, 0.35);
   box-shadow: inset 3px 0 0 var(--ahd-safety);
+}
+
+.crew-ticket[data-device-id] {
+  cursor: pointer;
+}
+
+.crew-ticket--follow {
+  border-color: rgba(13, 148, 136, 0.55);
+  box-shadow: inset 3px 0 0 #0d9488, 0 0 0 2px rgba(13, 148, 136, 0.22);
 }
 
 .crew-ticket--capsize {
@@ -1852,6 +2292,12 @@ button.coach-btn.coach-btn--ghost {
   background: rgba(31, 107, 74, 0.12);
   color: #15803d;
   -webkit-text-fill-color: #15803d;
+}
+
+.crew-ticket__badge--coach {
+  background: rgba(245, 158, 11, 0.18);
+  color: #b45309;
+  -webkit-text-fill-color: #b45309;
 }
 
 .crew-ticket__badge--ashore {
@@ -2040,6 +2486,16 @@ button.coach-btn.coach-btn--ghost {
   height: min(70vh, calc(100dvh - 11rem));
 }
 
+@media (min-width: 960px) {
+  .coach-panel--map .coach-map {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    margin-bottom: 0;
+  }
+}
+
 /* Short viewports (phone landscape): compact chrome so History panes stay usable */
 @media (max-height: 520px) {
   .coach-topbar {
@@ -2084,9 +2540,8 @@ button.coach-btn.coach-btn--ghost {
     gap: 0.25rem;
   }
 
-  .live-course-extra {
-    max-height: 38vh;
-    overflow: auto;
+  .live-course-view {
+    min-height: 0;
   }
 
   .history-select-bar {

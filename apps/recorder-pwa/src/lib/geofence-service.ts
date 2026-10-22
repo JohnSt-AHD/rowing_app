@@ -1,4 +1,6 @@
 import { normalizeGeofence, type GeofenceConfig } from './geofence';
+import { demoGeofencesSnapshot, loadDemoGeofences } from './demo-geofences';
+import { isDemoMode } from './demo-mode';
 
 const CACHE_MS = 5 * 60 * 1000;
 
@@ -16,6 +18,12 @@ export async function fetchGeofences(
   force = false,
   timeoutMs = 10000,
 ): Promise<GeofenceConfig[]> {
+  if (isDemoMode()) {
+    const list = await loadDemoGeofences();
+    cached = list;
+    cachedAt = Date.now();
+    return list;
+  }
   const now = Date.now();
   if (!force && cached.length && now - cachedAt < CACHE_MS) return cached;
 
@@ -61,5 +69,14 @@ export function clearGeofenceCache(): void {
 
 /** Last successfully fetched list (may be empty / stale). */
 export function getCachedGeofences(): GeofenceConfig[] {
+  if (isDemoMode() && !cached.length) {
+    cached = demoGeofencesSnapshot();
+    cachedAt = Date.now();
+  }
   return cached.slice();
+}
+
+export function setCachedGeofences(list: GeofenceConfig[]): void {
+  cached = list.slice();
+  cachedAt = Date.now();
 }

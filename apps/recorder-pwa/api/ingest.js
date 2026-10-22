@@ -77,6 +77,7 @@ module.exports = async function handler(req, res) {
   const boatMeta = {
     boatId: body.boatId != null ? String(body.boatId) : undefined,
     boatClass: body.boatClass != null ? String(body.boatClass) : undefined,
+    source: body.source != null ? String(body.source) : undefined,
   };
 
   const result = await store.recordBatch(

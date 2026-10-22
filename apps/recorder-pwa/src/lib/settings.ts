@@ -4,6 +4,7 @@ import {
   type RecorderSettings,
 } from '@rowing/telemetry-types';
 import { normalizeIngestUrl } from '../upload/telemetry-api';
+import { demoRecorderSettings, isDemoMode } from './demo-mode';
 
 const LS_KEY = 'rnz_recorder_settings_v1';
 
@@ -57,6 +58,9 @@ function withOriginDefaults(s: RecorderSettings): RecorderSettings {
 }
 
 export function loadSettings(): RecorderSettings {
+  if (isDemoMode()) {
+    return demoRecorderSettings(withOriginDefaults({ ...DEFAULT_SETTINGS }));
+  }
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return withOriginDefaults({ ...DEFAULT_SETTINGS });
@@ -77,6 +81,7 @@ export function loadSettings(): RecorderSettings {
 }
 
 export function saveSettings(settings: RecorderSettings): void {
+  if (isDemoMode()) return;
   localStorage.setItem(LS_KEY, JSON.stringify(settings));
 }
 

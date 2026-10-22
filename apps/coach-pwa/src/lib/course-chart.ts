@@ -1,11 +1,26 @@
-import { formatSplit500m } from '@rowing/rowing-pace';
+import { formatSplit500m, speedMpsForPrognostic } from '@rowing/rowing-pace';
 import type { ParsedCourse } from './course-types';
 import { colorForDevice, type CourseRaceEngine } from './course-race-engine';
+
+export type CoursePrognosticBand = { pct: number; y: number };
+
+export function coursePrognosticBandsMps(
+  boatClass: string | null | undefined,
+): CoursePrognosticBand[] {
+  if (!boatClass) return [];
+  return [60, 70, 80, 90]
+    .map((pct) => {
+      const mps = speedMpsForPrognostic(pct, boatClass);
+      return mps != null && Number.isFinite(mps) ? { pct, y: mps } : null;
+    })
+    .filter((b): b is CoursePrognosticBand => b != null);
+}
 
 export function drawPaceDistanceChart(
   canvas: HTMLCanvasElement,
   engine: CourseRaceEngine,
   course: ParsedCourse,
+  options?: { prognosticBands?: CoursePrognosticBand[]; bandLabel?: string },
 ) {
   const wrap = canvas.parentElement;
   const w = wrap?.clientWidth || 360;
@@ -35,6 +50,9 @@ export function drawPaceDistanceChart(
       if (pt.speedMps > maxSpeed) maxSpeed = pt.speedMps;
     }
   }
+  for (const band of options?.prognosticBands ?? []) {
+    if (band.y > maxSpeed) maxSpeed = band.y;
+  }
   maxSpeed = Math.ceil(maxSpeed * 1.15 * 10) / 10;
 
   const xAt = (distM: number) => pad.l + (distM / maxDist) * plotW;
@@ -48,6 +66,31 @@ export function drawPaceDistanceChart(
     ctx.moveTo(pad.l, y);
     ctx.lineTo(pad.l + plotW, y);
     ctx.stroke();
+  }
+
+  const bands = (options?.prognosticBands ?? []).filter(
+    (b) => b.y > 0 && b.y <= maxSpeed,
+  );
+  for (const band of bands) {
+    const y = yAt(band.y);
+    ctx.strokeStyle =
+      band.pct >= 90
+        ? 'rgba(239, 68, 68, 0.55)'
+        : band.pct >= 80
+          ? 'rgba(249, 115, 22, 0.5)'
+          : band.pct >= 70
+            ? 'rgba(234, 179, 8, 0.5)'
+            : 'rgba(13, 148, 136, 0.45)';
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(pad.l, y);
+    ctx.lineTo(pad.l + plotW, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#3f4349';
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${band.pct}%`, pad.l + 4, y - 3);
   }
 
   for (const line of course.markers) {
@@ -73,7 +116,8 @@ export function drawPaceDistanceChart(
   ctx.fillStyle = '#3f4349';
   ctx.font = '10px system-ui, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('Distance (m)', pad.l + plotW / 2, h - 6);
+  const bandNote = options?.bandLabel ? ` · ${options.bandLabel}` : '';
+  ctx.fillText(`Distance (m)${bandNote}`, pad.l + plotW / 2, h - 6);
 
   ctx.textAlign = 'right';
   for (let i = 0; i <= 4; i++) {

@@ -93,6 +93,12 @@ import {
 } from './session-display';
 import { StrokePeriodSpeedAvg } from '../lib/stroke-speed-smooth';
 import { HistoryPanel } from './history-panel';
+import {
+  createDemoController,
+  demoSessionStartedAt,
+  isDemoMode,
+  seedDemoSpeedBuffer,
+} from '../lib/demo-mode';
 
 type View = 'record' | 'history' | 'settings';
 type FsTab = 'metrics' | 'speed' | 'map';
@@ -1155,7 +1161,7 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function mainNavHtml(): string {
-    if (recording) return '';
+    if (recording && !isDemoMode()) return '';
     const item = (id: View, label: string) =>
       `<button type="button" class="recorder-tab ${view === id ? 'active' : ''}" data-nav="${id}">${label}</button>`;
     return `
@@ -1383,6 +1389,12 @@ export function mountApp(root: HTMLElement): void {
             <button type="button" class="session-fs-tab" data-fs-tab="metrics" aria-selected="${fsTab === 'metrics' ? 'true' : 'false'}">Metrics</button>
             <button type="button" class="session-fs-tab" data-fs-tab="speed" aria-selected="${fsTab === 'speed' ? 'true' : 'false'}">Graph</button>
             <button type="button" class="session-fs-tab" data-fs-tab="map" aria-selected="${fsTab === 'map' ? 'true' : 'false'}">Map</button>
+            ${
+              isDemoMode()
+                ? `<button type="button" class="session-fs-tab" data-nav="history">History</button>
+                   <button type="button" class="session-fs-tab" data-nav="settings">Settings</button>`
+                : ''
+            }
           </nav>
           <div class="session-fs-chrome__actions">
             <div
@@ -1570,6 +1582,7 @@ export function mountApp(root: HTMLElement): void {
         <div class="ahd-recorder-main ahd-recorder-main--settings">
           <div class="ahd-toolbar">
             <h1>Settings</h1>
+            ${isDemoMode() ? '<p class="poll-line">Interactive demo — sample data only. Settings are not saved.</p>' : ''}
             <div class="ahd-toolbar-actions">
               <button type="button" class="hub-btn" data-nav="record">Back</button>
             </div>
@@ -1689,6 +1702,10 @@ export function mountApp(root: HTMLElement): void {
   }
 
   async function connectHrMonitor(): Promise<void> {
+    if (isDemoMode()) {
+      pushLog('Demo mode — heart-rate pairing is skipped.');
+      return;
+    }
     const form = root.querySelector('[data-settings-form]') as HTMLFormElement | null;
     const hrCheck = form?.querySelector('[name="enableHr"]') as HTMLInputElement | null;
     if (hrCheck) hrCheck.checked = true;
@@ -1930,6 +1947,55 @@ export function mountApp(root: HTMLElement): void {
       pushLog(`Could not arm standby: ${e instanceof Error ? e.message : String(e)}`);
       render();
     }
+  }
+
+  function startDemoSession(): void {
+    if (recording) {
+      view = 'record';
+      render();
+      return;
+    }
+    void fetchGeofences(loadSettings().ingestUrl, loadSettings().ingestToken).then(
+      (list) => {
+        pushLog(`${list.length} RNZ geofence(s) loaded for demo.`, false);
+        if (sessionMap) drawGeofencesOnMap(list);
+        updateLiveHud();
+      },
+      () => {
+        /* snapshot already in cache */
+      },
+    );
+    sessionStartedAt = demoSessionStartedAt();
+    speedAvg.clear();
+    strokeRateAvg.clear();
+    seedDemoSpeedBuffer();
+    fsTab = 'metrics';
+    destroySessionMap();
+    controller = createDemoController();
+    recording = true;
+    capsizeActive = false;
+    backgroundStatus = 'foreground';
+    view = 'record';
+    pushLog('Demo session — sample GPS, no hardware required.');
+    render();
+    startHudTimer();
+  }
+
+  function stopDemoSession(): void {
+    stopHudTimer();
+    sessionStartedAt = null;
+    speedAvg.clear();
+    strokeRateAvg.clear();
+    clearSessionSpeedBuffer();
+    destroySessionMap();
+    fsTab = 'metrics';
+    controller = null;
+    recording = false;
+    capsizeActive = false;
+    backgroundStatus = 'foreground';
+    view = 'record';
+    pushLog('Demo session stopped.');
+    render();
   }
 
   async function beginRecording(opts?: {
@@ -2192,7 +2258,7 @@ export function mountApp(root: HTMLElement): void {
     });
 
     const goNav = (next: View) => {
-      if (recording && next !== 'record') {
+      if (recording && next !== 'record' && !isDemoMode()) {
         pushLog('Stop the session before leaving Record.', false);
         return;
       }
@@ -2245,7 +2311,7 @@ export function mountApp(root: HTMLElement): void {
       saveSettings(next);
       settings = next;
       view = 'record';
-      pushLog('Settings saved.', false);
+      pushLog(isDemoMode() ? 'Demo mode — settings are not saved.' : 'Settings saved.', false);
       render();
     });
 
@@ -2281,6 +2347,10 @@ export function mountApp(root: HTMLElement): void {
     });
 
     root.querySelector('[data-action="start"]')?.addEventListener('click', () => {
+      if (isDemoMode()) {
+        startDemoSession();
+        return;
+      }
       void beginRecording();
     });
 
@@ -2297,6 +2367,10 @@ export function mountApp(root: HTMLElement): void {
 
     root.querySelectorAll('[data-action="stop"]').forEach((el) => {
       el.addEventListener('click', async () => {
+        if (isDemoMode()) {
+          stopDemoSession();
+          return;
+        }
         if (syncTimer) clearInterval(syncTimer);
         stopHudTimer();
         sessionStartedAt = null;
@@ -2333,6 +2407,11 @@ export function mountApp(root: HTMLElement): void {
 
     root.querySelectorAll('[data-action="clear-session"]').forEach((el) => {
       el.addEventListener('click', () => {
+        if (isDemoMode()) {
+          stopDemoSession();
+          pushLog('Demo session cleared.');
+          return;
+        }
         void clearSession();
       });
     });
@@ -2358,6 +2437,10 @@ export function mountApp(root: HTMLElement): void {
   });
 
   render();
+  if (isDemoMode()) {
+    startDemoSession();
+    return;
+  }
   void refreshFleetConfigInBackground();
   void repairOversizedPendingOutbox().then((n) => {
     if (n > 0) pushLog(`Split ${n} oversized queued batch(es) for upload.`);

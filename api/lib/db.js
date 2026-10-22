@@ -1105,14 +1105,23 @@ async function upsertSession(orgId, sessionId, deviceRef, uniqueId, athleteId, b
       /* ignore lookup failures */
     }
   }
+  const sourceRaw = String(boatMeta.source || '').trim().toLowerCase();
+  const source =
+    sourceRaw === 'manager' || sourceRaw === 'coach' || sourceRaw === 'walkup'
+      ? sourceRaw
+      : 'recorder';
   await sql`
-    INSERT INTO rnz_sessions (org_id, session_id, device_ref, unique_id, athlete_id, boat_id, boat_class, started_at, updated_at)
-    VALUES (${orgId}, ${sessionId}, ${deviceRef}, ${uniqueId}, ${athleteId || null}, ${boatId}, ${boatClass}, NOW(), NOW())
+    INSERT INTO rnz_sessions (org_id, session_id, device_ref, unique_id, athlete_id, boat_id, boat_class, source, started_at, updated_at)
+    VALUES (${orgId}, ${sessionId}, ${deviceRef}, ${uniqueId}, ${athleteId || null}, ${boatId}, ${boatClass}, ${source}, NOW(), NOW())
     ON CONFLICT (session_id) DO UPDATE SET
       updated_at = NOW(),
       athlete_id = COALESCE(EXCLUDED.athlete_id, rnz_sessions.athlete_id),
       boat_id = COALESCE(EXCLUDED.boat_id, rnz_sessions.boat_id),
-      boat_class = COALESCE(EXCLUDED.boat_class, rnz_sessions.boat_class)
+      boat_class = COALESCE(EXCLUDED.boat_class, rnz_sessions.boat_class),
+      source = CASE
+        WHEN rnz_sessions.source = 'walkup' THEN rnz_sessions.source
+        ELSE COALESCE(EXCLUDED.source, rnz_sessions.source)
+      END
   `;
 }
 
@@ -2321,7 +2330,9 @@ async function getLatestSessionStateByDevice(orgId) {
     SELECT DISTINCT ON (unique_id)
       unique_id,
       started_at,
-      ended_at
+      ended_at,
+      source,
+      boat_class
     FROM rnz_sessions
     WHERE org_id = ${orgId}
     ORDER BY unique_id, started_at DESC
@@ -2331,6 +2342,8 @@ async function getLatestSessionStateByDevice(orgId) {
     byDevice.set(String(row.unique_id), {
       startedAtMs: new Date(row.started_at).getTime(),
       endedAtMs: row.ended_at ? new Date(row.ended_at).getTime() : null,
+      source: row.source != null ? String(row.source) : null,
+      boatClass: row.boat_class != null ? String(row.boat_class) : null,
     });
   }
   return byDevice;

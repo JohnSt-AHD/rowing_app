@@ -1590,11 +1590,18 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   }
   metrics.droppedSamples += clean.dropped || 0;
 
-  const geofenceFilter = await filterSamplesInsideSuppressZones(
-    orgId,
-    scopedDevice,
-    clean.samples,
-  );
+  const skipSuppress = isManagerDevice({
+    source: boatMeta?.source,
+    boatClass: boatMeta?.boatClass,
+    deviceId,
+  });
+  const geofenceFilter = skipSuppress
+    ? { samples: clean.samples, dropped: 0 }
+    : await filterSamplesInsideSuppressZones(
+        orgId,
+        scopedDevice,
+        clean.samples,
+      );
   clean.samples = geofenceFilter.samples;
   const geofenceDropped = geofenceFilter.dropped || 0;
   if (geofenceDropped) metrics.droppedSamples += geofenceDropped;
@@ -1688,6 +1695,7 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   if (athleteId) row.athleteId = String(athleteId);
   if (boatMeta?.boatId) row.boatId = String(boatMeta.boatId);
   if (boatMeta?.boatClass) row.boatClass = String(boatMeta.boatClass);
+  if (boatMeta?.source) row.source = String(boatMeta.source);
   row.samples.push(...clean.samples);
   row.updatedAt = now;
   noteDeviceTelemetry(scopedDevice, clean.samples);
@@ -1800,6 +1808,40 @@ async function endSession(orgId, sessionId, deviceId, endedAtMs, athleteId) {
     row.updatedAt = endedAt;
   }
   return { ended: true, persisted, endedAt };
+}
+
+function isManagerDevice(entry) {
+  const src = String(entry?.source || '').trim().toLowerCase();
+  if (src === 'manager' || src === 'coach') return true;
+  if (String(entry?.role || '').trim().toLowerCase() === 'coach') return true;
+  if (String(entry?.boatClass || '').trim().toLowerCase() === 'coach') return true;
+  return /^coach\s/i.test(String(entry?.deviceId || '').trim());
+}
+
+function resolveDeviceSource(entry) {
+  const src = String(entry?.source || '').trim();
+  if (src) return src;
+  if (isManagerDevice(entry)) return 'manager';
+  return null;
+}
+
+function attachCoachRoleToMapPositions(positions, sessionByDevice) {
+  if (!Array.isArray(positions)) return positions;
+  for (const p of positions) {
+    const sess = sessionByDevice?.get(String(p.deviceId));
+    const source = resolveDeviceSource({
+      source: p.source || sess?.source,
+      boatClass: p.boatClass || sess?.boatClass,
+      deviceId: p.deviceId,
+    });
+    if (!isManagerDevice({ source, boatClass: p.boatClass || sess?.boatClass, deviceId: p.deviceId })) {
+      continue;
+    }
+    p.source = source || 'manager';
+    p.role = 'coach';
+    if (!p.boatClass) p.boatClass = 'Coach';
+  }
+  return positions;
 }
 
 /**
@@ -1964,6 +2006,7 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
     entry.boatName != null && String(entry.boatName).trim()
       ? String(entry.boatName).trim()
       : null;
+  const source = resolveDeviceSource(entry);
   const name =
     entry.name != null && String(entry.name).trim()
       ? String(entry.name).trim()
@@ -1978,6 +2021,8 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
     boatId: entry.boatId != null ? entry.boatId : null,
     boatClass,
     boatName,
+    source,
+    role: isManagerDevice({ source, boatClass, deviceId: entry.deviceId }) ? 'coach' : null,
     sessionId: entry.sessionId,
     online,
     lastSeenMs,
@@ -2052,6 +2097,7 @@ function listDevicesFromMemory(opts = {}) {
         boatId: row.boatId || null,
         boatClass: row.boatClass || null,
         boatName: row.boatName || null,
+        source: row.source || null,
         sessionId,
         samples: row.samples,
         lastSeenMs: row.updatedAt,
@@ -2196,6 +2242,7 @@ async function listDevices(orgId, opts = {}) {
             dev.coach = meta.coach;
           }
           if (meta.boatClass) dev.boatClass = meta.boatClass;
+          if (meta.source) dev.source = meta.source;
           if (meta.boatName) dev.boatName = meta.boatName;
           if (meta.boatId != null) dev.boatId = meta.boatId;
           if (meta.sessionId && !dev.sessionId) dev.sessionId = meta.sessionId;
@@ -2213,6 +2260,11 @@ async function listDevices(orgId, opts = {}) {
         if (!dev.boatClass && typeof db.inferBoatClassFromDeviceId === 'function') {
           const inferred = db.inferBoatClassFromDeviceId(dev.deviceId);
           if (inferred) dev.boatClass = inferred;
+        }
+        if (isManagerDevice(dev)) {
+          dev.source = dev.source || 'manager';
+          dev.role = 'coach';
+          if (!dev.boatClass) dev.boatClass = 'Coach';
         }
         mergeListDeviceDbTelemetry(
           dev,
@@ -2235,6 +2287,11 @@ async function listDevices(orgId, opts = {}) {
   // (in-memory sticky on other Vercel instances can survive Acknowledge and re-alarm).
   for (const dev of byDevice.values()) {
     if (dev.rowing) dev.rowing.capsize = false;
+    if (isManagerDevice(dev)) {
+      dev.source = dev.source || 'manager';
+      dev.role = 'coach';
+      if (!dev.boatClass) dev.boatClass = 'Coach';
+    }
   }
   if (hasPostgres && dbCapsizeAlerts) {
     forceCapsizeAlertsOnDevices(
@@ -2465,6 +2522,9 @@ function getPositionsSnapshot(orgId, onlineMs = 30000) {
           : {}),
         ...(lastGps.gps.compass != null && Number.isFinite(Number(lastGps.gps.compass))
           ? { compass: Number(lastGps.gps.compass) }
+          : {}),
+        ...(isManagerDevice(row)
+          ? { role: 'coach', source: row.source || 'manager', boatClass: row.boatClass || 'Coach' }
           : {}),
       },
     };
@@ -2923,6 +2983,8 @@ function latestSessionStateByDeviceFromMemory(orgId) {
       byDevice.set(String(row.deviceId), {
         startedAtMs,
         endedAtMs: row.endedAt ?? null,
+        source: row.source || null,
+        boatClass: row.boatClass || null,
       });
     }
   }
@@ -3053,15 +3115,18 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       ]);
       attachPathPaceToMapPositions(positions, pathFixesByDevice, orgId);
       attachStrokeMedianToMapPositions(positions, strokeReadingsByDevice);
-      return filterMapPositionsAfterSessionEnd(
-        enrichMapPositionsDisplayAge(positions, now, registryTimes),
-        {
-          sessionByDevice,
-          registryTimes,
-          capsizeAlerts: dbCapsizeAlerts,
-          now,
-          onlineMs,
-        },
+      return attachCoachRoleToMapPositions(
+        filterMapPositionsAfterSessionEnd(
+          enrichMapPositionsDisplayAge(positions, now, registryTimes),
+          {
+            sessionByDevice,
+            registryTimes,
+            capsizeAlerts: dbCapsizeAlerts,
+            now,
+            onlineMs,
+          },
+        ),
+        sessionByDevice,
       );
     } catch (err) {
       console.error('[ingest-store] getMapPositions DB failed:', err);
@@ -3096,15 +3161,19 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   ]);
   attachPathPaceToMapPositions(mapped, pathFixesByDevice, orgId);
   attachStrokeMedianToMapPositions(mapped, strokeReadingsByDevice);
-  return filterMapPositionsAfterSessionEnd(
-    enrichMapPositionsDisplayAge(mapped, now, null),
-    {
-      sessionByDevice: latestSessionStateByDeviceFromMemory(orgId),
-      registryTimes: null,
-      capsizeAlerts: getStickyCapsizeAlerts(orgId),
-      now,
-      onlineMs,
-    },
+  const sessionByDevice = latestSessionStateByDeviceFromMemory(orgId);
+  return attachCoachRoleToMapPositions(
+    filterMapPositionsAfterSessionEnd(
+      enrichMapPositionsDisplayAge(mapped, now, null),
+      {
+        sessionByDevice,
+        registryTimes: null,
+        capsizeAlerts: getStickyCapsizeAlerts(orgId),
+        now,
+        onlineMs,
+      },
+    ),
+    sessionByDevice,
   );
 }
 
@@ -3340,6 +3409,48 @@ async function enrichTraccarSnapshotWalkups(orgId, snapshot) {
   return snapshot;
 }
 
+async function enrichTraccarSnapshotCoach(orgId, snapshot) {
+  if (!snapshot?.devices?.length && !snapshot?.positions?.length) return snapshot;
+  let sessionByDevice = null;
+  if (db.hasDb()) {
+    try {
+      sessionByDevice = await db.getLatestSessionStateByDevice(orgId);
+    } catch (err) {
+      console.error('[ingest-store] snapshot coach meta failed:', err);
+    }
+  } else {
+    sessionByDevice = latestSessionStateByDeviceFromMemory(orgId);
+  }
+  const idToUid = new Map(
+    (snapshot.devices || []).map((d) => [d.id, d.uniqueId || d.name]),
+  );
+  const mark = (uid, target) => {
+    const sess = sessionByDevice?.get(String(uid));
+    if (
+      !isManagerDevice({
+        source: sess?.source || target?.attributes?.source,
+        boatClass: sess?.boatClass || target?.attributes?.boatClass,
+        deviceId: uid,
+      })
+    ) {
+      return;
+    }
+    target.attributes = {
+      ...(target.attributes || {}),
+      role: 'coach',
+      source: sess?.source || target.attributes?.source || 'manager',
+      boatClass: sess?.boatClass || target.attributes?.boatClass || 'Coach',
+    };
+  };
+  for (const d of snapshot.devices || []) {
+    mark(d.uniqueId || d.name, d);
+  }
+  for (const p of snapshot.positions || []) {
+    mark(idToUid.get(p.deviceId) || p.deviceName, p);
+  }
+  return snapshot;
+}
+
 async function getTraccarSnapshot(orgId, onlineMs = 120000) {
   let snapshot;
   if (db.hasDb()) {
@@ -3378,6 +3489,7 @@ async function getTraccarSnapshot(orgId, onlineMs = 120000) {
   snapshot = await enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs);
   snapshot = await enrichTraccarSnapshotRowing(orgId, snapshot, onlineMs);
   snapshot = await enrichTraccarSnapshotCapsize(orgId, snapshot, onlineMs);
+  snapshot = await enrichTraccarSnapshotCoach(orgId, snapshot);
   if (db.hasDb() && snapshot?.positions?.length) {
     try {
       const [sessionByDevice, registryTimes] = await Promise.all([

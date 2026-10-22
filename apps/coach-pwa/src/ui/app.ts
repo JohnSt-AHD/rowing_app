@@ -8,15 +8,27 @@ import { LogbookPanel } from './logbook-panel';
 import {
   clearLiveSpeedBuffers,
   liveDeviceColor,
+  liveSpeedVsTimeSeries,
+  recordLiveSpeedSamples,
   registerLiveDevice,
 } from '../lib/live-speed-buffer';
 import {
   clearCapsizeAlert,
   fetchDevices,
+  fetchFleetConfig,
   fetchMapPositions,
+  type FleetCoach,
   type FleetDevice,
   type MapPosition,
 } from '../lib/api';
+import { isCoachDevice, managerDeviceId } from '../lib/coach-identity';
+import {
+  getCoachLocationStatus,
+  syncCoachLocation,
+  type CoachLocationStatus,
+} from '../lib/coach-location';
+import { formatSplit500 } from '../lib/course-format';
+import { drawMultiSeriesChart, prognosticBandsKmh } from '../lib/history-charts';
 import { parseBoatClass } from '@rowing/rowing-pace';
 import {
   getNativeMonitoringStatus,
@@ -35,9 +47,25 @@ import {
 import {
   loadSettings,
   saveSettings,
+  clampLocationIntervalMs,
   DEFAULT_API_BASE_URL,
+  DEFAULT_LOCATION_INTERVAL_MS,
   type CoachSettings,
 } from '../lib/settings';
+import { demoMapPositions, isDemoMode } from '../lib/demo-mode';
+import {
+  acknowledgeCapsizeLog,
+  formatNzTime,
+  listCapsizeDayLog,
+  markMissingCapsizesClearedRemote,
+  replaceCapsizeDayLogForDemo,
+  upsertActiveCapsize,
+} from '../lib/capsize-day-log';
+import {
+  demoGeofencesSnapshot,
+  drawDemoGeofencesOnMap,
+  loadDemoGeofences,
+} from '../lib/demo-geofences';
 import { bindInfoToggles } from '../lib/info-toggle';
 import {
   gpsFixState,
@@ -65,6 +93,31 @@ type CrewTicketRow = FleetDevice & {
 
 const ONLINE_SEC = 120;
 const LS_MAP_FOLLOW = 'crewsight_map_follow_fleet';
+const LS_TICKET_SCOPE = 'crewsight_ticket_scope';
+
+type TicketScope = 'all' | 'mine';
+
+function loadTicketScope(): TicketScope {
+  try {
+    return localStorage.getItem(LS_TICKET_SCOPE) === 'mine' ? 'mine' : 'all';
+  } catch {
+    return 'all';
+  }
+}
+
+function saveTicketScope(scope: TicketScope) {
+  try {
+    localStorage.setItem(LS_TICKET_SCOPE, scope);
+  } catch {
+    /* ignore */
+  }
+}
+
+function normalizeCoachName(value?: string | null): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase();
+}
 
 function loadMapFollowPref(): boolean {
   try {
@@ -91,7 +144,7 @@ function asset(path: string): string {
 export function mountApp(root: HTMLElement): void {
   let settings = loadSettings();
   let tab: Tab = 'dashboard';
-  let monitoring = false;
+  let monitoring = isDemoMode();
   let serviceRunning = false;
   let devices: FleetDevice[] = [];
   let positions: MapPosition[] = [];
@@ -101,11 +154,21 @@ export function mountApp(root: HTMLElement): void {
   let quietHoursUnsub: (() => void) | null = null;
   let map: L.Map | null = null;
   let markersLayer: L.LayerGroup | null = null;
+  let geofenceLayer: L.LayerGroup | null = null;
   /** @type {Map<string, L.Marker>} */
   const markers = new Map<string, L.Marker>();
   /** When true, map pans/zooms to keep active devices in view. Toggle via Follow fleet button. */
-  let mapFollowFleet = loadMapFollowPref();
+  let mapFollowFleet = isDemoMode() ? false : loadMapFollowPref();
+  /** Ticket / cycle lock — keep this device centred when set. */
+  let followDeviceId: string | null = null;
+  /** Home / map: all token boats, or this Manager’s athletes. Capsizes always stay visible. */
+  let ticketScope: TicketScope = loadTicketScope();
+  /** Follow fleet rotates through on-water crews. */
+  let followCycleOn = false;
+  let followCycleTimer: ReturnType<typeof setInterval> | null = null;
+  const FOLLOW_CYCLE_MS = 8_000;
   let mapTickUnsub: (() => void) | null = null;
+  let fleetCoaches: FleetCoach[] = [];
   let historyPanel: HistoryPanel | null = null;
   let liveDataPanel: LiveDataPanel | null = null;
   let logbookPanel: LogbookPanel | null = null;
@@ -143,6 +206,37 @@ export function mountApp(root: HTMLElement): void {
     if (latchedCapsizeById.has(d.deviceId)) return true;
     const list = pos ?? positions;
     return list.some((p) => p.deviceId === d.deviceId && p.capsize);
+  }
+
+  function isOwnManagerDevice(d?: FleetDevice | null): boolean {
+    if (!d) return false;
+    const mine = managerDeviceId(settings.coachName);
+    if (mine && d.deviceId === mine) return true;
+    const coach = normalizeCoachName(settings.coachName);
+    if (!coach) return false;
+    if (isCoachDevice(d) && normalizeCoachName(d.coach) === coach) return true;
+    if (isCoachDevice(d) && normalizeCoachName(d.athleteId) === coach) return true;
+    return false;
+  }
+
+  function deviceCoachMatchesManager(d?: FleetDevice | null): boolean {
+    const mine = normalizeCoachName(settings.coachName);
+    if (!mine || !d) return false;
+    return normalizeCoachName(d.coach) === mine;
+  }
+
+  /** My-crews filter. Capsizes on this token always pass so every Manager sees them. */
+  function devicePassesScope(d?: FleetDevice | null, p?: MapPosition): boolean {
+    if (Boolean(d && deviceHasCapsize(d)) || Boolean(p?.capsize)) return true;
+    if (ticketScope === 'all') return true;
+    if (!d) return false;
+    if (isOwnManagerDevice(d)) return true;
+    return deviceCoachMatchesManager(d);
+  }
+
+  function applyTicketScope<T extends FleetDevice>(rows: T[]): T[] {
+    if (ticketScope === 'all') return rows;
+    return rows.filter((row) => devicePassesScope(row, (row as CrewTicketRow).mapPosition));
   }
 
   /** Remember sticky tips from the latest poll (skipped during Acknowledge mute). */
@@ -291,6 +385,8 @@ export function mountApp(root: HTMLElement): void {
     suppressCapsizeAlarmUntilMs = Date.now() + 60_000;
     latchedCapsizeById.clear();
     try {
+      const ids = capsizedDevices().map((d) => d.deviceId);
+      acknowledgeCapsizeLog(ids, 'CrewSight Manager', 'manager');
       const result = (await clearCapsizeAlert(settings)) as {
         helpNotified?: string[];
         cleared?: string[];
@@ -438,6 +534,11 @@ export function mountApp(root: HTMLElement): void {
   }
 
   async function refreshMonitoringStatus() {
+    if (isDemoMode()) {
+      monitoring = true;
+      serviceRunning = false;
+      return;
+    }
     const st = await getNativeMonitoringStatus();
     monitoring = st.active;
     serviceRunning = st.serviceRunning;
@@ -486,6 +587,8 @@ export function mountApp(root: HTMLElement): void {
       }
 
       latchCapsizeFromPoll(dev, pos);
+      recordLiveSpeedSamples(pos);
+      syncCapsizeDayLog(dev, pos);
       // Stamp map markers from latch so offline tips stay visible after stale drop.
       if (Date.now() >= suppressCapsizeAlarmUntilMs && latchedCapsizeById.size) {
         pos = pos.map((p) =>
@@ -592,35 +695,64 @@ export function mountApp(root: HTMLElement): void {
       map.remove();
       map = null;
       markersLayer = null;
+      geofenceLayer = null;
       markers.clear();
     }
   }
 
+  function isTabletHome(): boolean {
+    return typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width: 960px)').matches
+      : false;
+  }
+
+  function visibleMapHost(): HTMLElement | null {
+    const home = root.querySelector('#coachHomeMap') as HTMLElement | null;
+    const tabMap = root.querySelector('#coachMap') as HTMLElement | null;
+    if (tab === 'dashboard' && isTabletHome() && home) return home;
+    if (tab === 'map' && tabMap) return tabMap;
+    return null;
+  }
+
   function ensureMap() {
-    const el = root.querySelector('#coachMap') as HTMLElement | null;
+    const el = visibleMapHost();
     if (!el) return;
     if (map && map.getContainer() !== el) {
       destroyMap();
     }
     if (map) return;
     try {
-      map = L.map(el, { preferCanvas: true }).setView([-37.93, 175.55], 12);
+      map = L.map(el, { preferCanvas: !isDemoMode() }).setView([-37.93, 175.55], 12);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
         attribution: '&copy; OpenStreetMap',
       }).addTo(map);
       markersLayer = L.layerGroup().addTo(map);
+      if (isDemoMode()) {
+        const paint = (list: ReturnType<typeof demoGeofencesSnapshot>) => {
+          if (!map) return;
+          geofenceLayer?.remove();
+          try {
+            geofenceLayer = drawDemoGeofencesOnMap(map, list);
+          } catch (e) {
+            setStatus(
+              `Demo geofences failed: ${e instanceof Error ? e.message : String(e)}`,
+              true,
+            );
+          }
+        };
+        paint(demoGeofencesSnapshot());
+        void loadDemoGeofences().then(paint).catch(() => {
+          /* snapshot already drawn */
+        });
+      }
       map.on('dragstart', () => {
-        if (!mapFollowFleet) return;
-        mapFollowFleet = false;
-        saveMapFollowPref(false);
-        updateMapFollowButton();
+        if (!mapFollowFleet && !followDeviceId) return;
+        stopCrewFollow();
       });
       map.on('zoomstart', (e: L.LeafletEvent) => {
-        if (!e.originalEvent || !mapFollowFleet) return;
-        mapFollowFleet = false;
-        saveMapFollowPref(false);
-        updateMapFollowButton();
+        if (!e.originalEvent || (!mapFollowFleet && !followDeviceId)) return;
+        stopCrewFollow();
       });
       setTimeout(() => map?.invalidateSize(), 150);
     } catch (e) {
@@ -638,18 +770,22 @@ export function mountApp(root: HTMLElement): void {
     const stale = p.telemetryStale === true || isTelemetryStale(receiveAgo);
     const cap = Boolean(p.capsize);
     const state = gpsFixState(gpsAge);
-    const accent = liveDeviceColor(p.deviceId);
+    const coach = isCoachDevice(p) || (device != null && isCoachDevice(device));
+    const accent = coach ? '#f59e0b' : liveDeviceColor(p.deviceId);
     const opacity = state === 'lost' ? 0.45 : state === 'amber' ? 0.75 : 1;
     const capRing = cap ? 'box-shadow:0 0 0 2px #ef4444;' : '';
-    const className = cap ? 'coach-marker capsize' : 'coach-marker';
+    const shape = coach
+      ? 'width:12px;height:12px;transform:rotate(45deg);border-radius:2px;'
+      : 'width:14px;height:14px;border-radius:50%;';
+    const className = cap ? 'coach-marker capsize' : coach ? 'coach-marker coach-marker--launch' : 'coach-marker';
     const staleFlag = stale
       ? `<span class="coach-marker-stale">Stale</span>`
       : '';
     return L.divIcon({
       className,
-      html: `<span class="coach-marker-stack">${staleFlag}<span style="background:${accent};opacity:${opacity};${capRing}width:14px;height:14px;border-radius:50%;display:block;border:2px solid #fff"></span></span>`,
-      iconSize: stale ? [52, 30] : [14, 14],
-      iconAnchor: stale ? [26, 26] : [7, 7],
+      html: `<span class="coach-marker-stack">${staleFlag}<span style="background:${accent};opacity:${opacity};${capRing}${shape}display:block;border:2px solid #fff"></span></span>`,
+      iconSize: stale ? [52, 30] : coach ? [16, 16] : [14, 14],
+      iconAnchor: stale ? [26, 26] : coach ? [8, 8] : [7, 7],
     });
   }
 
@@ -668,6 +804,7 @@ export function mountApp(root: HTMLElement): void {
       if (!d.online) continue;
       const p = posById.get(d.deviceId);
       if (!p || !Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) continue;
+      if (!devicePassesScope(d, p)) continue;
       const ago = d.lastSeenAgoSec ?? p.lastSeenAgoSec;
       if (ago != null && Number.isFinite(ago) && ago > ONLINE_SEC) continue;
       latlngs.push(mapLatLngFor(p));
@@ -712,7 +849,104 @@ export function mountApp(root: HTMLElement): void {
     map.fitBounds(bounds, { padding: [48, 48], maxZoom: 16, animate: true });
   }
 
+  function capsizeMapLatLngs(): L.LatLng[] {
+    const out: L.LatLng[] = [];
+    const posById = new Map(positions.map((p) => [p.deviceId, p]));
+    for (const d of capsizedDevices()) {
+      const p = posById.get(d.deviceId);
+      if (p && Number.isFinite(p.latitude) && Number.isFinite(p.longitude)) {
+        out.push(mapLatLngFor(p));
+      }
+    }
+    return out;
+  }
+
+  function followableCrewIds(): string[] {
+    return crewTicketRows()
+      .filter((r) => r.onWater && !isCoachDevice(r) && r.mapPosition)
+      .map((r) => r.deviceId);
+  }
+
+  function followSingleDeviceOnMap(deviceId: string, force: boolean) {
+    if (!map) return;
+    const p = positions.find((row) => row.deviceId === deviceId);
+    if (!p || !Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) return;
+    const ll = mapLatLngFor(p);
+    if (!force && !fleetOutsideMapInset([ll])) return;
+    const zoom = Math.min(Math.max(map.getZoom(), 16), 17);
+    map.setView(ll, zoom, { animate: true });
+    const marker = markers.get(deviceId);
+    if (force && marker) marker.openPopup();
+  }
+
+  function stopFollowCycle() {
+    if (followCycleTimer) {
+      clearInterval(followCycleTimer);
+      followCycleTimer = null;
+    }
+    followCycleOn = false;
+  }
+
+  function startFollowCycle() {
+    stopFollowCycle();
+    followCycleOn = true;
+    mapFollowFleet = true;
+    saveMapFollowPref(true);
+    const ids = followableCrewIds();
+    if (!ids.length) {
+      followDeviceId = null;
+      followActiveDevicesOnMap();
+      updateMapFollowButton();
+      return;
+    }
+    if (!followDeviceId || !ids.includes(followDeviceId)) followDeviceId = ids[0];
+    followSingleDeviceOnMap(followDeviceId, true);
+    followCycleTimer = setInterval(() => {
+      const list = followableCrewIds();
+      if (!list.length) return;
+      const i = list.indexOf(followDeviceId || '');
+      followDeviceId = list[(i + 1 + list.length) % list.length];
+      followSingleDeviceOnMap(followDeviceId, true);
+      updateTicketFollowUi();
+      updateMapFollowButton();
+    }, FOLLOW_CYCLE_MS);
+    updateTicketFollowUi();
+    updateMapFollowButton();
+  }
+
+  function stopCrewFollow() {
+    stopFollowCycle();
+    followDeviceId = null;
+    mapFollowFleet = false;
+    saveMapFollowPref(false);
+    updateMapFollowButton();
+    updateTicketFollowUi();
+  }
+
+  function onTicketFollow(deviceId: string) {
+    if (followDeviceId === deviceId && !followCycleOn) {
+      stopCrewFollow();
+      return;
+    }
+    stopFollowCycle();
+    mapFollowFleet = false;
+    saveMapFollowPref(false);
+    followDeviceId = deviceId;
+    followSingleDeviceOnMap(deviceId, true);
+    updateMapFollowButton();
+    updateTicketFollowUi();
+  }
+
   function followActiveDevicesOnMap() {
+    const caps = capsizeMapLatLngs();
+    if (caps.length && !followDeviceId) {
+      fitMapToActiveDevices(caps);
+      return;
+    }
+    if (followDeviceId) {
+      followSingleDeviceOnMap(followDeviceId, false);
+      return;
+    }
     if (!mapFollowFleet) return;
     const active = activeMapLatLngs();
     if (active.length === 0) return;
@@ -724,10 +958,21 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function updateMapFollowButton() {
-    const btn = root.querySelector('[data-map-follow]') as HTMLButtonElement | null;
-    if (!btn) return;
-    btn.classList.toggle('coach-btn--active', mapFollowFleet);
-    btn.setAttribute('aria-pressed', mapFollowFleet ? 'true' : 'false');
+    root.querySelectorAll('[data-map-follow]').forEach((el) => {
+      const btn = el as HTMLButtonElement;
+      const following = mapFollowFleet || Boolean(followDeviceId);
+      btn.classList.toggle('coach-btn--active', following);
+      btn.setAttribute('aria-pressed', following ? 'true' : 'false');
+      if (followCycleOn) btn.textContent = 'Follow fleet';
+      else if (followDeviceId) btn.textContent = 'Following';
+      else btn.textContent = 'Follow fleet';
+    });
+  }
+
+  function updateTicketFollowUi() {
+    root.querySelectorAll<HTMLElement>('.crew-ticket[data-device-id]').forEach((el) => {
+      el.classList.toggle('crew-ticket--follow', el.dataset.deviceId === followDeviceId);
+    });
   }
 
   function updateMap() {
@@ -738,6 +983,8 @@ export function mountApp(root: HTMLElement): void {
     const deviceById = new Map(devices.map((d) => [d.deviceId, d]));
     for (const p of positions) {
       if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) continue;
+      const d = deviceById.get(p.deviceId);
+      if (!devicePassesScope(d, p)) continue;
       seen.add(p.deviceId);
       const latlng = mapLatLngFor(p);
       latlngs.push(latlng);
@@ -747,7 +994,10 @@ export function mountApp(root: HTMLElement): void {
         m.setLatLng(latlng);
         m.setIcon(icon);
       } else {
-        m = L.marker(latlng, { icon }).bindPopup(p.deviceId);
+        const popupLabel = isCoachDevice(p) || (deviceById.get(p.deviceId) && isCoachDevice(deviceById.get(p.deviceId)!))
+          ? `${p.deviceId}<br><span class="map-popup-coach">Coach / Manager</span>`
+          : p.deviceId;
+        m = L.marker(latlng, { icon }).bindPopup(popupLabel);
         markersLayer.addLayer(m);
         markers.set(p.deviceId, m);
       }
@@ -784,13 +1034,8 @@ export function mountApp(root: HTMLElement): void {
       parts.push(`Athlete ${athlete}`);
     }
     if (boatName && boatName !== title) parts.push(boatName);
-    if (boatClass) parts.push(boatClass);
+    if (boatClass && boatClass.toLowerCase() !== 'coach') parts.push(boatClass);
     return parts.join(' · ');
-  }
-
-  function formatSpeedKmh(mps: number | null | undefined): string {
-    if (mps == null || !Number.isFinite(mps) || mps < 0) return '—';
-    return `${(mps * 3.6).toFixed(1)} km/h`;
   }
 
   function formatSpm(d: FleetDevice, p?: MapPosition): string {
@@ -848,16 +1093,14 @@ export function mountApp(root: HTMLElement): void {
       if (a.onWater !== b.onWater) return a.onWater ? -1 : 1;
       return (b.speedMps ?? -1) - (a.speedMps ?? -1) || a.displayName.localeCompare(b.displayName);
     });
-    return rows;
+    return applyTicketScope(rows);
   }
 
   function crewTicketHtml(d: CrewTicketRow): string {
     const cap = Boolean(d.rowing?.capsize);
     const accent = liveDeviceColor(d.deviceId);
-    const speed =
-      d.onWater && d.speedMps != null && Number.isFinite(d.speedMps) && d.speedMps >= 0
-        ? `${(d.speedMps * 3.6).toFixed(1)} km/h`
-        : null;
+    const split = d.onWater ? formatSplit500(d.speedMps) : '—';
+    const speed = d.onWater && split !== '—' ? `${split} /500m` : null;
     const spm =
       d.onWater && d.mapPosition
         ? (() => {
@@ -865,16 +1108,20 @@ export function mountApp(root: HTMLElement): void {
             return v != null && v > 0 ? `${Math.round(v)} spm` : null;
           })()
         : null;
+    const coach = isCoachDevice(d);
     const statusClass = cap
       ? 'crew-ticket__badge--capsize'
-      : d.onWater
-        ? 'crew-ticket__badge--water'
-        : 'crew-ticket__badge--ashore';
-    const statusLabel = cap ? 'Capsize' : d.onWater ? 'On water' : 'Ashore';
+      : coach
+        ? 'crew-ticket__badge--coach'
+        : d.onWater
+          ? 'crew-ticket__badge--water'
+          : 'crew-ticket__badge--ashore';
+    const statusLabel = cap ? 'Capsize' : coach ? 'Coach' : d.onWater ? 'On water' : 'Ashore';
     const ticketClass = [
       'crew-ticket',
-      d.onWater ? 'crew-ticket--water' : 'crew-ticket--ashore',
+      coach ? 'crew-ticket--coach' : d.onWater ? 'crew-ticket--water' : 'crew-ticket--ashore',
       cap ? 'crew-ticket--capsize' : '',
+      d.deviceId === followDeviceId ? 'crew-ticket--follow' : '',
     ]
       .filter(Boolean)
       .join(' ');
@@ -895,13 +1142,10 @@ export function mountApp(root: HTMLElement): void {
       d.onWater && !d.noGps && d.speedMps == null && d.mapPosition
         ? resolveSpeedMps(d.mapPosition)
         : null;
-    const speedShown =
-      speed ||
-      (speedMpsFallback != null && Number.isFinite(speedMpsFallback) && speedMpsFallback >= 0
-        ? `${(speedMpsFallback * 3.6).toFixed(1)} km/h`
-        : null);
+    const fallbackSplit = formatSplit500(speedMpsFallback);
+    const speedShown = speed || (fallbackSplit !== '—' ? `${fallbackSplit} /500m` : null);
     return (
-      `<li class="${ticketClass}" data-device-id="${esc(d.deviceId)}">` +
+      `<li class="${ticketClass}" data-device-id="${esc(d.deviceId)}" role="button" tabindex="0" title="Follow ${esc(d.displayName)} on the map">` +
       `<span class="crew-ticket__dot" style="background:${accent}" aria-hidden="true"></span>` +
       `<div class="crew-ticket__body">` +
       `<div class="crew-ticket__name">${esc(d.displayName)}</div>` +
@@ -927,17 +1171,21 @@ export function mountApp(root: HTMLElement): void {
     if (tab !== 'dashboard') return;
     syncCapsizeAlarm();
     const rows = crewTicketRows();
-    const onWater = rows.filter((r) => r.onWater);
-    const ashore = rows.filter((r) => !r.onWater);
+    const coaches = rows.filter((r) => isCoachDevice(r) && r.onWater);
+    const onWater = rows.filter((r) => r.onWater && !isCoachDevice(r));
+    const ashore = rows.filter((r) => !r.onWater && !isCoachDevice(r));
     const onEl = root.querySelector('[data-on-water-count]');
     const totalEl = root.querySelector('[data-fleet-count]');
     if (onEl) onEl.textContent = String(onWater.length);
-    if (totalEl) totalEl.textContent = String(rows.length);
+    if (totalEl) totalEl.textContent = String(rows.filter((r) => !isCoachDevice(r)).length);
+    const mapCount = root.querySelector('[data-map-active-count]');
+    if (mapCount) mapCount.textContent = String(onWater.length);
 
     const waterList = root.querySelector('[data-ticket-on-water]');
     if (waterList) {
-      waterList.innerHTML = onWater.length
-        ? onWater.map((d) => crewTicketHtml(d)).join('')
+      const listed = [...coaches, ...onWater];
+      waterList.innerHTML = listed.length
+        ? listed.map((d) => crewTicketHtml(d)).join('')
         : '<li class="crew-ticket__empty">No crews on the water</li>';
     }
     const ashoreList = root.querySelector('[data-ticket-ashore]');
@@ -950,12 +1198,133 @@ export function mountApp(root: HTMLElement): void {
     }
     const ashoreSection = root.querySelector('[data-ashore-section]') as HTMLElement | null;
     if (ashoreSection) ashoreSection.hidden = ashore.length === 0;
+    updateHomeCapsizeUi();
+    updateHomeChart(onWater);
+    if (isTabletHome()) {
+      ensureMap();
+      updateMap();
+    }
+  }
 
+  function syncCapsizeDayLog(devs: FleetDevice[], pos: MapPosition[]): void {
+    const posById = new Map(pos.map((p) => [p.deviceId, p]));
+    const activeIds: string[] = [];
+    const seen = new Set<string>();
+    const consider = (id: string, name: string, p?: MapPosition) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      activeIds.push(id);
+      upsertActiveCapsize({
+        deviceId: id,
+        name,
+        lat: p?.latitude,
+        lon: p?.longitude,
+      });
+    };
+    for (const d of devs) {
+      if (!deviceHasCapsize(d, pos)) continue;
+      consider(d.deviceId, deviceDisplayName(d), posById.get(d.deviceId));
+    }
+    for (const p of pos) {
+      if (!p.capsize) continue;
+      consider(p.deviceId, p.deviceId, p);
+    }
+    markMissingCapsizesClearedRemote(activeIds);
+  }
+
+  function updateHomeCapsizeUi(): void {
+    const card = root.querySelector('[data-home-capsize]') as HTMLElement | null;
+    const detail = root.querySelector('[data-home-capsize-detail]');
+    const logEl = root.querySelector('[data-capsize-log]');
+    const caps = capsizedDevices();
+    const posById = new Map(positions.map((p) => [p.deviceId, p]));
+    if (card) {
+      card.hidden = caps.length === 0;
+      if (detail && caps.length) {
+        const lines = caps.map((d) => {
+          const p = posById.get(d.deviceId);
+          const when = formatNzTime(p?.fixMs || Date.now());
+          const loc =
+            p && Number.isFinite(p.latitude) && Number.isFinite(p.longitude)
+              ? `${p.latitude.toFixed(5)}, ${p.longitude.toFixed(5)}`
+              : 'No GPS';
+          return `${deviceDisplayName(d)} · ${when} · ${loc} · not acknowledged`;
+        });
+        detail.textContent = lines.join('\n');
+      }
+    }
+    if (logEl) {
+      const entries = listCapsizeDayLog();
+      logEl.innerHTML = entries.length
+        ? entries
+            .map((e) => {
+              const loc =
+                e.lat != null && e.lon != null
+                  ? `${e.lat.toFixed(4)}, ${e.lon.toFixed(4)}`
+                  : 'No GPS';
+              let ack = 'Active — not acknowledged';
+              if (e.status === 'acknowledged') {
+                const who =
+                  e.ackSource === 'rowsafe'
+                    ? 'RowSafe'
+                    : e.ackedBy || 'CrewSight Manager';
+                ack = `Acknowledged ${e.ackedAt ? formatNzTime(e.ackedAt) : ''} by ${who}`;
+              } else if (e.status === 'cleared') {
+                ack = `Cleared ${e.ackedAt ? formatNzTime(e.ackedAt) : ''} · ${e.ackedBy || 'RowSafe or another Manager'}`;
+              }
+              return (
+                `<li class="home-capsize-log__item home-capsize-log__item--${e.status}">` +
+                `<strong>${esc(e.name)}</strong>` +
+                `<span>${esc(formatNzTime(e.startedAt))} · ${esc(loc)}</span>` +
+                `<span>${esc(ack)}</span>` +
+                `</li>`
+              );
+            })
+            .join('')
+        : '<li class="home-capsize-log__empty">No capsizes today</li>';
+    }
+  }
+
+  function updateHomeChart(onWater: CrewTicketRow[]): void {
+    const canvas = root.querySelector('[data-home-speed-chart]') as HTMLCanvasElement | null;
+    if (!canvas) return;
+    const ids = onWater.filter((r) => !r.noGps).map((r) => r.deviceId);
+    const series = liveSpeedVsTimeSeries(ids).map((s) => {
+      const row = onWater.find((r) => r.deviceId === s.id);
+      return { ...s, label: row?.displayName || s.label };
+    });
+    const classes = [
+      ...new Set(
+        onWater
+          .map((r) => String(r.boatClass ?? '').trim() || parseBoatClass(r.boatClass, r.deviceId, r.name) || '')
+          .filter(Boolean),
+      ),
+    ];
+    const bands =
+      classes.length === 1
+        ? prognosticBandsKmh(classes[0])
+        : classes.flatMap((c) => prognosticBandsKmh(c)).filter((b, i, all) => all.findIndex((x) => x.pct === b.pct && Math.abs(x.y - b.y) < 0.05) === i);
+    const subtitle = series.length
+      ? classes.length > 1
+        ? 'Active boats · mixed boat-class bands'
+        : classes[0]
+          ? `${classes[0]} prognostic bands`
+          : 'No boat class — bands unavailable'
+      : 'Waiting for on-water GPS';
+    drawMultiSeriesChart(canvas, series, {
+      title: 'Speed vs time',
+      xLabel: 'seconds',
+      yLabel: 'km/h',
+      yFormat: (v) => `${v.toFixed(0)}`,
+      theme: 'recorder',
+      prognosticBands: bands,
+      subtitle,
+    });
   }
 
   function updateMapPanelExtras() {
     if (tab !== 'map') return;
-    const active = crewTicketRows().filter((r) => r.onWater);
+    const active = crewTicketRows().filter((r) => r.onWater && !isCoachDevice(r));
     const countEl = root.querySelector('[data-map-active-count]');
     if (countEl) countEl.textContent = String(active.length);
   }
@@ -1022,6 +1391,7 @@ export function mountApp(root: HTMLElement): void {
     }
     monitoring = false;
     serviceRunning = false;
+    stopFollowCycle();
     syncPollTimer();
     stopMapTick();
     clearMapTracks();
@@ -1034,6 +1404,9 @@ export function mountApp(root: HTMLElement): void {
     mapTickUnsub = onMapDisplayTick((deviceId, lat, lon) => {
       const m = markers.get(deviceId);
       if (m) m.setLatLng([lat, lon]);
+      if (followDeviceId === deviceId && !capsizeMapLatLngs().length) {
+        followSingleDeviceOnMap(deviceId, false);
+      }
     });
   }
 
@@ -1084,6 +1457,68 @@ export function mountApp(root: HTMLElement): void {
     return historyPanel;
   }
 
+  function coachSelectHtml(s: CoachSettings, coaches: FleetCoach[]): string {
+    const opts = ['<option value="">— select coach —</option>'];
+    let found = false;
+    for (const c of coaches) {
+      const sel = c.id === s.coachId ? ' selected' : '';
+      if (c.id === s.coachId) found = true;
+      opts.push(`<option value="${esc(c.id)}"${sel}>${esc(c.name)}</option>`);
+    }
+    if (s.coachId && !found) {
+      opts.push(
+        `<option value="${esc(s.coachId)}" selected>${esc(s.coachName || s.coachId)}</option>`,
+      );
+    }
+    return `<select id="coachId" aria-label="Coach">${opts.join('')}</select>`;
+  }
+
+  function locationStatusLabel(status: CoachLocationStatus, s: CoachSettings): string {
+    if (isDemoMode()) return 'Demo — Coach Tom is shown live on the map.';
+    if (!s.coachName.trim()) return 'Select a coach to share this tablet on RowSafe.';
+    if (!s.shareLocation) return 'Location sharing is off.';
+    if (!s.ingestToken.trim()) return 'Save the ingest password to start sharing location.';
+    if (status.lastError) return status.lastError;
+    if (status.lastOkMs) {
+      const ago = Math.max(0, Math.round((Date.now() - status.lastOkMs) / 1000));
+      return `Sharing as ${status.deviceId || s.coachName} · last upload ${ago}s ago`;
+    }
+    if (status.running) return `Sharing as ${status.deviceId || s.coachName} · waiting for GPS…`;
+    return 'Location sharing is ready — save settings to start.';
+  }
+
+  function updateLocationStatusLine(status: CoachLocationStatus): void {
+    const el = root.querySelector('[data-location-status]');
+    if (el) el.textContent = locationStatusLabel(status, settings);
+  }
+
+  function readSettingsFromForm(): CoachSettings {
+    const coachId = (root.querySelector('#coachId') as HTMLSelectElement | null)?.value.trim() ?? '';
+    const coach = fleetCoaches.find((c) => c.id === coachId);
+    const share = (root.querySelector('#shareLocation') as HTMLInputElement | null)?.checked ?? true;
+    const sec = Number((root.querySelector('#locationIntervalSec') as HTMLInputElement | null)?.value);
+    const intervalMs = clampLocationIntervalMs(
+      Number.isFinite(sec) && sec > 0 ? sec * 1000 : DEFAULT_LOCATION_INTERVAL_MS,
+    );
+    return {
+      apiBaseUrl: (root.querySelector('#apiBase') as HTMLInputElement).value.trim(),
+      ingestToken: (root.querySelector('#ingestToken') as HTMLInputElement).value.trim(),
+      coachId,
+      coachName: coach?.name || settings.coachName,
+      shareLocation: share,
+      locationIntervalMs: intervalMs,
+    };
+  }
+
+  async function refreshFleetCoaches(): Promise<void> {
+    try {
+      const cfg = await fetchFleetConfig(settings);
+      fleetCoaches = cfg.coaches ?? [];
+    } catch {
+      fleetCoaches = [];
+    }
+  }
+
   let clubAdminPanel: ClubAdminPanel | null = null;
   function ensureClubAdminPanel(): ClubAdminPanel {
     if (!clubAdminPanel) {
@@ -1113,6 +1548,7 @@ export function mountApp(root: HTMLElement): void {
             <div class="coach-topbar__title-row">
               <span class="coach-topbar__product">Manager</span>
               ${topbarMonitoringBadge()}
+              ${isDemoMode() ? '<span class="coach-demo-pill">Demo</span>' : ''}
             </div>
           </div>
           <nav class="coach-topbar__nav" aria-label="Settings">
@@ -1148,17 +1584,45 @@ export function mountApp(root: HTMLElement): void {
           ${monitorBarHtml()}
           <p class="poll-line" data-poll-status hidden></p>
           <div class="coach-dashboard">
-            <div class="coach-dashboard__summary">
-              <span class="coach-dash-pill coach-dash-pill--water"><strong data-on-water-count>0</strong> on water</span>
-              <span class="coach-dash-pill"><strong data-fleet-count>0</strong> crews</span>
+            <div class="coach-dashboard__tickets">
+              <div class="coach-dashboard__summary">
+                <span class="coach-dash-pill coach-dash-pill--water"><strong data-on-water-count>0</strong> on water</span>
+                <span class="coach-dash-pill"><strong data-fleet-count>0</strong> crews</span>
+                <div class="coach-scope-toggle" role="group" aria-label="Show all boats or this coach’s crews">
+                  <button type="button" class="coach-scope-toggle__btn ${ticketScope === 'all' ? 'is-active' : ''}" data-ticket-scope="all" aria-pressed="${ticketScope === 'all' ? 'true' : 'false'}">All boats</button>
+                  <button type="button" class="coach-scope-toggle__btn ${ticketScope === 'mine' ? 'is-active' : ''}" data-ticket-scope="mine" aria-pressed="${ticketScope === 'mine' ? 'true' : 'false'}">My crews</button>
+                </div>
+              </div>
+              <div class="coach-dashboard__ticket-scroll">
+                <div>
+                  <h2 class="coach-ticket-section__title">On water</h2>
+                  <ul class="crew-ticket-list" data-ticket-on-water></ul>
+                </div>
+                <div data-ashore-section>
+                  <h2 class="coach-ticket-section__title">Ashore</h2>
+                  <ul class="crew-ticket-list" data-ticket-ashore></ul>
+                </div>
+              </div>
+              <div class="home-capsize-card" data-home-capsize hidden role="alert">
+                <strong>Capsize</strong>
+                <p data-home-capsize-detail></p>
+              </div>
+              <div class="home-capsize-log">
+                <h3 class="home-capsize-log__title">Today’s capsize log</h3>
+                <ul data-capsize-log></ul>
+              </div>
             </div>
-            <div>
-              <h2 class="coach-ticket-section__title">On water</h2>
-              <ul class="crew-ticket-list" data-ticket-on-water></ul>
-            </div>
-            <div data-ashore-section>
-              <h2 class="coach-ticket-section__title">Ashore</h2>
-              <ul class="crew-ticket-list" data-ticket-ashore></ul>
+            <div class="coach-dashboard__stage" data-home-stage>
+              <div class="coach-dashboard__map-pane">
+                <div class="coach-dashboard__map-tools">
+                  <button type="button" class="coach-btn coach-btn--ghost ${mapFollowFleet ? 'coach-btn--active' : ''}" data-map-follow aria-pressed="${mapFollowFleet ? 'true' : 'false'}">Follow fleet</button>
+                  <span class="coach-dash-pill"><strong data-map-active-count>0</strong> on water</span>
+                </div>
+                <div id="coachHomeMap" class="coach-map coach-map--home"></div>
+              </div>
+              <div class="coach-dashboard__chart-pane">
+                <canvas data-home-speed-chart aria-label="Speed versus time for boats on the water"></canvas>
+              </div>
             </div>
           </div>
         </section>
@@ -1181,6 +1645,28 @@ export function mountApp(root: HTMLElement): void {
           <div class="history-panel" data-history-root></div>
         </section>
         <section class="coach-panel" data-panel="settings" ${tab === 'settings' ? '' : 'hidden'}>
+          ${
+            isDemoMode()
+              ? '<p class="coach-demo-note">Interactive demo — sample data only. Connection settings are not saved.</p>'
+              : ''
+          }
+          <h2 class="coach-section-title">This device</h2>
+          ${settingsField(
+            'Coach',
+            'Who is using this Manager tablet. The name comes from RowSafe Setup → Coaches & Boats.',
+            coachSelectHtml(settings, fleetCoaches),
+          )}
+          ${settingsField(
+            'Share location',
+            'Use this tablet’s GPS so RowSafe and other Managers see the coach live on the map.',
+            `<label class="coach-check"><input type="checkbox" id="shareLocation" ${settings.shareLocation ? 'checked' : ''} /> Show on RowSafe</label>`,
+          )}
+          ${settingsField(
+            'Location update',
+            'Seconds between GPS uploads. Default is 20 seconds.',
+            `<input type="number" id="locationIntervalSec" min="5" max="120" step="1" value="${esc(String(Math.round(settings.locationIntervalMs / 1000) || 20))}" />`,
+          )}
+          <p class="poll-line coach-location-status" data-location-status>${esc(locationStatusLabel(getCoachLocationStatus(), settings))}</p>
           <h2 class="coach-section-title">Connection</h2>
           ${settingsField(
             'URL',
@@ -1209,11 +1695,51 @@ export function mountApp(root: HTMLElement): void {
 
     bindInfoToggles(root);
 
-    root.querySelector('[data-map-follow]')?.addEventListener('click', () => {
-      mapFollowFleet = !mapFollowFleet;
-      saveMapFollowPref(mapFollowFleet);
-      updateMapFollowButton();
-      if (mapFollowFleet) followActiveDevicesOnMap();
+    root.querySelectorAll('[data-map-follow]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (followCycleOn || (mapFollowFleet && !followDeviceId)) {
+          stopCrewFollow();
+          return;
+        }
+        startFollowCycle();
+      });
+    });
+    const onWaterTickets = root.querySelector('[data-ticket-on-water]');
+    onWaterTickets?.addEventListener('click', (ev) => {
+      const li = (ev.target as HTMLElement).closest('[data-device-id]') as HTMLElement | null;
+      if (!li || !onWaterTickets.contains(li)) return;
+      const id = li.dataset.deviceId?.trim();
+      if (id) onTicketFollow(id);
+    });
+    onWaterTickets?.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      const li = (ev.target as HTMLElement).closest('[data-device-id]') as HTMLElement | null;
+      if (!li || !onWaterTickets.contains(li)) return;
+      ev.preventDefault();
+      const id = li.dataset.deviceId?.trim();
+      if (id) onTicketFollow(id);
+    });
+    updateMapFollowButton();
+    root.querySelectorAll('[data-ticket-scope]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = (btn as HTMLElement).dataset.ticketScope === 'mine' ? 'mine' : 'all';
+        if (next === ticketScope) return;
+        ticketScope = next;
+        saveTicketScope(next);
+        if (followDeviceId && !crewTicketRows().some((r) => r.deviceId === followDeviceId)) {
+          followDeviceId = null;
+          if (followCycleOn) startFollowCycle();
+        }
+        root.querySelectorAll<HTMLButtonElement>('[data-ticket-scope]').forEach((el) => {
+          const on = el.dataset.ticketScope === ticketScope;
+          el.classList.toggle('is-active', on);
+          el.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+        updateDashboardPanel();
+        updateMap();
+        updateMapPanelExtras();
+        updateTicketFollowUi();
+      });
     });
     root.querySelector('[data-start-monitor]')?.addEventListener('click', () => void onStartMonitoring());
     root.querySelector('[data-stop-monitor]')?.addEventListener('click', () => void onStopMonitoring());
@@ -1248,12 +1774,11 @@ export function mountApp(root: HTMLElement): void {
       });
     });
     root.querySelector('[data-save-settings]')?.addEventListener('click', () => {
-      settings = {
-        apiBaseUrl: (root.querySelector('#apiBase') as HTMLInputElement).value.trim(),
-        ingestToken: (root.querySelector('#ingestToken') as HTMLInputElement).value.trim(),
-      };
+      settings = readSettingsFromForm();
       saveSettings(settings);
-      setStatus('Settings saved');
+      setStatus(isDemoMode() ? 'Demo mode — settings are not saved' : 'Settings saved');
+      void refreshFleetCoaches();
+      syncCoachLocation(settings, updateLocationStatusLine);
       void ensureLiveDataPanel().reloadLines();
       syncPollTimer();
       if (shouldPollLive()) void pollLive();
@@ -1297,9 +1822,15 @@ export function mountApp(root: HTMLElement): void {
       updateMap();
       updateMapPanelExtras();
       syncCapsizeAlarm();
+      window.setTimeout(() => map?.invalidateSize(), 80);
+      window.setTimeout(() => map?.invalidateSize(), 280);
     } else if (tab === 'dashboard') {
       updateDashboardPanel();
       syncCapsizeAlarm();
+      if (isTabletHome()) {
+        window.setTimeout(() => map?.invalidateSize(), 80);
+        window.setTimeout(() => map?.invalidateSize(), 280);
+      }
     } else {
       syncCapsizeAlarm();
     }
@@ -1312,6 +1843,49 @@ export function mountApp(root: HTMLElement): void {
   });
 
   void (async () => {
+    if (isDemoMode()) {
+      const now = Date.now();
+      for (let i = 90; i >= 0; i--) {
+        recordLiveSpeedSamples(demoMapPositions(now - i * 2000));
+      }
+      replaceCapsizeDayLogForDemo([
+        {
+          id: 'demo-kg-active',
+          deviceId: 'W1x KG',
+          name: 'W1x KG',
+          lat: -37.9362,
+          lon: 175.5518,
+          startedAt: now - 4 * 60_000,
+          status: 'active',
+        },
+        {
+          id: 'demo-eh-acked',
+          deviceId: 'W1x EH',
+          name: 'W1x EH',
+          lat: -37.9391,
+          lon: 175.5544,
+          startedAt: now - 52 * 60_000,
+          status: 'acknowledged',
+          ackedAt: now - 47 * 60_000,
+          ackedBy: 'Coach Tom',
+          ackSource: 'manager',
+        },
+        {
+          id: 'demo-ls-remote',
+          deviceId: 'W1x LS',
+          name: 'W1x LS',
+          lat: -37.941,
+          lon: 175.556,
+          startedAt: now - 3 * 3600_000,
+          status: 'cleared',
+          ackedAt: now - 3 * 3600_000 + 8 * 60_000,
+          ackedBy: 'RowSafe',
+          ackSource: 'rowsafe',
+        },
+      ]);
+    }
+    await refreshFleetCoaches();
+    syncCoachLocation(settings, updateLocationStatusLine);
     await refreshMonitoringStatus();
     quietHoursActive = isQuietHours();
     if (!quietHoursActive && settings.apiBaseUrl) {
@@ -1337,6 +1911,12 @@ export function mountApp(root: HTMLElement): void {
       void pollLive();
     }
   });
+
+  if (typeof window.matchMedia === 'function') {
+    window.matchMedia('(min-width: 960px)').addEventListener('change', () => {
+      if (tab === 'dashboard' || tab === 'map') render();
+    });
+  }
 }
 
 function esc(s: unknown): string {

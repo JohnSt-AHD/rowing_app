@@ -3,6 +3,17 @@ import {
   authHeaders,
   type CoachSettings,
 } from './settings';
+import {
+  demoDeviceHistoryRange,
+  demoDevices,
+  demoHistoryDevices,
+  demoLogbook,
+  demoMapPositions,
+  demoSessionDashboard,
+  demoSessionsFor,
+  demoTimingLines,
+  isDemoMode,
+} from './demo-mode';
 
 export type FleetDevice = {
   deviceId: string;
@@ -19,7 +30,10 @@ export type FleetDevice = {
   lastSeenAgoSec?: number;
   /** Walk-up / logbook-only session (no GPS). */
   noGps?: boolean;
+  /** recorder | walkup | manager */
   source?: string | null;
+  /** coach when this is a Manager / coach-launch tablet. */
+  role?: string | null;
   walkupSessionId?: string | null;
   gps?: { ageSec?: number | null; present?: boolean; displayAgeSec?: number | null; ingestAgoSec?: number | null };
   /** Resolved GPS fix age (map + API). */
@@ -60,7 +74,61 @@ export type MapPosition = {
   displayStrokeRate?: number | null;
   strokeRateMedian?: number | null;
   strokeMedianWindowSec?: number;
+  source?: string | null;
+  role?: string | null;
+  boatClass?: string | null;
 };
+
+export type FleetCoach = {
+  id: string;
+  name: string;
+  sortOrder?: number;
+};
+
+export type FleetBoat = {
+  id: string;
+  name: string;
+  boatClass: string;
+  label?: string;
+  sortOrder?: number;
+  enabled?: boolean;
+};
+
+export type FleetConfig = {
+  ok?: boolean;
+  coaches: FleetCoach[];
+  boats: FleetBoat[];
+  showOtherBoatsOnMap?: boolean;
+  persisted?: boolean;
+};
+
+const DEFAULT_FLEET_COACHES: FleetCoach[] = ['Mike', 'Tom', 'James', 'Nick', 'Other'].map(
+  (name, i) => ({ id: `coach-${i + 1}`, name, sortOrder: i }),
+);
+
+export function defaultFleetConfig(): FleetConfig {
+  return { coaches: DEFAULT_FLEET_COACHES, boats: [], persisted: false };
+}
+
+export async function fetchFleetConfig(settings: CoachSettings): Promise<FleetConfig> {
+  if (isDemoMode()) return defaultFleetConfig();
+  const url = `${apiBase(settings)}/api/fleet-config`;
+  try {
+    const res = await fetch(url, { headers: authHeaders(settings) });
+    const data = (await res.json()) as FleetConfig & { error?: string };
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `Fleet ${res.status}`);
+    }
+    return {
+      coaches: Array.isArray(data.coaches) && data.coaches.length ? data.coaches : DEFAULT_FLEET_COACHES,
+      boats: data.boats ?? [],
+      showOtherBoatsOnMap: Boolean(data.showOtherBoatsOnMap),
+      persisted: data.persisted,
+    };
+  } catch {
+    return defaultFleetConfig();
+  }
+}
 
 export type TimingLine = {
   id: number;
@@ -90,6 +158,7 @@ function apiBase(settings: CoachSettings): string {
 }
 
 export async function fetchDevices(settings: CoachSettings): Promise<FleetDevice[]> {
+  if (isDemoMode()) return demoDevices();
   const url = `${apiBase(settings)}/api/devices?windowSec=60&onlineSec=120`;
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) {
@@ -106,6 +175,7 @@ export async function fetchDevices(settings: CoachSettings): Promise<FleetDevice
 }
 
 export async function fetchMapPositions(settings: CoachSettings): Promise<MapPosition[]> {
+  if (isDemoMode()) return demoMapPositions();
   const url = `${apiBase(settings)}/api/map-positions?onlineSec=120&staleSec=3600&predictMode=rowing`;
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) {
@@ -126,6 +196,7 @@ export async function fetchMapPositions(settings: CoachSettings): Promise<MapPos
 }
 
 export async function fetchTimingLines(settings: CoachSettings): Promise<TimingLinesPayload> {
+  if (isDemoMode()) return demoTimingLines();
   const url = `${apiBase(settings)}/api/timing-lines`;
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) {
@@ -138,6 +209,7 @@ export async function fetchTimingLines(settings: CoachSettings): Promise<TimingL
 }
 
 export async function clearCapsizeAlert(settings: CoachSettings, deviceId?: string) {
+  if (isDemoMode()) return { ok: true, helpNotified: [], cleared: deviceId ? [deviceId] : [] };
   const url = `${apiBase(settings)}/api/capsize-clear`;
   const res = await fetch(url, {
     method: 'POST',
@@ -189,6 +261,7 @@ export type HistoryDevice = {
 };
 
 export async function listHistoryDevices(settings: CoachSettings): Promise<HistoryDevice[]> {
+  if (isDemoMode()) return demoHistoryDevices();
   const url = `${apiBase(settings)}/api/history?list=devices`;
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) throw new Error(`Devices ${res.status}`);
@@ -200,6 +273,7 @@ export async function listSessions(
   settings: CoachSettings,
   deviceId: string,
 ): Promise<SessionSummary[]> {
+  if (isDemoMode()) return demoSessionsFor(deviceId);
   const url = `${apiBase(settings)}/api/history?list=sessions&uniqueId=${encodeURIComponent(deviceId)}`;
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) throw new Error(`Sessions ${res.status}`);
@@ -242,6 +316,7 @@ export async function loadDeviceHistoryRange(
   fromIso: string,
   toIso: string,
 ): Promise<DashboardHistoryPayload> {
+  if (isDemoMode()) return demoDeviceHistoryRange(deviceId, fromIso, toIso);
   const url =
     `${apiBase(settings)}/api/history?format=dashboard` +
     `&uniqueId=${encodeURIComponent(deviceId)}` +
@@ -265,6 +340,7 @@ export async function loadSessionDashboard(
   settings: CoachSettings,
   sessionId: string,
 ): Promise<DashboardHistoryPayload> {
+  if (isDemoMode()) return demoSessionDashboard(sessionId);
   const url = `${apiBase(settings)}/api/history?format=dashboard&sessionId=${encodeURIComponent(sessionId)}`;
   const res = await fetch(url, { headers: authHeaders(settings) });
   if (!res.ok) throw new Error(`History ${res.status}`);
@@ -307,6 +383,7 @@ export async function fetchLogbook(
   days = 45,
   timeZone = 'Pacific/Auckland',
 ): Promise<LogbookPayload> {
+  if (isDemoMode()) return demoLogbook();
   const q = new URLSearchParams({
     list: 'logbook',
     days: String(days),
