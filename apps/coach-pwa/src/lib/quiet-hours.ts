@@ -1,9 +1,9 @@
 import { isDemoMode } from './demo-mode';
 
-/** Overnight monitoring pause — 6pm–6am Pacific/Auckland. */
+/** Overnight monitoring pause — 9pm–5am Pacific/Auckland. */
 export const QUIET_HOURS_TIMEZONE = 'Pacific/Auckland';
-export const QUIET_HOURS_START = 18;
-export const QUIET_HOURS_END = 6;
+export const QUIET_HOURS_START = 21;
+export const QUIET_HOURS_END = 5;
 export const QUIET_HOURS_MESSAGE = 'Monitoring paused overnight';
 
 function hourInTz(date = new Date()): number {
