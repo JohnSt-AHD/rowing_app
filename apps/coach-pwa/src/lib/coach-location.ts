@@ -28,6 +28,7 @@ let lastFixMs: number | null = null;
 let lastOkMs: number | null = null;
 let lastError: string | null = null;
 let inFlight = false;
+let nativeOwnsUploads = false;
 let onStatus: ((s: CoachLocationStatus) => void) | null = null;
 
 function readStoredSession(): StoredSession | null {
@@ -180,9 +181,31 @@ async function endStoredSession(s: CoachSettings, sess: StoredSession): Promise<
   }
 }
 
+export function ensureCoachLocationSession(coachName: string): string | null {
+  const deviceId = managerDeviceId(coachName);
+  if (!deviceId) return null;
+  return ensureSession(deviceId).sessionId;
+}
+
+export function setCoachLocationNativeOwned(owned: boolean): void {
+  nativeOwnsUploads = owned;
+  if (owned) {
+    lastError = null;
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+  emitStatus();
+}
+
+export function isCoachLocationNativeOwned(): boolean {
+  return nativeOwnsUploads;
+}
+
 export function getCoachLocationStatus(): CoachLocationStatus {
   return {
-    running: timer != null,
+    running: timer != null || nativeOwnsUploads,
     deviceId: settings ? managerDeviceId(settings.coachName) : '',
     lastFixMs,
     lastOkMs,
@@ -235,6 +258,16 @@ export async function startCoachLocation(
     void endStoredSession(settings, prev);
     session = null;
     writeStoredSession(null);
+  }
+  ensureSession(deviceId);
+  if (nativeOwnsUploads) {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    lastError = null;
+    emitStatus();
+    return;
   }
   if (timer) clearInterval(timer);
   timer = setInterval(() => void tick(), intervalMs);

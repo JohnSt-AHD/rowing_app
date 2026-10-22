@@ -26,6 +26,7 @@ import {
 import { isCoachDevice, managerDeviceId } from '../lib/coach-identity';
 import {
   getCoachLocationStatus,
+  isCoachLocationNativeOwned,
   syncCoachLocation,
   type CoachLocationStatus,
 } from '../lib/coach-location';
@@ -361,8 +362,12 @@ export function mountApp(root: HTMLElement): void {
     if (quietHoursActive) {
       statusInner = `<span>${esc(QUIET_HOURS_MESSAGE)}</span>`;
     } else if (monitoring) {
+      const sharingBg =
+        serviceRunning && settings.shareLocation && Boolean(settings.coachName.trim());
       const label = serviceRunning
-        ? '● Monitoring fleet (background active)'
+        ? sharingBg
+          ? '● Monitoring fleet (location in background)'
+          : '● Monitoring fleet (background active)'
         : '● Monitoring (foreground poll only)';
       statusInner = `<span>${esc(label)}</span>`;
     } else {
@@ -1371,7 +1376,8 @@ export function mountApp(root: HTMLElement): void {
       return;
     }
     if (IS_NATIVE) {
-      await startNativeMonitoring(settings.apiBaseUrl, settings.ingestToken);
+      await startNativeMonitoring(settings);
+      syncCoachLocation(settings, updateLocationStatusLine);
     }
     serviceRunning = IS_NATIVE;
     syncPollTimer();
@@ -1393,6 +1399,7 @@ export function mountApp(root: HTMLElement): void {
       if (IS_NATIVE && serviceRunning) {
         await stopNativeMonitoring();
         serviceRunning = false;
+        syncCoachLocation(settings, updateLocationStatusLine);
       }
       setStatus(QUIET_HOURS_MESSAGE);
       return;
@@ -1408,8 +1415,9 @@ export function mountApp(root: HTMLElement): void {
     }
     settings = loadSettings();
     if (IS_NATIVE && settings.apiBaseUrl && monitoring) {
-      await startNativeMonitoring(settings.apiBaseUrl, settings.ingestToken);
+      await startNativeMonitoring(settings);
       serviceRunning = true;
+      syncCoachLocation(settings, updateLocationStatusLine);
     }
     syncPollTimer();
     if (monitoring) startMapTick();
@@ -1422,6 +1430,7 @@ export function mountApp(root: HTMLElement): void {
     }
     monitoring = false;
     serviceRunning = false;
+    syncCoachLocation(settings, updateLocationStatusLine);
     stopFollowCycle();
     syncPollTimer();
     stopMapTick();
@@ -1536,6 +1545,9 @@ export function mountApp(root: HTMLElement): void {
     if (!s.coachName.trim()) return 'Select a coach to share this tablet on RowSafe.';
     if (!s.shareLocation) return 'Location sharing is off.';
     if (!s.ingestToken.trim()) return 'Save the ingest password to start sharing location.';
+    if (isCoachLocationNativeOwned()) {
+      return `Sharing as ${status.deviceId || s.coachName} in the background while monitoring is on.`;
+    }
     if (status.lastError) return status.lastError;
     if (status.lastOkMs) {
       const ago = Math.max(0, Math.round((Date.now() - status.lastOkMs) / 1000));
@@ -1719,7 +1731,7 @@ export function mountApp(root: HTMLElement): void {
           )}
           ${settingsField(
             'Share location',
-            'Use this tablet’s GPS so RowSafe and other Managers see the coach live on the map.',
+            'Use this tablet’s GPS so RowSafe and other Managers see the coach live on the map. While Start monitoring is on, this tablet keeps sharing in the background.',
             `<label class="coach-check"><input type="checkbox" id="shareLocation" ${settings.shareLocation ? 'checked' : ''} /> Show on RowSafe</label>`,
           )}
           ${settingsField(
@@ -1846,7 +1858,12 @@ export function mountApp(root: HTMLElement): void {
       saveSettings(settings);
       setStatus(isDemoMode() ? 'Demo mode — settings are not saved' : 'Settings saved');
       void refreshFleetCoaches();
-      syncCoachLocation(settings, updateLocationStatusLine);
+      void (async () => {
+        if (IS_NATIVE && monitoring && settings.apiBaseUrl) {
+          await startNativeMonitoring(settings);
+        }
+        syncCoachLocation(settings, updateLocationStatusLine);
+      })();
       void ensureLiveDataPanel().reloadLines();
       syncPollTimer();
       if (shouldPollLive()) void pollLive();
@@ -1963,8 +1980,11 @@ export function mountApp(root: HTMLElement): void {
       ]);
     }
     await refreshFleetCoaches();
-    syncCoachLocation(settings, updateLocationStatusLine);
     await refreshMonitoringStatus();
+    if (IS_NATIVE && serviceRunning && settings.apiBaseUrl) {
+      await startNativeMonitoring(settings);
+    }
+    syncCoachLocation(settings, updateLocationStatusLine);
     quietHoursActive = isQuietHours();
     if (!quietHoursActive && settings.apiBaseUrl) {
       syncPollTimer();

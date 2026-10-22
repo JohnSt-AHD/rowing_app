@@ -1,5 +1,6 @@
 package nz.org.rowing.coach;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -8,6 +9,10 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -16,9 +21,10 @@ import android.text.TextUtils;
 import android.util.Log;
 import android.content.pm.ServiceInfo;
 import androidx.core.app.NotificationCompat;
-import androidx.core.app.ServiceCompat;
+import androidx.core.content.ContextCompat;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -26,12 +32,13 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-/** Polls fleet API and raises capsize alerts while monitoring is explicitly enabled. */
+/** Polls fleet API, raises capsize alerts, and can upload coach GPS while monitoring is on. */
 public class CoachMonitorService extends Service {
 
     public static final String PREFS = "coach_monitor";
@@ -43,6 +50,7 @@ public class CoachMonitorService extends Service {
     private static final int NOTIF_ID_FG = 9201;
     private static final int NOTIF_ID_ALERT = 9202;
     private static final long DEFAULT_POLL_MS = 3000L;
+    private static final long DEFAULT_LOCATION_MS = 20_000L;
     private static final long CAPSIZE_REPEAT_MS = 45_000L;
 
     private static WeakReference<CoachMonitorService> runningInstance;
@@ -50,8 +58,13 @@ public class CoachMonitorService extends Service {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private ExecutorService pollExecutor;
     private volatile boolean pollInFlight;
+    private volatile boolean locationUploadInFlight;
     private long lastCapsizeAlertMs;
     private String lastAlertKey = "";
+    private LocationManager locationManager;
+    private LocationListener locationListener;
+    private volatile Location lastLocation;
+    private long lastLocationUploadMs;
 
     private final Runnable pollRunnable =
             new Runnable() {
@@ -67,6 +80,7 @@ public class CoachMonitorService extends Service {
                             () -> {
                                 try {
                                     pollFleetOnce();
+                                    uploadCoachLocationIfDue(false);
                                 } finally {
                                     pollInFlight = false;
                                 }
@@ -121,6 +135,7 @@ public class CoachMonitorService extends Service {
         startForegroundWithTypes();
         lastCapsizeAlertMs = 0L;
         lastAlertKey = "";
+        startLocationUpdates();
         scheduleNextPoll();
         Log.i(TAG, "Coach monitoring started");
         return START_STICKY;
@@ -128,6 +143,7 @@ public class CoachMonitorService extends Service {
 
     @Override
     public void onDestroy() {
+        stopLocationUpdates();
         if (runningInstance != null && runningInstance.get() == this) {
             runningInstance.clear();
         }
@@ -159,21 +175,48 @@ public class CoachMonitorService extends Service {
     private void saveConfigFromIntent(Intent intent) {
         String apiBaseUrl = intent.getStringExtra("apiBaseUrl");
         String ingestToken = intent.getStringExtra("ingestToken");
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-                .edit()
-                .putBoolean("monitoringActive", true)
-                .putString("apiBaseUrl", apiBaseUrl != null ? apiBaseUrl : "")
-                .putString("ingestToken", ingestToken != null ? ingestToken : "")
-                .putLong(
-                        "pollIntervalMs",
-                        Math.max(2000L, intent.getLongExtra("pollIntervalMs", DEFAULT_POLL_MS)))
-                .apply();
+        String coachName = intent.getStringExtra("coachName");
+        String sessionId = intent.getStringExtra("sessionId");
+        SharedPreferences.Editor ed = getSharedPreferences(PREFS, MODE_PRIVATE).edit();
+        ed.putBoolean("monitoringActive", true);
+        ed.putString("apiBaseUrl", apiBaseUrl != null ? apiBaseUrl : "");
+        ed.putString("ingestToken", ingestToken != null ? ingestToken : "");
+        ed.putLong(
+                "pollIntervalMs",
+                Math.max(2000L, intent.getLongExtra("pollIntervalMs", DEFAULT_POLL_MS)));
+        ed.putBoolean("shareLocation", intent.getBooleanExtra("shareLocation", false));
+        ed.putString("coachName", coachName != null ? coachName.trim() : "");
+        ed.putLong(
+                "locationIntervalMs",
+                Math.max(5_000L, intent.getLongExtra("locationIntervalMs", DEFAULT_LOCATION_MS)));
+        if (sessionId != null && !sessionId.trim().isEmpty()) {
+            ed.putString("sessionId", sessionId.trim());
+        }
+        ed.apply();
     }
 
     private long pollIntervalMs() {
         return Math.max(
                 2000L,
                 getSharedPreferences(PREFS, MODE_PRIVATE).getLong("pollIntervalMs", DEFAULT_POLL_MS));
+    }
+
+    private long locationIntervalMs() {
+        return Math.max(
+                5_000L,
+                getSharedPreferences(PREFS, MODE_PRIVATE)
+                        .getLong("locationIntervalMs", DEFAULT_LOCATION_MS));
+    }
+
+    private boolean shareLocationEnabled() {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        return p.getBoolean("shareLocation", false)
+                && !TextUtils.isEmpty(p.getString("coachName", ""));
+    }
+
+    private boolean hasFineLocation() {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     private void scheduleNextPoll() {
@@ -184,9 +227,167 @@ public class CoachMonitorService extends Service {
     private void stopMonitoringInternal() {
         Log.i(TAG, "Coach monitoring stopped by user");
         clearMonitoring(this);
+        stopLocationUpdates();
         mainHandler.removeCallbacks(pollRunnable);
         stopForeground(true);
         stopSelf();
+    }
+
+    private void startLocationUpdates() {
+        stopLocationUpdates();
+        if (!shareLocationEnabled() || !hasFineLocation()) return;
+        locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (locationManager == null) return;
+        locationListener =
+                new LocationListener() {
+                    @Override
+                    public void onLocationChanged(Location location) {
+                        lastLocation = location;
+                        if (pollExecutor != null && !pollExecutor.isShutdown()) {
+                            pollExecutor.execute(() -> uploadCoachLocationIfDue(true));
+                        }
+                    }
+
+                    @Override
+                    public void onStatusChanged(String provider, int status, android.os.Bundle extras) {}
+
+                    @Override
+                    public void onProviderEnabled(String provider) {}
+
+                    @Override
+                    public void onProviderDisabled(String provider) {}
+                };
+        long interval = locationIntervalMs();
+        try {
+            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER, interval, 4f, locationListener, Looper.getMainLooper());
+            }
+        } catch (SecurityException e) {
+            Log.w(TAG, "GPS updates denied: " + e.getMessage());
+        }
+        try {
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                        LocationManager.NETWORK_PROVIDER,
+                        interval,
+                        8f,
+                        locationListener,
+                        Looper.getMainLooper());
+            }
+        } catch (SecurityException e) {
+            Log.w(TAG, "Network location denied: " + e.getMessage());
+        }
+        try {
+            Location gps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+            Location net = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+            if (gps != null) lastLocation = gps;
+            else if (net != null) lastLocation = net;
+        } catch (SecurityException ignored) {
+            /* already checked */
+        }
+        if (lastLocation != null && pollExecutor != null && !pollExecutor.isShutdown()) {
+            pollExecutor.execute(() -> uploadCoachLocationIfDue(true));
+        }
+    }
+
+    private void stopLocationUpdates() {
+        if (locationManager != null && locationListener != null) {
+            try {
+                locationManager.removeUpdates(locationListener);
+            } catch (Exception ignored) {
+                /* already gone */
+            }
+        }
+        locationListener = null;
+        locationManager = null;
+    }
+
+    private void uploadCoachLocationIfDue(boolean forceIfFresh) {
+        if (!isMonitoringActive(this) || !shareLocationEnabled()) return;
+        Location loc = lastLocation;
+        if (loc == null) return;
+        long now = System.currentTimeMillis();
+        long due = locationIntervalMs();
+        if (!forceIfFresh && now - lastLocationUploadMs < due) return;
+        if (forceIfFresh && now - lastLocationUploadMs < Math.min(due, 8_000L)) return;
+        if (locationUploadInFlight) return;
+        locationUploadInFlight = true;
+        try {
+            uploadCoachLocation(loc, now);
+            lastLocationUploadMs = now;
+        } catch (Exception e) {
+            Log.w(TAG, "Coach location upload failed: " + e.getMessage());
+        } finally {
+            locationUploadInFlight = false;
+        }
+    }
+
+    private void uploadCoachLocation(Location loc, long now) throws Exception {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String base = p.getString("apiBaseUrl", "");
+        if (base == null || base.isEmpty()) return;
+        String coachName = String.valueOf(p.getString("coachName", "")).trim();
+        String deviceId = "Coach " + coachName;
+        String sessionId = p.getString("sessionId", "");
+        if (sessionId == null || sessionId.trim().isEmpty()) {
+            sessionId = UUID.randomUUID().toString();
+            p.edit().putString("sessionId", sessionId).apply();
+        }
+        JSONObject gps = new JSONObject();
+        gps.put("lat", loc.getLatitude());
+        gps.put("lon", loc.getLongitude());
+        if (loc.hasAccuracy()) gps.put("acc", loc.getAccuracy());
+        if (loc.hasSpeed() && loc.getSpeed() >= 0) gps.put("spd", loc.getSpeed());
+        if (loc.hasBearing()) gps.put("hdg", loc.getBearing());
+        gps.put("fixMs", loc.getTime() > 0 ? loc.getTime() : now);
+        gps.put("sampleSource", "manager_watch");
+        JSONObject derived = new JSONObject();
+        derived.put("heartbeat", true);
+        JSONObject sample = new JSONObject();
+        sample.put("t", now);
+        sample.put("gps", gps);
+        sample.put("derived", derived);
+        JSONArray samples = new JSONArray();
+        samples.put(sample);
+        JSONObject body = new JSONObject();
+        body.put("sessionId", sessionId);
+        body.put("deviceId", deviceId);
+        body.put("athleteId", coachName);
+        body.put("boatClass", "Coach");
+        body.put("source", "manager");
+        body.put("samples", samples);
+        postJson(base.replaceAll("/$", "") + "/api/ingest", p.getString("ingestToken", ""), body.toString());
+    }
+
+    private static void postJson(String urlStr, String token, String json) throws Exception {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(15000);
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("Content-Type", "application/json");
+            if (token != null && !token.isEmpty()) {
+                conn.setRequestProperty("Authorization", "Bearer " + token);
+            }
+            byte[] raw = json.getBytes(StandardCharsets.UTF_8);
+            conn.setFixedLengthStreamingMode(raw.length);
+            OutputStream out = conn.getOutputStream();
+            out.write(raw);
+            out.flush();
+            int code = conn.getResponseCode();
+            InputStream stream = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+            if (stream != null) readUtf8(stream);
+            if (code < 200 || code >= 300) {
+                throw new IllegalStateException("Ingest " + code);
+            }
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
     }
 
     private void pollFleetOnce() {
@@ -286,12 +487,13 @@ public class CoachMonitorService extends Service {
 
     private void startForegroundWithTypes() {
         Notification notification = buildForegroundNotification(0);
+        int types = 0;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceCompat.startForeground(
-                    this,
-                    NOTIF_ID_FG,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            types = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+            if (shareLocationEnabled() && hasFineLocation()) {
+                types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+            }
+            startForeground(NOTIF_ID_FG, notification, types);
         } else {
             startForeground(NOTIF_ID_FG, notification);
         }
@@ -320,10 +522,14 @@ public class CoachMonitorService extends Service {
                         1,
                         stop,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        String detail =
-                capsizeCount > 0
-                        ? capsizeCount + " CAPSIZE — tap to open"
-                        : "Watching fleet — tap Stop to turn off";
+        String detail;
+        if (capsizeCount > 0) {
+            detail = capsizeCount + " CAPSIZE — tap to open";
+        } else if (shareLocationEnabled()) {
+            detail = "Watching fleet · sharing coach location";
+        } else {
+            detail = "Watching fleet — tap Stop to turn off";
+        }
         return new NotificationCompat.Builder(this, CHANNEL_FG)
                 .setContentTitle("CrewSight Manager")
                 .setContentText(detail)
