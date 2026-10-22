@@ -59,6 +59,7 @@ import {
 } from '../lib/session-speed-chart';
 import {
   parseBoatClass,
+  PROGNOSTIC_BAND_PCTS,
   prognosticPercent,
   speedMpsForPrognostic,
 } from '@rowing/rowing-pace';
@@ -814,7 +815,7 @@ export function mountApp(root: HTMLElement): void {
     }));
     const s = loadSettings();
     const boat = parseBoatClass(s.boatClass, s.deviceId, s.athleteId);
-    const bandPcts = [60, 70, 80, 90];
+    const bandPcts = PROGNOSTIC_BAND_PCTS;
     const prognosticBands = boat
       ? bandPcts
           .map((pct) => {
@@ -1072,7 +1073,7 @@ export function mountApp(root: HTMLElement): void {
       root.querySelector('[data-rail-hr]') as HTMLElement | null,
       hrT,
       {
-        // Same band thresholds as pace prognostic: 60–70 green … ≥90 red.
+        // Same band thresholds as pace prognostic: 60–70 green … 90–100 red … ≥100 purple.
         fillColor:
           hrT != null ? speedChartColorForPrognostic(hrT * 100) : undefined,
       },
@@ -1576,50 +1577,54 @@ export function mountApp(root: HTMLElement): void {
         <form class="session-workout__setup" data-workout-form ${setup ? '' : 'hidden'}>
           <div class="session-workout__setup-top">
             <strong>Workout setup</strong>
-            <button type="button" class="session-workout__setup-btn" data-workout-close-setup>Back</button>
+            <div class="session-workout__setup-top-actions">
+              <button type="button" class="hub-btn hub-btn--primary" data-workout-save>Save</button>
+              <button type="button" class="session-workout__setup-btn" data-workout-close-setup>Back</button>
+            </div>
           </div>
-          <label>Saved
-            <select name="recall">
-              ${lib
-                .map(
-                  (item) =>
-                    `<option value="${esc(item.id)}"${item.id === w.id ? ' selected' : ''}>${esc(item.name)} · ${esc(workoutSummary(item))}</option>`,
-                )
-                .join('')}
-            </select>
-          </label>
-          <label>Name <input name="name" value="${esc(w.name)}" maxlength="40" /></label>
-          <fieldset>
-            <legend>Type</legend>
-            <label><input type="radio" name="kind" value="single"${w.kind === 'single' ? ' checked' : ''} /> Piece</label>
-            <label><input type="radio" name="kind" value="interval"${w.kind === 'interval' ? ' checked' : ''} /> Intervals</label>
-          </fieldset>
-          <fieldset>
-            <legend>Start</legend>
-            <label><input type="radio" name="startMode" value="countdown"${w.startMode === 'countdown' ? ' checked' : ''} /> Countdown</label>
-            <label><input type="radio" name="startMode" value="moving"${w.startMode === 'moving' ? ' checked' : ''} /> When moving</label>
-            <label>Countdown s <input name="countdownSec" type="number" min="0" max="30" value="${w.countdownSec}" /></label>
-          </fieldset>
-          <fieldset data-workout-single ${w.kind === 'interval' ? 'hidden' : ''}>
-            <legend>Piece</legend>
-            <label><input type="radio" name="unit" value="time"${w.unit === 'time' ? ' checked' : ''} /> Time (min)</label>
-            <label><input type="radio" name="unit" value="distance"${w.unit === 'distance' ? ' checked' : ''} /> Distance (m)</label>
-            <label>Target <input name="target" type="number" min="1" step="1" value="${minVal}" /></label>
-          </fieldset>
-          <fieldset data-workout-interval-fields ${w.kind === 'single' ? 'hidden' : ''}>
-            <legend>Intervals</legend>
-            <label><input type="radio" name="workUnit" value="time"${w.workUnit === 'time' ? ' checked' : ''} /> Work time (min)</label>
-            <label><input type="radio" name="workUnit" value="distance"${w.workUnit === 'distance' ? ' checked' : ''} /> Work distance (m)</label>
-            <label>Work <input name="workValue" type="number" min="1" step="0.1" value="${workMin}" /></label>
-            <label>Rest (s) <input name="restSec" type="number" min="0" step="1" value="${w.restSec}" /></label>
-            <label>Repeats <input name="repeats" type="number" min="1" max="40" value="${w.repeats}" /></label>
-          </fieldset>
+          <div class="session-workout__setup-body">
+            <label>Saved
+              <select name="recall">
+                ${lib
+                  .map(
+                    (item) =>
+                      `<option value="${esc(item.id)}"${item.id === w.id ? ' selected' : ''}>${esc(item.name)} · ${esc(workoutSummary(item))}</option>`,
+                  )
+                  .join('')}
+              </select>
+            </label>
+            <label>Name <input name="name" value="${esc(w.name)}" maxlength="40" /></label>
+            <fieldset>
+              <legend>Type</legend>
+              <label><input type="radio" name="kind" value="single"${w.kind === 'single' ? ' checked' : ''} /> Piece</label>
+              <label><input type="radio" name="kind" value="interval"${w.kind === 'interval' ? ' checked' : ''} /> Intervals</label>
+            </fieldset>
+            <fieldset data-workout-single ${w.kind === 'interval' ? 'hidden' : ''}>
+              <legend>Piece — time or distance</legend>
+              <label><input type="radio" name="unit" value="time"${w.unit === 'time' ? ' checked' : ''} /> Time (min)</label>
+              <label><input type="radio" name="unit" value="distance"${w.unit === 'distance' ? ' checked' : ''} /> Distance (m)</label>
+              <label>Target <input name="target" type="number" min="1" step="1" value="${minVal}" /></label>
+            </fieldset>
+            <fieldset data-workout-interval-fields ${w.kind === 'single' ? 'hidden' : ''}>
+              <legend>Intervals — time or distance</legend>
+              <label><input type="radio" name="workUnit" value="time"${w.workUnit === 'time' ? ' checked' : ''} /> Work time (min)</label>
+              <label><input type="radio" name="workUnit" value="distance"${w.workUnit === 'distance' ? ' checked' : ''} /> Work distance (m)</label>
+              <label>Work <input name="workValue" type="number" min="1" step="0.1" value="${workMin}" /></label>
+              <label>Rest (s) <input name="restSec" type="number" min="0" step="1" value="${w.restSec}" /></label>
+              <label>Repeats <input name="repeats" type="number" min="1" max="40" value="${w.repeats}" /></label>
+            </fieldset>
+            <fieldset>
+              <legend>Start</legend>
+              <label><input type="radio" name="startMode" value="countdown"${w.startMode === 'countdown' ? ' checked' : ''} /> Countdown</label>
+              <label><input type="radio" name="startMode" value="moving"${w.startMode === 'moving' ? ' checked' : ''} /> When moving</label>
+              <label>Countdown s <input name="countdownSec" type="number" min="0" max="30" value="${w.countdownSec}" /></label>
+            </fieldset>
+            <p class="session-workout__hint" data-workout-status></p>
+          </div>
           <div class="session-workout__setup-actions">
-            <button type="button" class="hub-btn hub-btn--primary" data-workout-save>Save</button>
             <button type="button" class="hub-btn hub-btn--ghost" data-workout-upload>Upload</button>
             <button type="button" class="hub-btn hub-btn--ghost" data-workout-delete>Delete</button>
           </div>
-          <p class="session-workout__hint" data-workout-status></p>
         </form>
       </div>
     `;

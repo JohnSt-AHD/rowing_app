@@ -1,4 +1,4 @@
-import { formatSplit500m, speedMpsForPrognostic } from '@rowing/rowing-pace';
+import { formatSplit500m, PROGNOSTIC_BAND_PCTS, speedMpsForPrognostic } from '@rowing/rowing-pace';
 import type { ParsedCourse } from './course-types';
 import { colorForDevice, type CourseRaceEngine } from './course-race-engine';
 
@@ -8,7 +8,7 @@ export function coursePrognosticBandsMps(
   boatClass: string | null | undefined,
 ): CoursePrognosticBand[] {
   if (!boatClass) return [];
-  return [60, 70, 80, 90]
+  return PROGNOSTIC_BAND_PCTS
     .map((pct) => {
       const mps = speedMpsForPrognostic(pct, boatClass);
       return mps != null && Number.isFinite(mps) ? { pct, y: mps } : null;
@@ -74,13 +74,15 @@ export function drawPaceDistanceChart(
   for (const band of bands) {
     const y = yAt(band.y);
     ctx.strokeStyle =
-      band.pct >= 90
-        ? 'rgba(239, 68, 68, 0.55)'
-        : band.pct >= 80
-          ? 'rgba(249, 115, 22, 0.5)'
-          : band.pct >= 70
-            ? 'rgba(234, 179, 8, 0.5)'
-            : 'rgba(13, 148, 136, 0.45)';
+      band.pct >= 100
+        ? 'rgba(192, 132, 252, 0.7)'
+        : band.pct >= 90
+          ? 'rgba(239, 68, 68, 0.55)'
+          : band.pct >= 80
+            ? 'rgba(249, 115, 22, 0.5)'
+            : band.pct >= 70
+              ? 'rgba(234, 179, 8, 0.5)'
+              : 'rgba(13, 148, 136, 0.45)';
     ctx.setLineDash([5, 4]);
     ctx.beginPath();
     ctx.moveTo(pad.l, y);

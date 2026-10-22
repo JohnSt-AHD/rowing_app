@@ -5,6 +5,9 @@
 
 export const MIN_SPEED_MPS = 0.25;
 
+/** Horizontal prognostic thresholds. The zone above 100% is purple. */
+export const PROGNOSTIC_BAND_PCTS = [60, 70, 80, 90, 100];
+
 /** 2000 m reference times (seconds) — open, U23 (B), lightweight (L). */
 const WR_2K_SEC = {
   M1x: 383.6,
@@ -186,7 +189,7 @@ export function prognosticPercent(speedMps, boatClass) {
 
 /**
  * Speed (m/s) that equals a prognostic % for the boat class.
- * @param {number} percent e.g. 60, 70, 80, 90
+ * @param {number} percent e.g. 60, 70, 80, 90, 100
  * @param {string|null} boatClass
  * @returns {number|null}
  */

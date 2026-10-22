@@ -1,4 +1,4 @@
-import { speedMpsForPrognostic } from '@rowing/rowing-pace';
+import { PROGNOSTIC_BAND_PCTS, speedMpsForPrognostic } from '@rowing/rowing-pace';
 import type { ChartSeries } from './history-track';
 
 export type ChartOptions = {
@@ -38,7 +38,7 @@ function rgba(c: Rgba, a: number): string {
   return `rgba(${c.r}, ${c.g}, ${c.b}, ${a})`;
 }
 
-export type PaceBandId = 'idle' | 'blue' | 'green' | 'yellow' | 'orange' | 'red';
+export type PaceBandId = 'idle' | 'blue' | 'green' | 'yellow' | 'orange' | 'red' | 'purple';
 
 export function paceBandFromPrognostic(pct: number | null | undefined): PaceBandId {
   if (pct == null || !Number.isFinite(pct)) return 'idle';
@@ -46,7 +46,8 @@ export function paceBandFromPrognostic(pct: number | null | undefined): PaceBand
   if (pct < 70) return 'green';
   if (pct < 80) return 'yellow';
   if (pct < 90) return 'orange';
-  return 'red';
+  if (pct < 100) return 'red';
+  return 'purple';
 }
 
 /** Line/fill colour for a prognostic % band (recorder palette). */
@@ -62,6 +63,8 @@ export function speedChartColorForPrognostic(pct: number | null | undefined): st
       return '#f97316';
     case 'red':
       return '#ef4444';
+    case 'purple':
+      return '#c084fc';
     default:
       return '#00e5ff';
   }
@@ -81,12 +84,12 @@ export function speedChartColorForY(
   return speedChartColorForPrognostic(floorPct);
 }
 
-/** Build 60/70/80/90% horizontal band y-values (km/h) for a boat class. */
+/** Build 60/70/80/90/100% horizontal band y-values (km/h) for a boat class. */
 export function prognosticBandsKmh(
   boatClass: string | null,
 ): Array<{ pct: number; y: number }> {
   if (!boatClass) return [];
-  return [60, 70, 80, 90]
+  return PROGNOSTIC_BAND_PCTS
     .map((pct) => {
       const mps = speedMpsForPrognostic(pct, boatClass);
       return mps != null && Number.isFinite(mps) ? { pct, y: mps * 3.6 } : null;

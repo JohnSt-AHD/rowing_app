@@ -33,7 +33,7 @@ function rgba(c: Rgba, a: number): string {
   return `rgba(${c.r}, ${c.g}, ${c.b}, ${a})`;
 }
 
-export type PaceBandId = 'idle' | 'blue' | 'green' | 'yellow' | 'orange' | 'red';
+export type PaceBandId = 'idle' | 'blue' | 'green' | 'yellow' | 'orange' | 'red' | 'purple';
 
 /** Band id from prognostic % of the current pace. */
 export function paceBandFromPrognostic(pct: number | null | undefined): PaceBandId {
@@ -42,7 +42,8 @@ export function paceBandFromPrognostic(pct: number | null | undefined): PaceBand
   if (pct < 70) return 'green';
   if (pct < 80) return 'yellow';
   if (pct < 90) return 'orange';
-  return 'red';
+  if (pct < 100) return 'red';
+  return 'purple';
 }
 
 /** Line/fill colour for a prognostic % band (rails / fullscreen palette). */
@@ -58,6 +59,8 @@ export function speedChartColorForPrognostic(pct: number | null | undefined): st
       return '#f97316';
     case 'red':
       return '#ef4444';
+    case 'purple':
+      return '#c084fc';
     default:
       return '#00e5ff';
   }
@@ -65,7 +68,7 @@ export function speedChartColorForPrognostic(pct: number | null | undefined): st
 
 /**
  * Colour for a speed (km/h) from horizontal prognostic band thresholds.
- * Bands are expected at 60 / 70 / 80 / 90% (y in km/h). Below the lowest → blue.
+ * Bands are expected at 60 / 70 / 80 / 90 / 100% (y in km/h). Below the lowest → blue.
  */
 export function speedChartColorForSpeedKmh(
   yKmh: number,
@@ -263,7 +266,7 @@ export function drawSpeedTimeChart(
     ctx.fillText(String(Math.round(tx * 10) / 10), px, h - 9);
   }
 
-  // Prognostic horizontal bands (60 / 70 / 80 / 90%)
+  // Prognostic horizontal bands (60 / 70 / 80 / 90 / 100%)
   for (const band of bands) {
     const py = sy(band.yKmh);
     if (py < padT || py > padT + plotH) continue;

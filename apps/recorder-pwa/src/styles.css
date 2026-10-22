@@ -823,18 +823,20 @@
   content: '';
   position: absolute;
   inset: 0;
-  /* Prognostic bands: top ≥90 red → 80–90 orange → 70–80 yellow → 60–70 green → <60 cyan */
+  /* Prognostic bands: ≥100 purple → 90–100 red → 80–90 orange → 70–80 yellow → 60–70 green → <60 cyan */
   background: linear-gradient(
     to bottom,
-    #ef4444 0%,
-    #ef4444 10%,
-    #f97316 22%,
-    #f97316 34%,
-    #fbbf24 46%,
-    #fbbf24 58%,
-    #34d399 70%,
+    #c084fc 0%,
+    #c084fc 8%,
+    #ef4444 14%,
+    #ef4444 22%,
+    #f97316 30%,
+    #f97316 40%,
+    #fbbf24 48%,
+    #fbbf24 60%,
+    #34d399 68%,
     #34d399 82%,
-    #00e5ff 94%,
+    #00e5ff 90%,
     #00e5ff 100%
   );
   opacity: 0.28;
@@ -2419,7 +2421,11 @@
 .session-workout {
   padding: 3.4rem 0.75rem 0.75rem;
   gap: 0.55rem;
-  overflow: auto;
+  overflow: hidden;
+}
+
+.session-workout [hidden] {
+  display: none !important;
 }
 
 .session-workout__hud,
@@ -2427,13 +2433,15 @@
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+  flex: 1;
   min-height: 0;
 }
 
 .session-workout__bar,
 .session-workout__setup-top,
 .session-workout__actions,
-.session-workout__setup-actions {
+.session-workout__setup-actions,
+.session-workout__setup-top-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2441,10 +2449,15 @@
   flex-wrap: wrap;
 }
 
+.session-workout__setup-top-actions {
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
 .session-workout__setup-btn {
   appearance: none;
   border: 1px solid rgba(232, 244, 252, 0.22);
-  background: rgba(10, 22, 40, 0.55);
+  background: #12243c;
   color: #f8fafc;
   border-radius: 8px;
   padding: 0.3rem 0.65rem;
@@ -2493,10 +2506,53 @@
 }
 
 .session-workout__setup {
-  background: rgba(10, 22, 40, 0.55);
-  border: 1px solid rgba(232, 244, 252, 0.18);
+  background: #0b1a2e;
+  border: 1px solid rgba(232, 244, 252, 0.22);
   border-radius: 12px;
-  padding: 0.7rem;
+  padding: 0;
+  overflow: hidden;
+}
+
+.session-workout__setup-top,
+.session-workout__setup-actions {
+  flex-shrink: 0;
+  background: #0b1a2e;
+  padding: 0.65rem 0.75rem;
+}
+
+.session-workout__setup-top {
+  border-bottom: 1px solid rgba(232, 244, 252, 0.12);
+}
+
+.session-workout__setup-actions {
+  border-top: 1px solid rgba(232, 244, 252, 0.12);
+}
+
+.session-workout__setup-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 0.7rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+@media (orientation: landscape) {
+  .session-workout__setup-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-content: start;
+    gap: 0.5rem 0.75rem;
+  }
+
+  .session-workout__setup-body > label,
+  .session-workout__setup-body > .session-workout__hint {
+    grid-column: 1 / -1;
+  }
 }
 
 .session-workout__setup label,
@@ -2507,6 +2563,14 @@
   gap: 0.35rem 0.6rem;
   font-size: 0.78rem;
   color: #e8f4fc;
+}
+
+.session-workout__setup fieldset {
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid rgba(232, 244, 252, 0.16);
+  border-radius: 8px;
+  background: #102036;
 }
 
 .session-workout__setup input,

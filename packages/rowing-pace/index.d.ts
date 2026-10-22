@@ -1,4 +1,5 @@
 export const MIN_SPEED_MPS: number;
+export const PROGNOSTIC_BAND_PCTS: number[];
 
 export function parseBoatClass(...parts: (string | null | undefined)[]): string | null;
 export function normalizeBoatClassCode(boatClass: string | null | undefined): string | null;

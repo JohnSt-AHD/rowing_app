@@ -24,7 +24,7 @@ function resolveTrackBoatClass(track) {
 /** Mirror apps/coach-pwa/src/lib/history-charts.ts#prognosticBandsKmh */
 function prognosticBandsKmh(boatClass) {
   if (!boatClass) return [];
-  return [60, 70, 80, 90]
+  return [60, 70, 80, 90, 100]
     .map((pct) => {
       const mps = speedMpsForPrognostic(pct, boatClass);
       return mps != null && Number.isFinite(mps) ? { pct, y: mps * 3.6 } : null;
@@ -40,7 +40,11 @@ function assert(cond, msg) {
 const withClass = resolveTrackBoatClass({ boatClass: 'M1x', athleteId: null, deviceId: 'A1' });
 assert(withClass === 'M1x', `expected M1x, got ${withClass}`);
 const bandsM1x = prognosticBandsKmh(withClass);
-assert(bandsM1x.length === 4, `expected 4 bands for M1x, got ${bandsM1x.length}`);
+assert(bandsM1x.length === 5, `expected 5 bands for M1x, got ${bandsM1x.length}`);
+assert(
+  bandsM1x.some((b) => b.pct === 100),
+  'expected a 100% purple-zone band',
+);
 assert(
   bandsM1x.every((b) => b.y > 10 && b.y < 30),
   `M1x band km/h out of expected range: ${JSON.stringify(bandsM1x)}`,
@@ -49,7 +53,7 @@ assert(
 // short form (display code) must still resolve
 const short = resolveTrackBoatClass({ boatClass: '1X', athleteId: null, deviceId: 'A1' });
 assert(short === 'M1x', `expected 1X → M1x, got ${short}`);
-assert(prognosticBandsKmh(short).length === 4, 'short-form 1X should yield bands');
+assert(prognosticBandsKmh(short).length === 5, 'short-form 1X should yield bands');
 
 // athlete/device label fallback
 const fromLabel = resolveTrackBoatClass({
@@ -58,7 +62,7 @@ const fromLabel = resolveTrackBoatClass({
   deviceId: 'Karapiro M2x',
 });
 assert(fromLabel === 'M2x', `expected device label M2x, got ${fromLabel}`);
-assert(prognosticBandsKmh(fromLabel).length === 4, 'label-derived class should yield bands');
+assert(prognosticBandsKmh(fromLabel).length === 5, 'label-derived class should yield bands');
 
 // --- absent boatClass → no bands (APK-only / null DB failure mode) ---
 const missing = resolveTrackBoatClass({ boatClass: null, athleteId: 'John', deviceId: 'PHONE1' });
