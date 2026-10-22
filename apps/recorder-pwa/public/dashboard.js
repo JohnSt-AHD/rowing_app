@@ -854,7 +854,11 @@ async function clearCapsizeAlert(deviceId) {
   if (btn) btn.disabled = true;
   const status = $('#pollStatus');
   try {
-    const body = deviceId ? { deviceId } : {};
+    const body = {
+      ...(deviceId ? { deviceId } : {}),
+      ackedBy: 'Device monitor',
+      ackSource: 'manager',
+    };
     const res = await fetch(`${apiBase()}/api/capsize-clear`, {
       method: 'POST',
       headers: { ...headers(), 'Content-Type': 'application/json' },
@@ -1772,6 +1776,9 @@ async function poll() {
 
     if (typeof window.dashboardOnDevicesPoll === 'function') {
       window.dashboardOnDevicesPoll(devicesForGrid);
+    }
+    if (typeof window.dashboardRefreshCapsizeDayLog === 'function') {
+      void window.dashboardRefreshCapsizeDayLog(devicesForGrid);
     }
 
     const t = new Date(data.polledAt || Date.now()).toLocaleTimeString();

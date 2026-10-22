@@ -152,6 +152,17 @@
           <div class="devices-grid" id="devicesGrid"></div>
         </div>
       </section>
+      <section class="hub-panel dashboard-section dashboard-section--open dashboard-section--capsize-log" data-section-id="capsize-log" data-default-open="true">
+        <div class="dashboard-section__head">
+          <button type="button" class="dashboard-section__toggle" aria-expanded="true" aria-controls="section-body-capsize-log">
+            <span class="dashboard-section__chevron" aria-hidden="true"></span>
+            <h2 class="hub-section-title">Today’s capsize log</h2>
+          </button>
+        </div>
+        <div class="dashboard-section__body" id="section-body-capsize-log">
+          <ul class="dash-capsize-log" id="capsizeDayLog" aria-label="Today’s capsize log" aria-live="polite"></ul>
+        </div>
+      </section>
       </div>
 
       <div class="dashboard-view dashboard-view--setup">
@@ -1047,6 +1058,7 @@
     <script src="/dashboard-course-view.js"></script>
     <script src="/dashboard-regatta.js"></script>
     <script src="/dashboard-capsize-alerts.js"></script>
+    <script src="/dashboard-capsize-day-log.js"></script>
     <script src="/dashboard-sections.js"></script>
     <script src="/dashboard.js"></script>
   </body>
