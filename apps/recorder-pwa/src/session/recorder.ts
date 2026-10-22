@@ -137,11 +137,44 @@ function roundMotion(m: MotionSample): MotionSample {
   };
 }
 
+const SAMPLE_CLOCK_SKEW_MS = 20_000;
+const SAMPLE_CLOCK_FUTURE_SLACK_MS = 5_000;
+
+/** Prefer sample t or GPS fixMs — whichever is closer to wall clock. */
+function pickEffectiveSampleTimeMs(
+  sampleT: number,
+  gpsFixMs?: number | null,
+  now = Date.now(),
+): number {
+  const tOk =
+    Number.isFinite(sampleT) &&
+    sampleT > 0 &&
+    sampleT <= now + SAMPLE_CLOCK_FUTURE_SLACK_MS;
+  const fixOk =
+    gpsFixMs != null &&
+    Number.isFinite(gpsFixMs) &&
+    gpsFixMs > 0 &&
+    gpsFixMs <= now + SAMPLE_CLOCK_FUTURE_SLACK_MS;
+  let chosen = sampleT;
+  if (tOk && fixOk) {
+    chosen =
+      Math.abs(gpsFixMs! - now) < Math.abs(sampleT - now) ? gpsFixMs! : sampleT;
+  } else if (fixOk) {
+    chosen = gpsFixMs!;
+  } else if (tOk) {
+    chosen = sampleT;
+  }
+  if (now - chosen > SAMPLE_CLOCK_SKEW_MS) return now;
+  return chosen;
+}
+
 function telemetrySample(
   t: number,
   parts: Pick<TelemetrySample, 'gps' | 'motion' | 'hr' | 'derived'>,
 ): TelemetrySample {
-  const sample: TelemetrySample = { t };
+  const sample: TelemetrySample = {
+    t: pickEffectiveSampleTimeMs(t, parts.gps?.fixMs),
+  };
   if (parts.gps) sample.gps = parts.gps;
   if (parts.motion) sample.motion = roundMotion(parts.motion);
   if (parts.hr) sample.hr = parts.hr;

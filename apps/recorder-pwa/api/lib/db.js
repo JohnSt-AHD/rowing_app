@@ -1680,8 +1680,9 @@ function derivedGpsSpeedMps(prev, next) {
  * @param {Array<{ t: number, gps?: object }>} samples
  */
 async function updateDeviceLatestGps(orgId, uniqueId, samples) {
-  const { isGpsFixOutlier, isGpsFixForMapPosition } = require('./gps-outlier');
+  const { isGpsFixOutlier, isGpsFixForMapPosition, pickEffectiveSampleTimeMs } = require('./gps-outlier');
   let best = null;
+  const now = Date.now();
   for (const s of samples) {
     const lat = s.gps?.lat;
     const lon = s.gps?.lon;
@@ -1691,13 +1692,13 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
         ? s.gps.sampleSource.trim().slice(0, 32)
         : null;
     if (!isGpsFixForMapPosition(sampleSource)) continue;
-    const t = Number(s.t);
+    const fixMs =
+      s.gps?.fixMs != null && Number.isFinite(Number(s.gps.fixMs))
+        ? Number(s.gps.fixMs)
+        : null;
+    const t = pickEffectiveSampleTimeMs(s.t, fixMs, now, sampleSource);
     if (!Number.isFinite(t)) continue;
     if (!best || t >= best.t) {
-      const fixMs =
-        s.gps?.fixMs != null && Number.isFinite(Number(s.gps.fixMs))
-          ? Number(s.gps.fixMs)
-          : null;
       best = {
         t,
         fixMs,
@@ -2076,6 +2077,8 @@ async function getCapsizeAlerts(orgId) {
 
 async function persistBatch(orgId, sessionId, deviceId, athleteId, samples, boatMeta = {}) {
   if (!hasDb() || !samples.length) return { ok: false, cleared: [] };
+  const { reconcileSampleTimes } = require('./gps-outlier');
+  reconcileSampleTimes(samples);
   await ensureOrgsBootstrapped();
   const dev = await ensureDevice(orgId, deviceId, athleteId);
   await upsertSession(orgId, sessionId, dev.id, deviceId, athleteId, boatMeta);

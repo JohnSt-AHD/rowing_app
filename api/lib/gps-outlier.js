@@ -17,11 +17,86 @@ const GPS_CACHE_SAMPLE_SOURCES = new Set([
   'heartbeat_cache',
   'stale_piggyback',
 ]);
+/** Prefer the other clock when this far from server receive time. */
+const SAMPLE_CLOCK_SKEW_MS = 20_000;
+const SAMPLE_CLOCK_FUTURE_SLACK_MS = 5_000;
 
 /** @param {string|null|undefined} sampleSource */
 function isGpsFixForMapPosition(sampleSource) {
   if (sampleSource == null || sampleSource === '') return true;
   return !GPS_CACHE_SAMPLE_SOURCES.has(String(sampleSource).trim());
+}
+
+function isUsableSampleClockMs(value, nowMs) {
+  const t = Number(value);
+  return Number.isFinite(t) && t > 0 && t <= nowMs + SAMPLE_CLOCK_FUTURE_SLACK_MS;
+}
+
+/**
+ * Pick sample t vs GPS fixMs — whichever is closer to `now`.
+ * Does not snap to now (safe for history / in-memory reads).
+ *
+ * @param {number|null|undefined} sampleT
+ * @param {number|null|undefined} gpsFixMs
+ * @param {number} [now]
+ */
+function pickCloserClockMs(sampleT, gpsFixMs, now = Date.now()) {
+  const nowMs = Number(now);
+  const receiveMs = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
+  const tOk = isUsableSampleClockMs(sampleT, receiveMs);
+  const fixOk = isUsableSampleClockMs(gpsFixMs, receiveMs);
+  if (tOk && fixOk) {
+    return Math.abs(Number(gpsFixMs) - receiveMs) < Math.abs(Number(sampleT) - receiveMs)
+      ? Number(gpsFixMs)
+      : Number(sampleT);
+  }
+  if (tOk) return Number(sampleT);
+  if (fixOk) return Number(gpsFixMs);
+  if (Number.isFinite(Number(sampleT)) && Number(sampleT) > 0) return Number(sampleT);
+  if (Number.isFinite(Number(gpsFixMs)) && Number(gpsFixMs) > 0) return Number(gpsFixMs);
+  return null;
+}
+
+/**
+ * Ingest-time clock: closer of sample t vs GPS fixMs, or server receive time
+ * when a live fix is 20s+ behind (so the map pin can still move).
+ *
+ * @param {number|null|undefined} sampleT
+ * @param {number|null|undefined} gpsFixMs
+ * @param {number} [now]
+ * @param {string|null|undefined} [sampleSource]
+ */
+function pickEffectiveSampleTimeMs(sampleT, gpsFixMs, now = Date.now(), sampleSource) {
+  const nowMs = Number(now);
+  const receiveMs = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
+  const chosen = pickCloserClockMs(sampleT, gpsFixMs, receiveMs);
+  if (chosen == null) return receiveMs;
+  if (isGpsFixForMapPosition(sampleSource) && receiveMs - chosen > SAMPLE_CLOCK_SKEW_MS) {
+    return receiveMs;
+  }
+  return chosen;
+}
+
+/** @param {{ t?: number, gps?: { fixMs?: number, sampleSource?: string } }} sample */
+function reconcileSampleTime(sample, now = Date.now()) {
+  if (!sample || typeof sample !== 'object') return sample;
+  const next = pickEffectiveSampleTimeMs(
+    sample.t,
+    sample.gps?.fixMs,
+    now,
+    sample.gps?.sampleSource,
+  );
+  if (Number.isFinite(next) && next !== Number(sample.t)) {
+    sample.t = next;
+  }
+  return sample;
+}
+
+/** @param {object[]} samples */
+function reconcileSampleTimes(samples, now = Date.now()) {
+  if (!Array.isArray(samples)) return samples;
+  for (const sample of samples) reconcileSampleTime(sample, now);
+  return samples;
 }
 
 function metersPerDegLat() {
@@ -107,8 +182,13 @@ module.exports = {
   GPS_OUTLIER_MAX_DT_SEC,
   GPS_OUTLIER_BAD_ACC_M,
   GPS_CACHE_SAMPLE_SOURCES,
+  SAMPLE_CLOCK_SKEW_MS,
   distanceMeters,
   isGpsFixOutlier,
   isGpsFixForMapPosition,
+  pickCloserClockMs,
+  pickEffectiveSampleTimeMs,
+  reconcileSampleTime,
+  reconcileSampleTimes,
   filterOutlierGpsFixes,
 };

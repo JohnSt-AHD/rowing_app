@@ -4,6 +4,8 @@ const {
   isGpsFixOutlier,
   isGpsFixForMapPosition,
   filterOutlierGpsFixes,
+  pickCloserClockMs,
+  reconcileSampleTimes,
 } = require('./gps-outlier');
 
 const CAPSIZE_ALERT_MAX_AGE_MS = db.CAPSIZE_ALERT_MAX_AGE_MS ?? 12 * 60 * 60 * 1000;
@@ -366,7 +368,9 @@ function gpsFromSample(sample, { forTrack = false, forMapPosition = false } = {}
       ? Number(sample.gps.acc)
       : null;
   if (forTrack && acc != null && acc > MAX_GPS_ACCURACY_M) return null;
-  const t = Number(sample.t);
+  const rawT = Number(sample.t);
+  const fixMs = gpsFixMsFromSample(sample);
+  const t = pickCloserClockMs(rawT, fixMs) ?? rawT;
   if (!Number.isFinite(t)) return null;
   const spd =
     sample.gps.spd != null && Number.isFinite(Number(sample.gps.spd))
@@ -380,7 +384,6 @@ function gpsFromSample(sample, { forTrack = false, forMapPosition = false } = {}
     sample.gps.compass != null && Number.isFinite(Number(sample.gps.compass))
       ? Number(sample.gps.compass)
       : null;
-  const fixMs = gpsFixMsFromSample(sample);
   const provider = sanitizeGpsProvider(sample.gps.provider);
   return {
     t,
@@ -1590,6 +1593,7 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   if (!samples.length) return { received: 0 };
   const scopedDevice = orgDeviceKey(orgId, deviceId);
   const clean = sanitizeAndTrackSamples(scopedDevice, samples);
+  reconcileSampleTimes(clean.samples, now);
   if (!clean.samples.length) {
     metrics.droppedSamples += clean.dropped || 0;
     return { received: 0, dropped: clean.dropped };

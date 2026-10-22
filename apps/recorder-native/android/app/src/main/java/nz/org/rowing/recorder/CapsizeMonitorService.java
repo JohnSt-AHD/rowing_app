@@ -1227,7 +1227,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         try {
             JSONObject sample = new JSONObject();
-            sample.put("t", t);
+            long now = System.currentTimeMillis();
+            long sampleT = pickEffectiveSampleTimeMs(t, latestGpsRawFixClockMs, now);
+            sample.put("t", sampleT);
             sample.put("gps", buildGpsJson(location, sampleSource));
             if (enableMotion && (lastAx != 0f || lastAy != 0f || lastAz != 0f)) {
                 JSONObject motion = new JSONObject();
@@ -1236,7 +1238,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 motion.put("az", Math.round(lastAz * 100) / 100.0);
                 sample.put("motion", motion);
             }
-            long now = System.currentTimeMillis();
             JSONObject derived = new JSONObject();
             boolean hasDerived = false;
             if (lastBatteryReportMs == 0L
@@ -1252,7 +1253,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             if (appendEconomyDerived(derived)) hasDerived = true;
             if (hasDerived) sample.put("derived", derived);
             offerIngestSample(sample, flushNow);
-            markGpsSampleOffered(t);
+            markGpsSampleOffered(sampleT);
         } catch (Exception e) {
             recordUploadResult(-1, 1, false);
             Log.e(TAG, "GPS sample enqueue failed", e);
@@ -2545,6 +2546,28 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (Math.abs(lat) < 1e-4 && Math.abs(lon) < 1e-4) return false;
         if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
         return true;
+    }
+
+    /**
+     * Prefer wall clock or GPS fix clock — whichever is closer to now.
+     * If both are 20s+ behind, use now so live map timestamps stay current.
+     */
+    private static long pickEffectiveSampleTimeMs(long sampleT, long gpsFixMs, long now) {
+        boolean tOk = sampleT > 0L && sampleT <= now + 5_000L;
+        boolean fixOk = gpsFixMs > 0L && gpsFixMs <= now + 5_000L;
+        long chosen;
+        if (tOk && fixOk) {
+            chosen =
+                    Math.abs(gpsFixMs - now) < Math.abs(sampleT - now) ? gpsFixMs : sampleT;
+        } else if (tOk) {
+            chosen = sampleT;
+        } else if (fixOk) {
+            chosen = gpsFixMs;
+        } else {
+            chosen = sampleT > 0L ? sampleT : now;
+        }
+        if (now - chosen > 20_000L) return now;
+        return chosen;
     }
 
     /**
