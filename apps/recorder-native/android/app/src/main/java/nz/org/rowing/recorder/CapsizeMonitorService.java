@@ -38,6 +38,7 @@ import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import com.google.android.gms.location.CurrentLocationRequest;
 import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.Granularity;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationResult;
@@ -124,8 +125,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long GPS_MAX_SCHEDULED_CACHE_AGE_MS = 30L * 60L * 1000L;
     /** Use wall clock when Android fix time lags more than this (KRI model). */
     private static final long GPS_STALE_FIX_CLOCK_MS = 8_000L;
-    /** Reject fused last-known older than this (elapsed-realtime age, not getTime). */
-    private static final long FUSED_MAX_UPDATE_AGE_MS = 4_000L;
+    /** No historical first fused fix (Play Services / Maps recipe). */
+    private static final long FUSED_HISTORICAL_MAX_AGE_MS = 0L;
+    /** Drop live-map samples older than this (elapsed realtime). */
+    private static final long LIVE_FIX_MAX_AGE_MS = 8_000L;
+    /** If fused sits still this long, start raw GPS as a fallback. */
+    private static final long FUSED_FREEZE_MS = 25_000L;
+    private static final float FUSED_FREEZE_M = 15f;
     /** Only average window points this close in time/space to the newest fix. */
     private static final long GPS_WINDOW_BLEND_MS = 2_000L;
     private static final float GPS_WINDOW_BLEND_M = 20f;
@@ -220,6 +226,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private String latestGpsProvider;
     /** Last fused/legacy callback — detect when Android stops delivering fixes. */
     private long lastFusedDeliveryWallMs;
+    private boolean gpsSatelliteFallbackActive;
+    private long fusedFreezeSinceMs;
+    private double fusedFreezeLat = Double.NaN;
+    private double fusedFreezeLon = Double.NaN;
     private final ArrayList<GpsWindowFix> gpsWindowBuffer = new ArrayList<>();
     private long lastWindowCollectWallMs;
     private int nativeGpsCount;
@@ -560,10 +570,23 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         deliverLocation(location);
     }
 
+    private static boolean isRawGpsProvider(Location location) {
+        return location != null && LocationManager.GPS_PROVIDER.equals(location.getProvider());
+    }
+
+    private boolean hasRecentRawGps() {
+        return latestGpsLocation != null
+                && LocationManager.GPS_PROVIDER.equals(latestGpsProvider)
+                && isGpsFixRecentForMap(latestGpsLocation);
+    }
+
     private void cacheGpsLocation(Location location) {
         if (!enableGps || location == null) return;
+        if (!isRawGpsProvider(location) && hasRecentRawGps()) {
+            return;
+        }
         long rawFix = location.getTime();
-        if (latestGpsLocation != null) {
+        if (latestGpsLocation != null && !isRawGpsProvider(location)) {
             long prevRt = latestGpsLocation.getElapsedRealtimeNanos();
             long nextRt = location.getElapsedRealtimeNanos();
             if (prevRt > 0L && nextRt > 0L && nextRt < prevRt) {
@@ -593,6 +616,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void deliverLocation(Location location) {
         if (!enableGps || location == null) return;
+        if (!isRawGpsProvider(location) && hasRecentRawGps()) {
+            return;
+        }
         if (isGpsFixRecentForMap(location)) {
             lastFusedDeliveryWallMs = System.currentTimeMillis();
         }
@@ -605,6 +631,33 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         addFixToGpsWindow(location);
         maybeApplyGeofenceEconomy(location.getLatitude(), location.getLongitude());
         maybeNotifyZoneEntry(location.getLatitude(), location.getLongitude());
+        if (!isRawGpsProvider(location)) {
+            noteFusedMovement(location);
+        }
+    }
+
+    private void noteFusedMovement(Location location) {
+        if (!isGpsFixUsable(location)) return;
+        long now = System.currentTimeMillis();
+        if (!Double.isFinite(fusedFreezeLat)
+                || distanceMeters(fusedFreezeLat, fusedFreezeLon, location.getLatitude(), location.getLongitude())
+                        > FUSED_FREEZE_M) {
+            fusedFreezeLat = location.getLatitude();
+            fusedFreezeLon = location.getLongitude();
+            fusedFreezeSinceMs = now;
+            stopGpsSatelliteFallback();
+            return;
+        }
+        if (fusedFreezeSinceMs <= 0L) fusedFreezeSinceMs = now;
+        if (!standbyMode && now - fusedFreezeSinceMs >= FUSED_FREEZE_MS) {
+            startGpsSatelliteFallback();
+        }
+    }
+
+    private void clearFusedFreeze() {
+        fusedFreezeSinceMs = 0L;
+        fusedFreezeLat = Double.NaN;
+        fusedFreezeLon = Double.NaN;
     }
 
     private String lastNativeGeofenceSignature = "";
@@ -707,7 +760,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         for (int i = gpsWindowBuffer.size() - 1; i >= 0; i--) {
             GpsWindowFix f = gpsWindowBuffer.get(i);
             long ageMs = windowFixAgeMs(f, now, nowRt);
-            if (ageMs > FUSED_MAX_UPDATE_AGE_MS) {
+            if (ageMs > LIVE_FIX_MAX_AGE_MS) {
                 gpsWindowBuffer.remove(i);
             }
         }
@@ -925,7 +978,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /** Live map window — do not average a last-known lock that Maps has already left. */
     private static boolean isGpsFixRecentForMap(Location location) {
-        return isGpsFixUsable(location) && rawFixAgeMs(location) <= FUSED_MAX_UPDATE_AGE_MS;
+        return isGpsFixUsable(location) && rawFixAgeMs(location) <= LIVE_FIX_MAX_AGE_MS;
     }
 
     private static Location pickNewestLocation(LocationResult result) {
@@ -970,7 +1023,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (!enableGps) return;
         uploadWindowAverageGps(true);
         long now = System.currentTimeMillis();
-        if (lastFusedDeliveryWallMs > 0L && now - lastFusedDeliveryWallMs <= FUSED_MAX_UPDATE_AGE_MS) {
+        if (lastFusedDeliveryWallMs > 0L && now - lastFusedDeliveryWallMs <= LIVE_FIX_MAX_AGE_MS) {
             return;
         }
         requestFreshGpsLocation(
@@ -1016,7 +1069,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         CurrentLocationRequest request =
                 new CurrentLocationRequest.Builder()
                         .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-                        .setMaxUpdateAgeMillis(FUSED_MAX_UPDATE_AGE_MS)
+                        .setMaxUpdateAgeMillis(FUSED_HISTORICAL_MAX_AGE_MS)
                         .setDurationMillis(4_000L)
                         .build();
         fusedClient
@@ -2716,7 +2769,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void registerFusedLocation() {
         if (fusedClient == null) {
-            registerLegacyLocation();
+            Log.w(TAG, "No fused client — starting satellite GPS fallback");
+            startGpsSatelliteFallback();
             return;
         }
         long interval = locationTrackingIntervalMs();
@@ -2725,8 +2779,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, interval)
                         .setMinUpdateIntervalMillis(minUpdate)
                         .setMaxUpdateDelayMillis(interval)
-                        .setMaxUpdateAgeMillis(FUSED_MAX_UPDATE_AGE_MS)
-                        .setWaitForAccurateLocation(false)
+                        .setMaxUpdateAgeMillis(FUSED_HISTORICAL_MAX_AGE_MS)
+                        .setGranularity(Granularity.GRANULARITY_FINE)
+                        .setWaitForAccurateLocation(true)
                         .build();
         fusedCallback =
                 new LocationCallback() {
@@ -2745,9 +2800,42 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         unused -> Log.i(TAG, "Fused location registered (" + interval + "ms)"))
                 .addOnFailureListener(
                         e -> {
-                            Log.w(TAG, "Fused location unavailable, using legacy", e);
-                            registerLegacyLocation();
+                            Log.w(TAG, "Fused location unavailable — starting satellite GPS fallback", e);
+                            startGpsSatelliteFallback();
                         });
+    }
+
+    /** Only if fused stays frozen — not the normal Maps path. */
+    private void startGpsSatelliteFallback() {
+        if (gpsSatelliteFallbackActive) return;
+        if (locationManager == null) return;
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            Log.w(TAG, "GPS_PROVIDER disabled");
+            return;
+        }
+        long minTime = locationTrackingIntervalMs();
+        try {
+            locationManager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER, minTime, 0f, this, mainHandler.getLooper());
+            gpsSatelliteFallbackActive = true;
+            Log.i(TAG, "Satellite GPS fallback registered (" + minTime + "ms)");
+        } catch (SecurityException e) {
+            Log.e(TAG, "GPS_PROVIDER permission error", e);
+        }
+    }
+
+    private void stopGpsSatelliteFallback() {
+        if (!gpsSatelliteFallbackActive || locationManager == null) return;
+        try {
+            locationManager.removeUpdates(this);
+        } catch (SecurityException ignored) {
+        }
+        gpsSatelliteFallbackActive = false;
+        Log.i(TAG, "Satellite GPS fallback cleared");
     }
 
     private void registerLegacyLocation() {
@@ -2791,6 +2879,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             } catch (SecurityException ignored) {
             }
         }
+        gpsSatelliteFallbackActive = false;
+        clearFusedFreeze();
     }
 
     private void acquireWakeLock() {
