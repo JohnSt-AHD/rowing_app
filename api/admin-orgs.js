@@ -28,14 +28,56 @@ function assertValidSlug(slug) {
   }
 }
 
+const MAX_TOKEN_LEN = 256;
+
 function newIngestToken() {
   return crypto.randomBytes(32).toString('base64url');
+}
+
+function normalizePlainToken(raw, required) {
+  const token = String(raw ?? '').trim();
+  if (!token) {
+    if (required) throw new Error('Password is required');
+    return '';
+  }
+  if (token.length > MAX_TOKEN_LEN) {
+    throw new Error(`Password is too long (max ${MAX_TOKEN_LEN} characters)`);
+  }
+  return token;
+}
+
+function isTokenTakenError(err) {
+  const msg = String(err?.message || err);
+  return /token_hash|duplicate key value/i.test(msg);
+}
+
+function tokenTakenError() {
+  return new Error('This password is already used by another club. Choose a different password.');
+}
+
+function orgPayload(org) {
+  return {
+    id: org.id,
+    slug: org.slug,
+    name: org.name,
+    createdAt: org.created_at ?? org.createdAt ?? null,
+  };
+}
+
+async function applyOrgToken(slug, token) {
+  try {
+    return await db.rotateOrgToken(slug, token);
+  } catch (e) {
+    if (isTokenTakenError(e)) throw tokenTakenError();
+    throw e;
+  }
 }
 
 /**
  * RNZ club admin (ADMIN_TOKEN).
  * GET    — list clubs (no secrets)
- * POST   — create { slug, name? } or rotate { action: "rotate", slug }
+ * POST   — create { slug, name?, token? } | rotate { action: "rotate", slug }
+ *          | set-token { action: "set-token", slug, token }
  * PATCH  — rename { slug, name }
  */
 module.exports = async function handler(req, res) {
@@ -81,15 +123,23 @@ module.exports = async function handler(req, res) {
         const slug = normalizeSlug(body.slug);
         assertValidSlug(slug);
         const token = newIngestToken();
-        const org = await db.rotateOrgToken(slug, token);
+        const org = await applyOrgToken(slug, token);
         return res.status(200).json({
           ok: true,
-          org: {
-            id: org.id,
-            slug: org.slug,
-            name: org.name,
-            createdAt: org.created_at ?? null,
-          },
+          org: orgPayload(org),
+          token,
+          warning: 'Copy this token now — it cannot be retrieved again.',
+        });
+      }
+
+      if (action === 'set-token' || action === 'set_token') {
+        const slug = normalizeSlug(body.slug);
+        assertValidSlug(slug);
+        const token = normalizePlainToken(body.token ?? body.password, true);
+        const org = await applyOrgToken(slug, token);
+        return res.status(200).json({
+          ok: true,
+          org: orgPayload(org),
           token,
           warning: 'Copy this token now — it cannot be retrieved again.',
         });
@@ -98,16 +148,18 @@ module.exports = async function handler(req, res) {
       const slug = normalizeSlug(body.slug);
       assertValidSlug(slug);
       const name = String(body.name ?? slug).trim() || slug;
-      const token = newIngestToken();
-      const org = await db.createOrgExclusive(slug, name, token);
+      const customToken = normalizePlainToken(body.token ?? body.password, false);
+      const token = customToken || newIngestToken();
+      let org;
+      try {
+        org = await db.createOrgExclusive(slug, name, token);
+      } catch (e) {
+        if (isTokenTakenError(e)) throw tokenTakenError();
+        throw e;
+      }
       return res.status(201).json({
         ok: true,
-        org: {
-          id: org.id,
-          slug: org.slug,
-          name: org.name,
-          createdAt: org.created_at ?? null,
-        },
+        org: orgPayload(org),
         token,
         warning: 'Copy this token now — it cannot be retrieved again.',
       });
@@ -123,19 +175,16 @@ module.exports = async function handler(req, res) {
       const org = await db.updateOrgName(slug, name);
       return res.status(200).json({
         ok: true,
-        org: {
-          id: org.id,
-          slug: org.slug,
-          name: org.name,
-          createdAt: org.created_at ?? null,
-        },
+        org: orgPayload(org),
       });
     }
 
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   } catch (e) {
     const msg = String(e.message || e);
-    const status = /already exists|not found|Slug must/i.test(msg) ? 400 : 500;
+    const status = /already exists|already used|not found|Slug must|Password is/i.test(msg)
+      ? 400
+      : 500;
     return res.status(status).json({ ok: false, error: msg });
   }
 };

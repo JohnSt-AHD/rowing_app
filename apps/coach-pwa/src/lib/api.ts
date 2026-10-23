@@ -490,10 +490,13 @@ export async function createAdminOrg(
   adminToken: string,
   slug: string,
   name: string,
+  token?: string,
 ): Promise<{ org: AdminOrg; token: string }> {
+  const body: { slug: string; name: string; token?: string } = { slug, name };
+  if (token) body.token = token;
   const data = await adminFetch(settings, adminToken, {
     method: 'POST',
-    body: JSON.stringify({ slug, name }),
+    body: JSON.stringify(body),
   });
   if (!data.org || !data.token) throw new Error(data.error || 'Create failed');
   return { org: data.org, token: data.token };
@@ -523,5 +526,19 @@ export async function rotateAdminOrgToken(
     body: JSON.stringify({ action: 'rotate', slug }),
   });
   if (!data.org || !data.token) throw new Error(data.error || 'Rotate failed');
+  return { org: data.org, token: data.token };
+}
+
+export async function setAdminOrgToken(
+  settings: CoachSettings,
+  adminToken: string,
+  slug: string,
+  token: string,
+): Promise<{ org: AdminOrg; token: string }> {
+  const data = await adminFetch(settings, adminToken, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'set-token', slug, token }),
+  });
+  if (!data.org || !data.token) throw new Error(data.error || 'Set password failed');
   return { org: data.org, token: data.token };
 }

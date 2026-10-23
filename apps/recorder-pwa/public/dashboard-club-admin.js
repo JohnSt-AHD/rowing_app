@@ -82,10 +82,31 @@
     if (box) box.hidden = true;
   }
 
+  function fillClubSelect(orgs) {
+    const sel = document.getElementById('clubAdminSetTokenSlug');
+    if (!sel) return;
+    const prev = sel.value;
+    const items = Array.isArray(orgs) ? orgs : [];
+    sel.innerHTML =
+      '<option value="">Select a club…</option>' +
+      items
+        .map((o) => `<option value="${esc(o.slug)}">${esc(o.name)} (${esc(o.slug)})</option>`)
+        .join('');
+    if (prev && items.some((o) => o.slug === prev)) sel.value = prev;
+  }
+
+  function clearSetTokenFields() {
+    const token = document.getElementById('clubAdminSetToken');
+    const confirm = document.getElementById('clubAdminSetTokenConfirm');
+    if (token) token.value = '';
+    if (confirm) confirm.value = '';
+  }
+
   function renderOrgs(orgs) {
     const body = document.getElementById('clubAdminTableBody');
-    if (!body) return;
     const items = Array.isArray(orgs) ? orgs : [];
+    fillClubSelect(items);
+    if (!body) return;
     if (!items.length) {
       body.innerHTML = '<tr><td colspan="4">No clubs yet.</td></tr>';
       return;
@@ -99,7 +120,7 @@
         <td>${esc(formatCreated(o.createdAt))}</td>
         <td class="club-admin-actions">
           <button type="button" class="hub-btn hub-btn--ghost" data-rename-slug="${esc(o.slug)}">Rename</button>
-          <button type="button" class="hub-btn hub-btn--ghost" data-rotate-slug="${esc(o.slug)}">Rotate token</button>
+          <button type="button" class="hub-btn hub-btn--ghost" data-rotate-slug="${esc(o.slug)}">Generate random</button>
         </td>
       </tr>`,
       )
@@ -155,6 +176,7 @@
   function lock() {
     saveAdminToken('');
     dismissOneTimeToken();
+    clearSetTokenFields();
     setUnlocked(false);
     renderOrgs([]);
     setStatus('Club admin locked');
@@ -164,24 +186,35 @@
     ev?.preventDefault?.();
     const slug = document.getElementById('clubAdminCreateSlug')?.value.trim() || '';
     const name = document.getElementById('clubAdminCreateName')?.value.trim() || '';
+    const token = document.getElementById('clubAdminCreateToken')?.value.trim() || '';
     if (!slug) {
       setStatus('Slug is required', true);
       return;
     }
+    if (token) {
+      const ok = window.confirm(
+        `Create club "${slug}" with this password?\n\nThis is the password coaches and phones will type.`,
+      );
+      if (!ok) return;
+    }
     setStatus('Creating club…');
     try {
+      const payload = { slug, name: name || slug };
+      if (token) payload.token = token;
       const res = await fetch(`${apiBase()}/api/admin-orgs`, {
         method: 'POST',
         headers: adminHeaders(),
-        body: JSON.stringify({ slug, name: name || slug }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Create failed (${res.status})`);
       if (data.token && data.org?.slug) showOneTimeToken(data.org.slug, data.token);
       const slugInput = document.getElementById('clubAdminCreateSlug');
       const nameInput = document.getElementById('clubAdminCreateName');
+      const tokenInput = document.getElementById('clubAdminCreateToken');
       if (slugInput) slugInput.value = '';
       if (nameInput) nameInput.value = '';
+      if (tokenInput) tokenInput.value = '';
       await refresh();
       setStatus(`Created club ${data.org?.slug || slug}`);
     } catch (err) {
@@ -217,7 +250,7 @@
   async function onRotate(slug) {
     if (!slug) return;
     const ok = window.confirm(
-      `Rotate ingest token for "${slug}"?\n\nAll phones and Manager apps using the old token will stop working until updated.`,
+      `Generate a random token for "${slug}"?\n\nAll phones and Manager apps using the old password will stop working until updated.`,
     );
     if (!ok) return;
     setStatus('Rotating token…');
@@ -237,12 +270,52 @@
     }
   }
 
+  async function onSetToken(ev) {
+    ev?.preventDefault?.();
+    const slug = document.getElementById('clubAdminSetTokenSlug')?.value.trim() || '';
+    const token = document.getElementById('clubAdminSetToken')?.value.trim() || '';
+    const confirm = document.getElementById('clubAdminSetTokenConfirm')?.value.trim() || '';
+    if (!slug) {
+      setStatus('Select a club', true);
+      return;
+    }
+    if (!token) {
+      setStatus('Password is required', true);
+      return;
+    }
+    if (token !== confirm) {
+      setStatus('Passwords do not match', true);
+      return;
+    }
+    const ok = window.confirm(
+      `Set club password for "${slug}"?\n\nThis is the password coaches and phones type. The old password will stop working until they update it.`,
+    );
+    if (!ok) return;
+    setStatus('Setting password…');
+    try {
+      const res = await fetch(`${apiBase()}/api/admin-orgs`, {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ action: 'set-token', slug, token }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Set password failed (${res.status})`);
+      if (data.token && data.org?.slug) showOneTimeToken(data.org.slug, data.token);
+      clearSetTokenFields();
+      await refresh();
+      setStatus(`Set password for ${slug}`);
+    } catch (err) {
+      setStatus(err.message || 'Could not set password', true);
+    }
+  }
+
   function init() {
     if (!document.getElementById('clubAdminSettings')) return;
     document.getElementById('clubAdminUnlockBtn')?.addEventListener('click', () => void unlock());
     document.getElementById('clubAdminLockBtn')?.addEventListener('click', lock);
     document.getElementById('clubAdminRefreshBtn')?.addEventListener('click', () => void refresh());
     document.getElementById('clubAdminCreateForm')?.addEventListener('submit', (ev) => void onCreate(ev));
+    document.getElementById('clubAdminSetTokenForm')?.addEventListener('submit', (ev) => void onSetToken(ev));
     document.getElementById('clubAdminCopyTokenBtn')?.addEventListener('click', () => {
       const input = document.getElementById('clubAdminOneTimeToken');
       if (!input?.value) return;

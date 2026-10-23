@@ -702,7 +702,7 @@
           <p>Ingest token must match <code>INGEST_TOKEN</code> on Vercel. Map position is display-only: Raw shows the last GPS fix; Smoothed predicts to now using motion between fixes.</p>
           <p>Predict speed cap limits that offset (rowing vs car testing). Refresh is how often this page polls. Hide offline after drops stale boats from the map.</p>
           <p>Rower client settings are organisation-wide and load on phones via fleet-config (no Manager app required).</p>
-          <p><strong>Club admin (RNZ)</strong> uses a separate <code>ADMIN_TOKEN</code> on Vercel — not the club ingest token.</p>
+          <p><strong>Club admin (RNZ)</strong> uses a separate <code>ADMIN_TOKEN</code> on Vercel — not the club ingest token. You can generate a random token or set the club password coaches and phones type.</p>
         </div>
         <div class="dashboard-section__body" id="section-body-settings" hidden>
           <details class="dashboard-health-details">
@@ -717,7 +717,7 @@
           </details>
           <div class="club-admin-settings" id="clubAdminSettings">
             <h3 class="data-manage-subtitle">Club admin (RNZ)</h3>
-            <p class="data-manage-hint">List, create, rename clubs and rotate ingest tokens. Requires server <code>ADMIN_TOKEN</code> (separate from the ingest token below).</p>
+            <p class="data-manage-hint">List, create, and rename clubs. Generate a random token or set the club password that coaches and phones type. Requires server <code>ADMIN_TOKEN</code> (separate from the ingest token below).</p>
             <div id="clubAdminLocked">
               <label class="ahd-field">
                 Admin password
@@ -758,7 +758,30 @@
                   Name
                   <input type="text" id="clubAdminCreateName" placeholder="Display name" autocomplete="off" />
                 </label>
+                <label class="ahd-field">
+                  Password (optional)
+                  <input type="password" id="clubAdminCreateToken" placeholder="Leave blank for random" autocomplete="new-password" maxlength="256" />
+                </label>
                 <button type="submit" class="hub-btn hub-btn--primary">Create club</button>
+              </form>
+              <h4 class="data-manage-subtitle">Set club password</h4>
+              <p class="data-manage-hint">The password coaches and phones type for this club (Authorization: Bearer). Replaces the current token. Example: <code>rnz</code>.</p>
+              <form id="clubAdminSetTokenForm" class="ahd-inline-fields">
+                <label class="ahd-field">
+                  Club
+                  <select id="clubAdminSetTokenSlug" aria-label="Club to set password for">
+                    <option value="">Select a club…</option>
+                  </select>
+                </label>
+                <label class="ahd-field">
+                  New password
+                  <input type="password" id="clubAdminSetToken" placeholder="Club password" autocomplete="new-password" maxlength="256" />
+                </label>
+                <label class="ahd-field">
+                  Confirm password
+                  <input type="password" id="clubAdminSetTokenConfirm" placeholder="Retype password" autocomplete="new-password" maxlength="256" />
+                </label>
+                <button type="submit" class="hub-btn hub-btn--primary">Set password</button>
               </form>
             </div>
             <p class="poll-line" id="clubAdminStatus" role="status"></p>

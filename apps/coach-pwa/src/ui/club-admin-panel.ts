@@ -3,6 +3,7 @@ import {
   fetchAdminOrgs,
   renameAdminOrg,
   rotateAdminOrgToken,
+  setAdminOrgToken,
   type AdminOrg,
 } from '../lib/api';
 import {
@@ -37,6 +38,7 @@ export class ClubAdminPanel {
   private orgs: AdminOrg[] = [];
   private oneTimeToken: { slug: string; token: string } | null = null;
   private busy = false;
+  private setTokenSlug = '';
 
   constructor(
     private getSettings: () => CoachSettings = loadSettings,
@@ -55,8 +57,8 @@ export class ClubAdminPanel {
 
   private setBusy(v: boolean): void {
     this.busy = v;
-    this.root?.querySelectorAll('button, input').forEach((node) => {
-      (node as HTMLButtonElement | HTMLInputElement).disabled = v;
+    this.root?.querySelectorAll('button, input, select').forEach((node) => {
+      (node as HTMLButtonElement | HTMLInputElement | HTMLSelectElement).disabled = v;
     });
   }
 
@@ -117,7 +119,7 @@ export class ClubAdminPanel {
           <td>${esc(formatCreated(o.createdAt))}</td>
           <td class="club-admin__actions">
             <button type="button" class="coach-btn coach-btn--ghost" data-rename="${esc(o.slug)}">Rename</button>
-            <button type="button" class="coach-btn coach-btn--ghost" data-rotate="${esc(o.slug)}">Rotate token</button>
+            <button type="button" class="coach-btn coach-btn--ghost" data-rotate="${esc(o.slug)}">Generate random</button>
           </td>
         </tr>`,
       )
@@ -137,7 +139,7 @@ export class ClubAdminPanel {
 
     this.root.innerHTML = `
       <h2 class="coach-section-title">Club admin (RNZ)</h2>
-      <p class="club-admin__hint">List, create, rename clubs and rotate ingest tokens. Tokens are shown once only.</p>
+      <p class="club-admin__hint">List, create, and rename clubs. Generate a random token or set the club password that coaches and phones type. Tokens are shown once only.</p>
       <div class="club-admin__toolbar">
         <button type="button" class="coach-btn coach-btn--ghost" data-admin-refresh>Refresh</button>
         <button type="button" class="coach-btn coach-btn--ghost" data-admin-lock>Lock</button>
@@ -162,8 +164,37 @@ export class ClubAdminPanel {
         <div class="form-row__meta"><span class="form-row__label">Name</span></div>
         <input type="text" data-create-name placeholder="Display name" autocomplete="off" />
       </div>
+      <div class="form-row">
+        <div class="form-row__meta"><span class="form-row__label">Password (optional)</span></div>
+        <input type="password" data-create-token placeholder="Leave blank for random" autocomplete="new-password" maxlength="256" />
+      </div>
       <div class="coach-settings-actions">
         <button type="button" class="coach-btn coach-btn--primary" data-create-club>Create club</button>
+      </div>
+      <h3 class="coach-section-title club-admin__subhead">Set club password</h3>
+      <p class="club-admin__hint">The password coaches and phones type for this club (Authorization: Bearer). Replaces the current token. Example: <code>rnz</code>.</p>
+      <div class="form-row">
+        <div class="form-row__meta"><span class="form-row__label">Club</span></div>
+        <select data-set-token-slug aria-label="Club to set password for">
+          <option value="">Select a club…</option>
+          ${this.orgs
+            .map(
+              (o) =>
+                `<option value="${esc(o.slug)}"${o.slug === this.setTokenSlug ? ' selected' : ''}>${esc(o.name)} (${esc(o.slug)})</option>`,
+            )
+            .join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-row__meta"><span class="form-row__label">New password</span></div>
+        <input type="password" data-set-token placeholder="Club password" autocomplete="new-password" maxlength="256" />
+      </div>
+      <div class="form-row">
+        <div class="form-row__meta"><span class="form-row__label">Confirm password</span></div>
+        <input type="password" data-set-token-confirm placeholder="Retype password" autocomplete="new-password" maxlength="256" />
+      </div>
+      <div class="coach-settings-actions">
+        <button type="button" class="coach-btn coach-btn--primary" data-set-token-save>Set password</button>
       </div>
     `;
     this.bindUnlocked();
@@ -194,6 +225,7 @@ export class ClubAdminPanel {
       this.unlocked = false;
       this.orgs = [];
       this.oneTimeToken = null;
+      this.setTokenSlug = '';
       this.render();
       this.onStatus('Club admin locked');
     });
@@ -223,6 +255,14 @@ export class ClubAdminPanel {
       void this.onCreate();
     });
 
+    root.querySelector('[data-set-token-save]')?.addEventListener('click', () => {
+      void this.onSetToken();
+    });
+
+    root.querySelector('[data-set-token-slug]')?.addEventListener('change', (ev) => {
+      this.setTokenSlug = (ev.target as HTMLSelectElement).value;
+    });
+
     root.querySelectorAll('[data-rename]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const slug = (btn as HTMLElement).dataset.rename || '';
@@ -247,9 +287,18 @@ export class ClubAdminPanel {
     const name = (
       root.querySelector('[data-create-name]') as HTMLInputElement | null
     )?.value.trim();
+    const customToken = (
+      root.querySelector('[data-create-token]') as HTMLInputElement | null
+    )?.value.trim();
     if (!slug) {
       this.onStatus('Slug is required', true);
       return;
+    }
+    if (customToken) {
+      const ok = window.confirm(
+        `Create club "${slug}" with this password?\n\nThis is the password coaches and phones will type.`,
+      );
+      if (!ok) return;
     }
     this.setBusy(true);
     try {
@@ -258,6 +307,7 @@ export class ClubAdminPanel {
         this.adminToken(),
         slug,
         name || slug,
+        customToken || undefined,
       );
       this.oneTimeToken = { slug: org.slug, token };
       this.onStatus(`Created club ${org.slug}`);
@@ -292,7 +342,7 @@ export class ClubAdminPanel {
   private async onRotate(slug: string): Promise<void> {
     if (!slug || this.busy) return;
     const ok = window.confirm(
-      `Rotate ingest token for "${slug}"?\n\nAll phones and Manager apps using the old token will stop working until updated.`,
+      `Generate a random token for "${slug}"?\n\nAll phones and Manager apps using the old password will stop working until updated.`,
     );
     if (!ok) return;
     this.setBusy(true);
@@ -304,6 +354,47 @@ export class ClubAdminPanel {
       );
       this.oneTimeToken = { slug: org.slug, token };
       this.onStatus(`Rotated token for ${org.slug}`);
+      await this.reload();
+    } catch (e) {
+      this.onStatus(e instanceof Error ? e.message : String(e), true);
+      this.setBusy(false);
+    }
+  }
+
+  private async onSetToken(): Promise<void> {
+    const root = this.root;
+    if (!root || this.busy) return;
+    const slug = (
+      root.querySelector('[data-set-token-slug]') as HTMLSelectElement | null
+    )?.value.trim();
+    const token = (
+      root.querySelector('[data-set-token]') as HTMLInputElement | null
+    )?.value.trim();
+    const confirm = (
+      root.querySelector('[data-set-token-confirm]') as HTMLInputElement | null
+    )?.value.trim();
+    if (!slug) {
+      this.onStatus('Select a club', true);
+      return;
+    }
+    if (!token) {
+      this.onStatus('Password is required', true);
+      return;
+    }
+    if (token !== confirm) {
+      this.onStatus('Passwords do not match', true);
+      return;
+    }
+    const ok = window.confirm(
+      `Set club password for "${slug}"?\n\nThis is the password coaches and phones type. The old password will stop working until they update it.`,
+    );
+    if (!ok) return;
+    this.setBusy(true);
+    try {
+      const result = await setAdminOrgToken(this.getSettings(), this.adminToken(), slug, token);
+      this.oneTimeToken = { slug: result.org.slug, token: result.token };
+      this.setTokenSlug = result.org.slug;
+      this.onStatus(`Set password for ${result.org.slug}`);
       await this.reload();
     } catch (e) {
       this.onStatus(e instanceof Error ? e.message : String(e), true);
