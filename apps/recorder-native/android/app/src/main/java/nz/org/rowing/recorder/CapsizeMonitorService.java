@@ -30,6 +30,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
@@ -123,8 +124,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long GPS_MAX_SCHEDULED_CACHE_AGE_MS = 30L * 60L * 1000L;
     /** Use wall clock when Android fix time lags more than this (KRI model). */
     private static final long GPS_STALE_FIX_CLOCK_MS = 8_000L;
-    /** Reject fused last-known older than this — 5 min made the live pin trail Maps. */
-    private static final long FUSED_MAX_UPDATE_AGE_MS = 10_000L;
+    /** Reject fused last-known older than this (elapsed-realtime age, not getTime). */
+    private static final long FUSED_MAX_UPDATE_AGE_MS = 4_000L;
+    /** Only average window points this close in time/space to the newest fix. */
+    private static final long GPS_WINDOW_BLEND_MS = 2_000L;
+    private static final float GPS_WINDOW_BLEND_M = 20f;
     /** Ignore duplicate coords within this window (repeat fused callbacks). */
     private static final long GPS_COORD_DEDUPE_MS = 500L;
     private static final String PENDING_BATCHES_KEY = "pendingIngestBatches";
@@ -309,6 +313,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         final float alt;
         final long t;
         final long rawFixMs;
+        final long elapsedRtNs;
 
         GpsWindowFix(Location loc, long ingestT) {
             lat = loc.getLatitude();
@@ -320,6 +325,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             t = ingestT;
             long raw = loc.getTime();
             rawFixMs = raw > 0L ? raw : ingestT;
+            elapsedRtNs = loc.getElapsedRealtimeNanos();
         }
     }
 
@@ -557,8 +563,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void cacheGpsLocation(Location location) {
         if (!enableGps || location == null) return;
         long rawFix = location.getTime();
-        if (latestGpsLocation != null && latestGpsRawFixClockMs > 0L) {
-            if (rawFix <= 0L || rawFix < latestGpsRawFixClockMs) {
+        if (latestGpsLocation != null) {
+            long prevRt = latestGpsLocation.getElapsedRealtimeNanos();
+            long nextRt = location.getElapsedRealtimeNanos();
+            if (prevRt > 0L && nextRt > 0L && nextRt < prevRt) {
+                return;
+            }
+            if ((prevRt <= 0L || nextRt <= 0L)
+                    && latestGpsRawFixClockMs > 0L
+                    && (rawFix <= 0L || rawFix < latestGpsRawFixClockMs)) {
                 return;
             }
         }
@@ -690,12 +703,32 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void pruneStaleGpsWindow(long now) {
+        long nowRt = SystemClock.elapsedRealtimeNanos();
         for (int i = gpsWindowBuffer.size() - 1; i >= 0; i--) {
             GpsWindowFix f = gpsWindowBuffer.get(i);
-            if (f.rawFixMs > 0L && now - f.rawFixMs > FUSED_MAX_UPDATE_AGE_MS) {
+            long ageMs = windowFixAgeMs(f, now, nowRt);
+            if (ageMs > FUSED_MAX_UPDATE_AGE_MS) {
                 gpsWindowBuffer.remove(i);
             }
         }
+    }
+
+    private static long windowFixAgeMs(GpsWindowFix f, long nowWallMs, long nowRtNs) {
+        if (f.elapsedRtNs > 0L && nowRtNs > 0L) {
+            long age = (nowRtNs - f.elapsedRtNs) / 1_000_000L;
+            return age < 0L ? 0L : age;
+        }
+        if (f.rawFixMs > 0L) {
+            long age = nowWallMs - f.rawFixMs;
+            return age < 0L ? 0L : age;
+        }
+        return Long.MAX_VALUE;
+    }
+
+    private static float distanceMeters(double aLat, double aLon, double bLat, double bLon) {
+        double dLatM = (aLat - bLat) * 111320d;
+        double dLonM = (aLon - bLon) * 111320d * Math.cos(Math.toRadians((aLat + bLat) / 2d));
+        return (float) Math.hypot(dLatM, dLonM);
     }
 
     private static float fixWeight(float accM) {
@@ -709,6 +742,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         loc.setLongitude(f.lon);
         loc.setAccuracy(f.acc);
         loc.setTime(f.t);
+        if (f.elapsedRtNs > 0L) loc.setElapsedRealtimeNanos(f.elapsedRtNs);
         if (f.spd >= 0f) loc.setSpeed(f.spd);
         if (!Float.isNaN(f.alt)) loc.setAltitude(f.alt);
         if (f.hdg >= 0f) loc.setBearing(f.hdg);
@@ -721,6 +755,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (gpsWindowBuffer.size() == 1) {
             return windowFixToLocation(gpsWindowBuffer.get(0));
         }
+        GpsWindowFix newest = gpsWindowBuffer.get(0);
+        for (GpsWindowFix f : gpsWindowBuffer) {
+            if (f.elapsedRtNs > newest.elapsedRtNs
+                    || (f.elapsedRtNs == newest.elapsedRtNs && f.rawFixMs > newest.rawFixMs)) {
+                newest = f;
+            }
+        }
         double latSum = 0d;
         double lonSum = 0d;
         double wSum = 0d;
@@ -729,10 +770,20 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         double spdW = 0d;
         double altSum = 0d;
         double altW = 0d;
-        long t = gpsWindowBuffer.get(0).t;
+        long t = newest.t;
         float bestHdg = -1f;
         float bestHdgW = 0f;
+        int blended = 0;
         for (GpsWindowFix f : gpsWindowBuffer) {
+            long dtMs =
+                    f.elapsedRtNs > 0L && newest.elapsedRtNs > 0L
+                            ? Math.abs(newest.elapsedRtNs - f.elapsedRtNs) / 1_000_000L
+                            : Math.abs(newest.rawFixMs - f.rawFixMs);
+            if (dtMs > GPS_WINDOW_BLEND_MS) continue;
+            if (distanceMeters(newest.lat, newest.lon, f.lat, f.lon) > GPS_WINDOW_BLEND_M) {
+                continue;
+            }
+            blended++;
             float w = fixWeight(f.acc);
             wSum += w;
             latSum += f.lat * w;
@@ -752,14 +803,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 bestHdg = f.hdg;
             }
         }
-        if (wSum <= 0d) {
-            return windowFixToLocation(gpsWindowBuffer.get(gpsWindowBuffer.size() - 1));
+        if (wSum <= 0d || blended == 0) {
+            return windowFixToLocation(newest);
         }
         Location loc = new Location("weighted");
         loc.setLatitude(latSum / wSum);
         loc.setLongitude(lonSum / wSum);
         loc.setAccuracy((float) (accSum / wSum));
         loc.setTime(t);
+        if (newest.elapsedRtNs > 0L) loc.setElapsedRealtimeNanos(newest.elapsedRtNs);
         if (spdW > 0d) loc.setSpeed((float) (spdSum / spdW));
         if (altW > 0d) loc.setAltitude(altSum / altW);
         if (bestHdg >= 0f) loc.setBearing(bestHdg);
@@ -859,6 +911,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private static long rawFixAgeMs(Location location) {
         if (location == null) return Long.MAX_VALUE;
+        long rt = location.getElapsedRealtimeNanos();
+        if (rt > 0L) {
+            long age = (SystemClock.elapsedRealtimeNanos() - rt) / 1_000_000L;
+            return age < 0L ? 0L : age;
+        }
         long fixTime = location.getTime();
         if (fixTime <= 0L) return Long.MAX_VALUE;
         long now = System.currentTimeMillis();
@@ -2690,14 +2747,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         e -> {
                             Log.w(TAG, "Fused location unavailable, using legacy", e);
                             registerLegacyLocation();
-                        });
-        fusedClient
-                .getLastLocation()
-                .addOnSuccessListener(
-                        loc -> {
-                            if (loc != null && isGpsFixRecentForMap(loc)) {
-                                deliverLocation(loc);
-                            }
                         });
     }
 
