@@ -125,15 +125,22 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long GPS_MAX_SCHEDULED_CACHE_AGE_MS = 30L * 60L * 1000L;
     /** Use wall clock when Android fix time lags more than this (KRI model). */
     private static final long GPS_STALE_FIX_CLOCK_MS = 8_000L;
-    /** No historical first fused fix (Play Services / Maps recipe). */
+    /**
+     * No historical first fused fix (Play Services / Maps recipe).
+     * 1.0.57 (58) only used this to block the 5-min *first* last-known lock.
+     * This build is the restamped sitting-lock case: same coords + a fresh
+     * getTime() is not live tracking and must not veto fused.
+     */
     private static final long FUSED_HISTORICAL_MAX_AGE_MS = 0L;
     /** Drop live-map samples older than this (elapsed realtime). */
     private static final long LIVE_FIX_MAX_AGE_MS = 8_000L;
     /** If fused sits still this long, start raw GPS as a fallback. */
     private static final long FUSED_FREEZE_MS = 25_000L;
     private static final float FUSED_FREEZE_M = 15f;
-    /** If raw GPS restamps the same lock this long, follow fused again. */
+    /** Near-zero displacement this long while timestamps advance = restamped lock. */
     private static final long RAW_GPS_STILL_MS = 8_000L;
+    /** Below this, a GNSS lock is stationary even if getTime() keeps updating. */
+    private static final float RAW_GPS_MOVING_SPEED_MS = 0.75f;
     /** Only average window points this close in time/space to the newest fix. */
     private static final long GPS_WINDOW_BLEND_MS = 2_000L;
     private static final float GPS_WINDOW_BLEND_M = 20f;
@@ -228,6 +235,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private String latestGpsProvider;
     /** Last fused/legacy callback — detect when Android stops delivering fixes. */
     private long lastFusedDeliveryWallMs;
+    /** Last non-raw (fused) delivery — sitting GNSS must not overwrite this. */
+    private long lastFusedProviderDeliveryWallMs;
     private boolean gpsSatelliteFallbackActive;
     private long fusedFreezeSinceMs;
     private double fusedFreezeLat = Double.NaN;
@@ -235,6 +244,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private long rawGpsStillSinceMs;
     private double rawGpsStillLat = Double.NaN;
     private double rawGpsStillLon = Double.NaN;
+    /** True only after raw GPS shows real motion — restamped locks stay false. */
+    private boolean rawGpsTracking;
     private final ArrayList<GpsWindowFix> gpsWindowBuffer = new ArrayList<>();
     private long lastWindowCollectWallMs;
     private int nativeGpsCount;
@@ -588,7 +599,23 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private boolean isRawGpsSittingStill() {
         if (!hasRecentRawGps()) return false;
         if (!Double.isFinite(rawGpsStillLat) || rawGpsStillSinceMs <= 0L) return false;
+        if (latestGpsLocation != null
+                && latestGpsLocation.hasSpeed()
+                && latestGpsLocation.getSpeed() > RAW_GPS_MOVING_SPEED_MS) {
+            return false;
+        }
         return System.currentTimeMillis() - rawGpsStillSinceMs >= RAW_GPS_STILL_MS;
+    }
+
+    /** Raw GPS is moving — not a restamped same-coord lock with a fresh clock. */
+    private boolean isRawGpsActuallyTracking() {
+        return hasRecentRawGps() && rawGpsTracking && !isRawGpsSittingStill();
+    }
+
+    private boolean isFusedStillDelivering() {
+        return lastFusedProviderDeliveryWallMs > 0L
+                && System.currentTimeMillis() - lastFusedProviderDeliveryWallMs
+                        <= LIVE_FIX_MAX_AGE_MS;
     }
 
     private boolean fusedMovedFromRawGps(Location fused) {
@@ -601,20 +628,30 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 > FUSED_FREEZE_M;
     }
 
-    /** Ignore fused only while raw GPS is actually tracking. A sitting GNSS lock must not block Maps. */
+    /**
+     * Stay on fused while fused is still delivering.
+     * 1.0.57 (58) only blocked the 5-min *first* last-known (maxAge=0). It still
+     * treated a restamped same-coord GNSS lock as live and vetoed fused until
+     * raw sat 8s and fused had already jumped 15 m. Same coords + updating
+     * clock ≠ live tracking.
+     */
     private boolean shouldIgnoreFused(Location location) {
         if (isRawGpsProvider(location)) return false;
         if (!hasRecentRawGps()) return false;
-        if (!isGpsFixRecentForMap(location)) return true;
-        if (isRawGpsSittingStill() && fusedMovedFromRawGps(location)) {
-            return false;
-        }
-        return true;
+        return !isGpsFixRecentForMap(location);
+    }
+
+    /** Sitting / restamped raw must not overwrite a live fused fix. */
+    private boolean shouldIgnoreRawGps(Location location) {
+        if (!isRawGpsProvider(location)) return false;
+        return isFusedStillDelivering();
     }
 
     private void followFusedOverSittingGps(Location fused) {
         if (isRawGpsProvider(fused)) return;
-        if (!isRawGpsSittingStill() || !fusedMovedFromRawGps(fused)) return;
+        if (!isGpsFixRecentForMap(fused)) return;
+        if (isRawGpsActuallyTracking()) return;
+        if (!isRawGpsSittingStill() && !fusedMovedFromRawGps(fused)) return;
         stopGpsSatelliteFallback();
         clearRawGpsStill();
         Log.i(TAG, "Following fused — satellite GPS lock sitting still");
@@ -622,14 +659,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void cacheGpsLocation(Location location) {
         if (!enableGps || location == null) return;
-        if (shouldIgnoreFused(location)) {
+        if (shouldIgnoreFused(location) || shouldIgnoreRawGps(location)) {
             return;
         }
-        boolean followFused = !isRawGpsProvider(location)
-                && isRawGpsSittingStill()
-                && fusedMovedFromRawGps(location);
         long rawFix = location.getTime();
-        if (latestGpsLocation != null && !isRawGpsProvider(location) && !followFused) {
+        // 1.0.57 only skipped this rewind check after raw sat 8s AND fused jumped
+        // 15 m. A restamped GNSS lock has a fresher clock than live fused, so
+        // this dropped Maps and kept the sitting lock.
+        if (latestGpsLocation != null
+                && !isRawGpsProvider(location)
+                && !isGpsFixRecentForMap(location)) {
             long prevRt = latestGpsLocation.getElapsedRealtimeNanos();
             long nextRt = location.getElapsedRealtimeNanos();
             if (prevRt > 0L && nextRt > 0L && nextRt < prevRt) {
@@ -655,16 +694,25 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (rawFix > 0L && rawFix <= now + 5_000L) {
             latestGpsRawFixClockMs = rawFix;
         }
+        if (!isRawGpsProvider(location) && isGpsFixRecentForMap(location)) {
+            lastFusedProviderDeliveryWallMs = now;
+        }
         saveLastGpsToPrefs(location, ingestTimeMs(location), nativeGpsCount);
     }
 
     private void deliverLocation(Location location) {
         if (!enableGps || location == null) return;
-        if (shouldIgnoreFused(location)) {
+        if (isRawGpsProvider(location)) {
+            noteRawGpsMovement(location);
+        }
+        if (shouldIgnoreFused(location) || shouldIgnoreRawGps(location)) {
             return;
         }
         if (isGpsFixRecentForMap(location)) {
             lastFusedDeliveryWallMs = System.currentTimeMillis();
+            if (!isRawGpsProvider(location)) {
+                lastFusedProviderDeliveryWallMs = lastFusedDeliveryWallMs;
+            }
         }
         savePulseDiagnostics();
         cacheGpsLocation(location);
@@ -675,9 +723,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         addFixToGpsWindow(location);
         maybeApplyGeofenceEconomy(location.getLatitude(), location.getLongitude());
         maybeNotifyZoneEntry(location.getLatitude(), location.getLongitude());
-        if (isRawGpsProvider(location)) {
-            noteRawGpsMovement(location);
-        } else {
+        if (!isRawGpsProvider(location)) {
             noteFusedMovement(location);
         }
     }
@@ -703,15 +749,32 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void noteRawGpsMovement(Location location) {
         if (!isRawGpsProvider(location) || !isGpsFixUsable(location)) return;
         long now = System.currentTimeMillis();
-        if (!Double.isFinite(rawGpsStillLat)
-                || distanceMeters(rawGpsStillLat, rawGpsStillLon, location.getLatitude(), location.getLongitude())
-                        > FUSED_FREEZE_M) {
+        boolean movingSpeed =
+                location.hasSpeed() && location.getSpeed() > RAW_GPS_MOVING_SPEED_MS;
+        float movedM = 0f;
+        if (Double.isFinite(rawGpsStillLat)) {
+            movedM =
+                    distanceMeters(
+                            rawGpsStillLat,
+                            rawGpsStillLon,
+                            location.getLatitude(),
+                            location.getLongitude());
+        }
+        if (!Double.isFinite(rawGpsStillLat) || movedM > FUSED_FREEZE_M || movingSpeed) {
             rawGpsStillLat = location.getLatitude();
             rawGpsStillLon = location.getLongitude();
             rawGpsStillSinceMs = now;
+            if (movedM > FUSED_FREEZE_M || movingSpeed) {
+                rawGpsTracking = true;
+            }
             return;
         }
         if (rawGpsStillSinceMs <= 0L) rawGpsStillSinceMs = now;
+        // Restamped lock: callbacks keep arriving (clock advances) but the
+        // pin does not — do not treat that as a lock that blocks fused.
+        if (now - rawGpsStillSinceMs >= RAW_GPS_STILL_MS) {
+            rawGpsTracking = false;
+        }
     }
 
     private void clearFusedFreeze() {
@@ -724,6 +787,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         rawGpsStillSinceMs = 0L;
         rawGpsStillLat = Double.NaN;
         rawGpsStillLon = Double.NaN;
+        rawGpsTracking = false;
     }
 
     private String lastNativeGeofenceSignature = "";
@@ -2847,7 +2911,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         .setMaxUpdateDelayMillis(interval)
                         .setMaxUpdateAgeMillis(FUSED_HISTORICAL_MAX_AGE_MS)
                         .setGranularity(Granularity.GRANULARITY_FINE)
-                        .setWaitForAccurateLocation(true)
+                        // Maps-like fused: 1.0.57's true can stall callbacks and trip
+                        // the raw-GPS fallback. maxAge=0 still blocks last-known.
+                        .setWaitForAccurateLocation(false)
                         .build();
         fusedCallback =
                 new LocationCallback() {
