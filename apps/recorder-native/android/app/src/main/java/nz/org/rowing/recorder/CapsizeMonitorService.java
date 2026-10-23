@@ -132,6 +132,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** If fused sits still this long, start raw GPS as a fallback. */
     private static final long FUSED_FREEZE_MS = 25_000L;
     private static final float FUSED_FREEZE_M = 15f;
+    /** If raw GPS restamps the same lock this long, follow fused again. */
+    private static final long RAW_GPS_STILL_MS = 8_000L;
     /** Only average window points this close in time/space to the newest fix. */
     private static final long GPS_WINDOW_BLEND_MS = 2_000L;
     private static final float GPS_WINDOW_BLEND_M = 20f;
@@ -230,6 +232,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private long fusedFreezeSinceMs;
     private double fusedFreezeLat = Double.NaN;
     private double fusedFreezeLon = Double.NaN;
+    private long rawGpsStillSinceMs;
+    private double rawGpsStillLat = Double.NaN;
+    private double rawGpsStillLon = Double.NaN;
     private final ArrayList<GpsWindowFix> gpsWindowBuffer = new ArrayList<>();
     private long lastWindowCollectWallMs;
     private int nativeGpsCount;
@@ -580,13 +585,51 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 && isGpsFixRecentForMap(latestGpsLocation);
     }
 
+    private boolean isRawGpsSittingStill() {
+        if (!hasRecentRawGps()) return false;
+        if (!Double.isFinite(rawGpsStillLat) || rawGpsStillSinceMs <= 0L) return false;
+        return System.currentTimeMillis() - rawGpsStillSinceMs >= RAW_GPS_STILL_MS;
+    }
+
+    private boolean fusedMovedFromRawGps(Location fused) {
+        if (latestGpsLocation == null || fused == null) return false;
+        return distanceMeters(
+                        latestGpsLocation.getLatitude(),
+                        latestGpsLocation.getLongitude(),
+                        fused.getLatitude(),
+                        fused.getLongitude())
+                > FUSED_FREEZE_M;
+    }
+
+    /** Ignore fused only while raw GPS is actually tracking. A sitting GNSS lock must not block Maps. */
+    private boolean shouldIgnoreFused(Location location) {
+        if (isRawGpsProvider(location)) return false;
+        if (!hasRecentRawGps()) return false;
+        if (!isGpsFixRecentForMap(location)) return true;
+        if (isRawGpsSittingStill() && fusedMovedFromRawGps(location)) {
+            return false;
+        }
+        return true;
+    }
+
+    private void followFusedOverSittingGps(Location fused) {
+        if (isRawGpsProvider(fused)) return;
+        if (!isRawGpsSittingStill() || !fusedMovedFromRawGps(fused)) return;
+        stopGpsSatelliteFallback();
+        clearRawGpsStill();
+        Log.i(TAG, "Following fused — satellite GPS lock sitting still");
+    }
+
     private void cacheGpsLocation(Location location) {
         if (!enableGps || location == null) return;
-        if (!isRawGpsProvider(location) && hasRecentRawGps()) {
+        if (shouldIgnoreFused(location)) {
             return;
         }
+        boolean followFused = !isRawGpsProvider(location)
+                && isRawGpsSittingStill()
+                && fusedMovedFromRawGps(location);
         long rawFix = location.getTime();
-        if (latestGpsLocation != null && !isRawGpsProvider(location)) {
+        if (latestGpsLocation != null && !isRawGpsProvider(location) && !followFused) {
             long prevRt = latestGpsLocation.getElapsedRealtimeNanos();
             long nextRt = location.getElapsedRealtimeNanos();
             if (prevRt > 0L && nextRt > 0L && nextRt < prevRt) {
@@ -598,6 +641,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 return;
             }
         }
+        followFusedOverSittingGps(location);
         latestGpsLocation = location;
         latestGpsCachedWallMs = System.currentTimeMillis();
         String provider = location.getProvider();
@@ -616,7 +660,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void deliverLocation(Location location) {
         if (!enableGps || location == null) return;
-        if (!isRawGpsProvider(location) && hasRecentRawGps()) {
+        if (shouldIgnoreFused(location)) {
             return;
         }
         if (isGpsFixRecentForMap(location)) {
@@ -631,7 +675,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         addFixToGpsWindow(location);
         maybeApplyGeofenceEconomy(location.getLatitude(), location.getLongitude());
         maybeNotifyZoneEntry(location.getLatitude(), location.getLongitude());
-        if (!isRawGpsProvider(location)) {
+        if (isRawGpsProvider(location)) {
+            noteRawGpsMovement(location);
+        } else {
             noteFusedMovement(location);
         }
     }
@@ -654,10 +700,30 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
+    private void noteRawGpsMovement(Location location) {
+        if (!isRawGpsProvider(location) || !isGpsFixUsable(location)) return;
+        long now = System.currentTimeMillis();
+        if (!Double.isFinite(rawGpsStillLat)
+                || distanceMeters(rawGpsStillLat, rawGpsStillLon, location.getLatitude(), location.getLongitude())
+                        > FUSED_FREEZE_M) {
+            rawGpsStillLat = location.getLatitude();
+            rawGpsStillLon = location.getLongitude();
+            rawGpsStillSinceMs = now;
+            return;
+        }
+        if (rawGpsStillSinceMs <= 0L) rawGpsStillSinceMs = now;
+    }
+
     private void clearFusedFreeze() {
         fusedFreezeSinceMs = 0L;
         fusedFreezeLat = Double.NaN;
         fusedFreezeLon = Double.NaN;
+    }
+
+    private void clearRawGpsStill() {
+        rawGpsStillSinceMs = 0L;
+        rawGpsStillLat = Double.NaN;
+        rawGpsStillLon = Double.NaN;
     }
 
     private String lastNativeGeofenceSignature = "";
@@ -2881,6 +2947,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         gpsSatelliteFallbackActive = false;
         clearFusedFreeze();
+        clearRawGpsStill();
     }
 
     private void acquireWakeLock() {
