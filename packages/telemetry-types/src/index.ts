@@ -34,6 +34,10 @@ export type DerivedSample = {
   strokeRate?: number;
   /** Boat tipped past ~90° from session-start upright. */
   capsize?: boolean;
+  /** Local UX: phone is upright again. Does not clear Manager/RowSafe sticky. */
+  capsizeCleared?: boolean;
+  /** Athlete recalled the fleet alarm (I'm OK / false alarm). */
+  capsizeRecalled?: boolean;
   /** Angle from calibrated upright (degrees). */
   tiltDeg?: number;
   /** Session alive ping (no GPS required). */
@@ -68,12 +72,15 @@ export type TelemetryBatch = {
 export type RecorderSettings = {
   deviceId: string;
   /**
-   * Coach display name for the outing. Uploaded as ingest `athleteId` (legacy column
-   * name); the API maps it to `coach` for Manager / RowSafe — not the Athlete label.
+   * Coach display names for the outing (comma-separated). Uploaded as ingest
+   * `athleteId` (legacy column name); the API maps it to `coach` for Manager /
+   * RowSafe — not the Athlete label.
    */
   athleteId: string;
-  /** Coach roster id from fleet config (Manager → Coaches & Boats). */
+  /** First selected coach roster id (legacy single-select). */
   coachId?: string;
+  /** Selected coach roster ids from fleet config (Manager → Coaches & Boats). */
+  coachIds?: string[];
   /** Selected boat id from fleet config. */
   boatId: string;
   /** Boat class code for prognostic pace (from selected boat). */
@@ -107,6 +114,7 @@ export const DEFAULT_SETTINGS: RecorderSettings = {
   deviceId: '',
   athleteId: '',
   coachId: '',
+  coachIds: [],
   boatId: '',
   boatClass: '',
   ingestUrl: DEFAULT_INGEST_URL,
@@ -122,6 +130,61 @@ export const DEFAULT_SETTINGS: RecorderSettings = {
   keepScreenOn: true,
   geofenceSessionControl: true,
 };
+
+export function normalizeCoachName(value?: string | null): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase();
+}
+
+/** Split a stored coach field (`Mike` or `Mike, Tom`) into display names. */
+export function parseCoachNames(value?: string | null): string[] {
+  const raw = String(value ?? '').trim();
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const part of raw.split(/[,;|]/)) {
+    const name = part.trim();
+    if (!name) continue;
+    const key = normalizeCoachName(name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(name);
+  }
+  return names;
+}
+
+export function formatCoachNames(names: Array<string | null | undefined>): string {
+  return parseCoachNames(names.filter(Boolean).join(', ')).join(', ');
+}
+
+export function coachNamesInclude(
+  haystack?: string | null,
+  coach?: string | null,
+): boolean {
+  const want = normalizeCoachName(coach);
+  if (!want) return false;
+  return parseCoachNames(haystack).some((name) => normalizeCoachName(name) === want);
+}
+
+export function selectedCoachIds(settings: {
+  coachIds?: string[] | null;
+  coachId?: string | null;
+}): string[] {
+  const many = Array.isArray(settings.coachIds)
+    ? settings.coachIds.map((id) => String(id ?? '').trim()).filter(Boolean)
+    : [];
+  if (many.length) {
+    const seen = new Set<string>();
+    return many.filter((id) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  }
+  const one = String(settings.coachId ?? '').trim();
+  return one ? [one] : [];
+}
 
 export type SessionMeta = {
   sessionId: string;

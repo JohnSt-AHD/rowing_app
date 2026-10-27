@@ -24,6 +24,7 @@ import {
   type MapPosition,
 } from '../lib/api';
 import { isCoachDevice, managerDeviceId } from '../lib/coach-identity';
+import { coachNamesInclude, normalizeCoachName } from '../lib/coach-names';
 import {
   getCoachLocationStatus,
   isCoachLocationNativeOwned,
@@ -116,12 +117,6 @@ function saveTicketScope(scope: TicketScope) {
   } catch {
     /* ignore */
   }
-}
-
-function normalizeCoachName(value?: string | null): string {
-  return String(value ?? '')
-    .trim()
-    .toLowerCase();
 }
 
 function loadMapFollowPref(): boolean {
@@ -232,9 +227,9 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function deviceCoachMatchesManager(d?: FleetDevice | null): boolean {
-    const mine = normalizeCoachName(settings.coachName);
-    if (!mine || !d) return false;
-    return normalizeCoachName(d.coach) === mine;
+    const mine = settings.coachName;
+    if (!mine.trim() || !d) return false;
+    return coachNamesInclude(d.coach, mine);
   }
 
   /** My-crews filter. Capsizes on this token always pass so every Manager sees them. */

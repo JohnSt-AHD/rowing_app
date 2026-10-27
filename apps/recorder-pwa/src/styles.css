@@ -360,6 +360,12 @@
   font-weight: 500;
 }
 
+.fieldset[data-coach-list] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
 .check input {
   width: auto;
   margin: 0;
@@ -532,6 +538,40 @@
   text-align: center;
   letter-spacing: 0.06em;
   animation: capsize-pulse 1.2s ease-in-out infinite;
+}
+
+.session-live-hud__alert--sticky {
+  animation: none;
+  background: rgba(15, 35, 58, 0.92);
+  border-color: rgba(212, 175, 55, 0.65);
+  color: #fde68a;
+}
+
+.session-live-hud__alert-text {
+  margin: 0;
+}
+
+.session-live-hud__alert-recall {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.45rem 0.95rem;
+  border: 1px solid rgba(212, 175, 55, 0.85);
+  border-radius: 6px;
+  background: #0f233a;
+  color: #f5d76e;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+
+.session-live-hud__alert-recall:active {
+  background: #163050;
+}
+
+.session-live-hud__alert-recall:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .session-live-hud__alert[hidden] {

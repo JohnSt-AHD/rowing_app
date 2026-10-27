@@ -34,6 +34,7 @@ export function demoRecorderSettings(base: RecorderSettings): RecorderSettings {
     deviceId: DEMO_DEVICE_ID,
     athleteId: 'Mike',
     coachId: 'coach-1',
+    coachIds: ['coach-1'],
     boatId: 'boat-2',
     boatClass: 'W1x',
     ingestToken: 'demo',
@@ -157,6 +158,7 @@ export function createDemoController(): RecorderController {
     flush: async () => {},
     connectHr: async () => {},
     dismissRegattaMessage: async () => {},
+    recallCapsize: async () => {},
   };
 }
 

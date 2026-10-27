@@ -1,3 +1,4 @@
+import { coachNamesInclude } from '../lib/coach-names';
 import type { CoachSettings } from '../lib/settings';
 import { bindInfoToggles } from '../lib/info-toggle';
 import {
@@ -121,9 +122,9 @@ export class WorkoutPanel {
   }
 
   private applyDefaultSelection() {
-    const mine = this.coachName().toLowerCase();
+    const mine = this.coachName();
     const mineIds = this.boats
-      .filter((b) => String(b.coach || '').trim().toLowerCase() === mine)
+      .filter((b) => coachNamesInclude(b.coach, mine))
       .map((b) => b.deviceId);
     if (mineIds.length) {
       this.selectedIds = new Set(mineIds);
@@ -282,7 +283,7 @@ export class WorkoutPanel {
       btn.addEventListener('click', () => {
         const mode = (btn as HTMLElement).dataset.woSel;
         this.selectionTouched = true;
-        const mine = this.coachName().toLowerCase();
+        const mine = this.coachName();
         if (mode === 'none') this.selectedIds.clear();
         else if (mode === 'all') this.selectedIds = new Set(this.boats.map((b) => b.deviceId));
         else if (mode === 'water') {
@@ -290,7 +291,7 @@ export class WorkoutPanel {
         } else {
           this.selectedIds = new Set(
             this.boats
-              .filter((b) => String(b.coach || '').trim().toLowerCase() === mine)
+              .filter((b) => coachNamesInclude(b.coach, mine))
               .map((b) => b.deviceId),
           );
         }

@@ -127,6 +127,7 @@ export interface NativeCapsizeMonitorPlugin {
   disarmGeofenceStandby(): Promise<void>;
   getStandbyStatus(): Promise<NativeStandbyStatus>;
   dismissCrewMessage(): Promise<void>;
+  recallCapsize(): Promise<void>;
 }
 
 const CapsizeMonitor = registerPlugin<NativeCapsizeMonitorPlugin>('CapsizeMonitor');
@@ -300,6 +301,16 @@ export async function dismissNativeCrewMessage(): Promise<void> {
   if (!IS_NATIVE) return;
   try {
     await CapsizeMonitor.dismissCrewMessage();
+  } catch {
+    /* optional on older APKs */
+  }
+}
+
+/** Athlete recall: stop native siren and hold re-arm until upright. */
+export async function recallNativeCapsize(): Promise<void> {
+  if (!IS_NATIVE) return;
+  try {
+    await CapsizeMonitor.recallCapsize();
   } catch {
     /* optional on older APKs */
   }

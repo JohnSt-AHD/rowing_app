@@ -4,6 +4,7 @@ import {
   findBoat,
   findCoach,
   getCachedFleetConfig,
+  type FleetCoach,
   type FleetConfig,
 } from '../lib/fleet-config';
 import {
@@ -22,7 +23,14 @@ import {
   type BackgroundStatus,
 } from '../lib/background-session';
 import { requestNativePermissions } from '@rowing/sensor-adapters';
-import { DEFAULT_INGEST_URL, type SessionMeta } from '@rowing/telemetry-types';
+import {
+  DEFAULT_INGEST_URL,
+  formatCoachNames,
+  normalizeCoachName,
+  parseCoachNames,
+  selectedCoachIds,
+  type SessionMeta,
+} from '@rowing/telemetry-types';
 import {
   armNativeGeofenceStandby,
   disarmNativeGeofenceStandby,
@@ -161,6 +169,8 @@ export function mountApp(root: HTMLElement): void {
   let fleetConfigCache: FleetConfig | null = getCachedFleetConfig();
   let recording = false;
   let capsizeActive = false;
+  let capsizeFleetSticky = false;
+  let capsizeRecallInFlight = false;
   let backgroundStatus: BackgroundStatus = 'foreground';
   let controller: RecorderController | null = null;
   let standby: StandbyController | null = null;
@@ -345,6 +355,7 @@ export function mountApp(root: HTMLElement): void {
       controller = null;
       recording = false;
       capsizeActive = false;
+      capsizeFleetSticky = false;
       backgroundStatus = 'foreground';
     }
     clearRecordingActive();
@@ -1081,8 +1092,22 @@ export function mountApp(root: HTMLElement): void {
 
     const capsizeEl = root.querySelector('[data-hud-capsize]');
     if (capsizeEl) {
-      if (capsizeActive) capsizeEl.removeAttribute('hidden');
-      else capsizeEl.setAttribute('hidden', '');
+      const show = capsizeActive || capsizeFleetSticky;
+      if (show) {
+        capsizeEl.removeAttribute('hidden');
+        capsizeEl.classList.toggle('session-live-hud__alert--sticky', !capsizeActive && capsizeFleetSticky);
+        const textEl = capsizeEl.querySelector('[data-hud-capsize-text]');
+        if (textEl) {
+          textEl.textContent = capsizeActive
+            ? '⚠ CAPSIZE — boat tipped. Check crew now.'
+            : 'Coaches still have a CAPSIZE alert.';
+        }
+        const recallBtn = capsizeEl.querySelector('[data-action="recall-capsize"]') as HTMLButtonElement | null;
+        if (recallBtn) recallBtn.disabled = capsizeRecallInFlight;
+      } else {
+        capsizeEl.setAttribute('hidden', '');
+        capsizeEl.classList.remove('session-live-hud__alert--sticky');
+      }
     }
 
     const hazardEl = root.querySelector('[data-hud-hazard]') as HTMLElement | null;
@@ -1267,25 +1292,24 @@ export function mountApp(root: HTMLElement): void {
     if (view !== 'settings') return;
     const form = root.querySelector('[data-settings-form]') as HTMLFormElement | null;
     if (!form) return;
-    const coachSel = form.querySelector('[name="coachId"]') as HTMLSelectElement | null;
+    const coachList = form.querySelector('[data-coach-list]') as HTMLElement | null;
     const boatSel = form.querySelector('[name="boatId"]') as HTMLSelectElement | null;
-    const coachName = form.querySelector('[name="coachName"]') as HTMLInputElement | null;
     const boatClass = form.querySelector('[name="boatClass"]') as HTMLInputElement | null;
-    const keepCoach = coachSel?.value ?? '';
+    const keepCoachIds = new Set(
+      [...form.querySelectorAll<HTMLInputElement>('input[name="coachId"]:checked')].map(
+        (el) => el.value,
+      ),
+    );
     const keepBoat = boatSel?.value ?? '';
+    const keepCoachName =
+      form.querySelector<HTMLInputElement>('[name="coachName"]')?.value || '';
 
-    if (coachSel) {
-      coachSel.innerHTML =
-        `<option value="">— select coach —</option>` +
-        config.coaches
-          .map(
-            (c) =>
-              `<option value="${esc(c.id)}" data-name="${esc(c.name)}"${keepCoach === c.id ? ' selected' : ''}>${esc(c.name)}</option>`,
-          )
-          .join('');
-      if (keepCoach && [...coachSel.options].some((o) => o.value === keepCoach)) {
-        coachSel.value = keepCoach;
-      }
+    if (coachList) {
+      const hidden = `<input type="hidden" name="coachName" value="${esc(keepCoachName)}" />`;
+      const help = coachList.querySelector('.info-help')?.outerHTML || '';
+      const legend = coachList.querySelector('legend')?.outerHTML || '<legend>Coaches</legend>';
+      coachList.innerHTML =
+        `${legend}${help}${coachChecksHtml(config.coaches, [...keepCoachIds])}${hidden}`;
     }
     if (boatSel) {
       boatSel.innerHTML =
@@ -1300,9 +1324,9 @@ export function mountApp(root: HTMLElement): void {
         boatSel.value = keepBoat;
       }
     }
-    if (coachSel && coachName) {
-      const opt = coachSel.selectedOptions[0];
-      coachName.value = opt?.dataset.name || opt?.textContent?.trim() || coachName.value;
+    const coachNameInput = form.querySelector('[name="coachName"]') as HTMLInputElement | null;
+    if (coachNameInput) {
+      coachNameInput.value = selectedCoachNamesFromForm(form);
     }
     if (boatSel && boatClass) {
       const opt = boatSel.selectedOptions[0];
@@ -1668,8 +1692,13 @@ export function mountApp(root: HTMLElement): void {
             <button type="button" class="hub-btn hub-btn--danger session-fs-chrome__stop" data-action="stop">Stop</button>
           </div>
         </div>
-        <div class="session-live-hud__alert" data-hud-capsize ${capsizeActive ? '' : 'hidden'} role="alert">
-          ⚠ CAPSIZE — boat tipped. Check crew now.
+        <div class="session-live-hud__alert ${!capsizeActive && capsizeFleetSticky ? 'session-live-hud__alert--sticky' : ''}" data-hud-capsize ${capsizeActive || capsizeFleetSticky ? '' : 'hidden'} role="alert">
+          <p class="session-live-hud__alert-text" data-hud-capsize-text>${
+            capsizeActive
+              ? '⚠ CAPSIZE — boat tipped. Check crew now.'
+              : 'Coaches still have a CAPSIZE alert.'
+          }</p>
+          <button type="button" class="session-live-hud__alert-recall" data-action="recall-capsize"${capsizeRecallInFlight ? ' disabled' : ''}>I'm OK — recall alarm</button>
         </div>
         <div class="session-live-hud__hazard" data-hud-hazard ${hazardText ? '' : 'hidden'} role="alert" aria-live="assertive">
           <span class="session-live-hud__hazard-label">⚠ Hazard zone</span>
@@ -1795,6 +1824,26 @@ export function mountApp(root: HTMLElement): void {
     return recording ? wrapRecordingStage(shell) : shell;
   }
 
+  function coachChecksHtml(coaches: FleetCoach[], selectedIds: string[]): string {
+    if (!coaches.length) {
+      return '<p class="form-hint">No coaches yet — add them in Manager → Setup → Coaches &amp; Boats.</p>';
+    }
+    const selected = new Set(selectedIds);
+    return coaches
+      .map(
+        (c) =>
+          `<label class="check"><input type="checkbox" name="coachId" value="${esc(c.id)}" data-name="${esc(c.name)}"${selected.has(c.id) ? ' checked' : ''} /> ${esc(c.name)}</label>`,
+      )
+      .join('');
+  }
+
+  function selectedCoachNamesFromForm(form: HTMLFormElement): string {
+    const names = [
+      ...form.querySelectorAll<HTMLInputElement>('input[name="coachId"]:checked'),
+    ].map((el) => el.dataset.name || el.value);
+    return formatCoachNames(names);
+  }
+
   function settingsField(
     label: string,
     info: string,
@@ -1816,17 +1865,14 @@ export function mountApp(root: HTMLElement): void {
     const s = loadSettings();
     const fleet = fleetConfigCache ?? defaultFleetConfig();
     const sampleSec = sampleRateSecFromSettings(s);
-    const selectedCoachId =
-      s.coachId ||
-      fleet.coaches.find((c) => c.name === s.athleteId)?.id ||
-      '';
+    const selectedIds = selectedCoachIds(s);
+    if (!selectedIds.length && s.athleteId) {
+      const names = new Set(parseCoachNames(s.athleteId).map(normalizeCoachName));
+      for (const c of fleet.coaches) {
+        if (names.has(normalizeCoachName(c.name))) selectedIds.push(c.id);
+      }
+    }
     const selectedBoatId = s.boatId || '';
-    const coachOptions = fleet.coaches
-      .map(
-        (c) =>
-          `<option value="${esc(c.id)}" data-name="${esc(c.name)}"${selectedCoachId === c.id ? ' selected' : ''}>${esc(c.name)}</option>`,
-      )
-      .join('');
     const boatOptions = fleet.boats
       .map(
         (b) =>
@@ -1853,15 +1899,17 @@ export function mountApp(root: HTMLElement): void {
               'Label for this phone on the live map and in session history (e.g. M4x JS).',
               `<input name="deviceId" value="${esc(s.deviceId)}" required placeholder="M4x JS" />`,
             )}
-            ${settingsField(
-              'Coach',
-              'Coach for this outing — options are managed in CrewSight Manager → Setup → Coaches & Boats.',
-              `<select name="coachId" aria-label="Coach">
-                <option value="">— select coach —</option>
-                ${coachOptions}
-              </select>
-              <input type="hidden" name="coachName" value="${esc(s.athleteId)}" />`,
-            )}
+            <fieldset class="fieldset checks" data-coach-list>
+              <legend class="fieldset-legend-with-info">
+                Coaches
+                <button type="button" class="info-btn" data-info-toggle aria-label="About Coaches">i</button>
+              </legend>
+              <p class="form-row__help info-help" hidden>${esc(
+                'Select every coach this outing should appear under. My crews on each Manager tablet will include this boat. Coaches are managed in CrewSight Manager → Setup → Coaches & Boats.',
+              )}</p>
+              ${coachChecksHtml(fleet.coaches, selectedIds)}
+              <input type="hidden" name="coachName" value="${esc(s.athleteId)}" />
+            </fieldset>
             ${settingsField(
               'Boat',
               'Fleet boat for this outing. Prognostic pace uses the boat class (e.g. Karapiro - 1X).',
@@ -2233,6 +2281,7 @@ export function mountApp(root: HTMLElement): void {
     controller = createDemoController();
     recording = true;
     capsizeActive = false;
+    capsizeFleetSticky = false;
     backgroundStatus = 'foreground';
     view = 'record';
     pushLog('Demo session — sample GPS, no hardware required.');
@@ -2253,6 +2302,7 @@ export function mountApp(root: HTMLElement): void {
     controller = null;
     recording = false;
     capsizeActive = false;
+    capsizeFleetSticky = false;
     backgroundStatus = 'foreground';
     view = 'record';
     pushLog('Demo session stopped.');
@@ -2312,6 +2362,7 @@ export function mountApp(root: HTMLElement): void {
       },
       (active) => {
         capsizeActive = active;
+        if (active) capsizeFleetSticky = true;
         updateLiveHud();
       },
       {
@@ -2340,6 +2391,7 @@ export function mountApp(root: HTMLElement): void {
               controller = null;
               recording = false;
               capsizeActive = false;
+              capsizeFleetSticky = false;
               backgroundStatus = 'foreground';
               clearRecordingActive();
               await runSync(true);
@@ -2357,6 +2409,7 @@ export function mountApp(root: HTMLElement): void {
             controller = null;
             recording = false;
             capsizeActive = false;
+            capsizeFleetSticky = false;
             backgroundStatus = 'foreground';
             clearRecordingActive();
             await runSync(true);
@@ -2561,13 +2614,11 @@ export function mountApp(root: HTMLElement): void {
     const syncFleetFormFields = () => {
       const form = root.querySelector('[data-settings-form]') as HTMLFormElement | null;
       if (!form) return;
-      const coachSel = form.querySelector('[name="coachId"]') as HTMLSelectElement | null;
       const coachName = form.querySelector('[name="coachName"]') as HTMLInputElement | null;
       const boatSel = form.querySelector('[name="boatId"]') as HTMLSelectElement | null;
       const boatClass = form.querySelector('[name="boatClass"]') as HTMLInputElement | null;
-      if (coachSel && coachName) {
-        const opt = coachSel.selectedOptions[0];
-        coachName.value = opt?.dataset.name || opt?.textContent?.trim() || '';
+      if (coachName) {
+        coachName.value = selectedCoachNamesFromForm(form);
       }
       if (boatSel && boatClass) {
         const opt = boatSel.selectedOptions[0];
@@ -2575,7 +2626,7 @@ export function mountApp(root: HTMLElement): void {
       }
     };
 
-    root.querySelector('[name="coachId"]')?.addEventListener('change', syncFleetFormFields);
+    root.querySelector('[data-coach-list]')?.addEventListener('change', syncFleetFormFields);
     root.querySelector('[name="boatId"]')?.addEventListener('change', syncFleetFormFields);
 
     root.querySelector('[data-settings-form]')?.addEventListener('submit', (e) => {
@@ -2585,9 +2636,14 @@ export function mountApp(root: HTMLElement): void {
       const next = settingsFromForm(form);
       const fleet = fleetConfigCache ?? defaultFleetConfig();
       const boat = findBoat(fleet, next.boatId);
-      const coach = findCoach(fleet, next.coachId || '');
+      const ids = selectedCoachIds(next);
+      const names = ids
+        .map((id) => findCoach(fleet, id)?.name)
+        .filter((name): name is string => Boolean(name));
       if (boat) next.boatClass = boat.boatClass;
-      if (coach) next.athleteId = coach.name;
+      next.coachIds = ids;
+      next.coachId = ids[0] || '';
+      next.athleteId = formatCoachNames(names);
       saveSettings(next);
       settings = next;
       view = 'record';
@@ -2670,6 +2726,7 @@ export function mountApp(root: HTMLElement): void {
         controller = null;
         recording = false;
         capsizeActive = false;
+        capsizeFleetSticky = false;
         backgroundStatus = 'foreground';
         clearRecordingActive();
         await runSync(true);
@@ -2700,6 +2757,23 @@ export function mountApp(root: HTMLElement): void {
           return;
         }
         void clearSession();
+      });
+    });
+
+    root.querySelector('[data-action="recall-capsize"]')?.addEventListener('click', () => {
+      if (capsizeRecallInFlight || !controller) return;
+      capsizeRecallInFlight = true;
+      updateLiveHud();
+      void controller.recallCapsize().then(() => {
+        capsizeActive = false;
+        capsizeFleetSticky = false;
+        capsizeRecallInFlight = false;
+        updateLiveHud();
+        pushLog("Alarm recalled — coaches notified I'm OK.");
+      }).catch((e) => {
+        capsizeRecallInFlight = false;
+        updateLiveHud();
+        pushLog(`Could not recall alarm: ${e instanceof Error ? e.message : String(e)}`);
       });
     });
 

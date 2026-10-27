@@ -1,6 +1,8 @@
 import {
   DEFAULT_INGEST_URL,
   DEFAULT_SETTINGS,
+  formatCoachNames,
+  selectedCoachIds,
   type RecorderSettings,
 } from '@rowing/telemetry-types';
 import { normalizeIngestUrl } from '../upload/telemetry-api';
@@ -38,7 +40,15 @@ function needsIngestUrlDefault(url: string): boolean {
   return false;
 }
 
+function withCoachSelection(s: RecorderSettings): RecorderSettings {
+  const ids = selectedCoachIds(s);
+  s.coachIds = ids;
+  s.coachId = ids[0] || '';
+  return s;
+}
+
 function withOriginDefaults(s: RecorderSettings): RecorderSettings {
+  withCoachSelection(s);
   if (needsIngestUrlDefault(s.ingestUrl)) {
     if (typeof window !== 'undefined' && window.location?.origin) {
       const origin = window.location.origin;
@@ -109,15 +119,19 @@ export function settingsFromForm(form: HTMLFormElement): RecorderSettings {
   };
   const sampleSec = num('sampleRateSec', sampleRateSecFromSettings(DEFAULT_SETTINGS));
   const intervals = intervalsFromSampleRateSec(sampleSec);
-  const coachId = String(fd.get('coachId') ?? '').trim();
+  const coachIds = fd
+    .getAll('coachId')
+    .map((v) => String(v ?? '').trim())
+    .filter(Boolean);
   const coachName = String(fd.get('coachName') ?? '').trim();
   const boatId = String(fd.get('boatId') ?? '').trim();
   const boatClass = String(fd.get('boatClass') ?? '').trim();
   const settings = withOriginDefaults({
     deviceId: String(fd.get('deviceId') ?? '').trim(),
-    // Coach name → ingest athleteId (legacy); server exposes it as `coach`, not Athlete.
-    athleteId: coachName || coachId,
-    coachId,
+    // Coach names → ingest athleteId (legacy); server exposes it as `coach`, not Athlete.
+    athleteId: coachName || formatCoachNames(coachIds),
+    coachId: coachIds[0] || '',
+    coachIds,
     boatId,
     boatClass,
     ingestUrl: String(fd.get('ingestUrl') ?? DEFAULT_INGEST_URL).trim(),

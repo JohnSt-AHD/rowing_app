@@ -26,6 +26,7 @@ import {
 import {
   dismissNativeCrewMessage,
   getNativeRecordingPulse,
+  recallNativeCapsize,
   setNativeEconomyMode,
   setNativeGeofences,
   setNativeGpsIntervalMs,
@@ -105,6 +106,8 @@ export type RecorderController = {
   connectHr: () => Promise<void>;
   /** Dismiss sticky crew/help message (local UI + DELETE /api/messages). */
   dismissRegattaMessage: () => Promise<void>;
+  /** Athlete recall: stop local siren and clear Manager/RowSafe sticky. */
+  recallCapsize: () => Promise<void>;
 };
 
 export type RecorderHooks = {
@@ -236,6 +239,7 @@ export async function startRecorder(
   let batchTimer: ReturnType<typeof setInterval> | null = null;
   let motionAnalyzer: ReturnType<typeof createMotionAnalyzer> | null = null;
   let capsizeActive = false;
+  let capsizeRecallHold = false;
   let pushInFlight = false;
   let lastMotionUploadAt = 0;
   let lastBackgroundPulseAt = 0;
@@ -554,7 +558,8 @@ export async function startRecorder(
     if (
       recordingSuppressed &&
       sample.derived?.capsize !== true &&
-      sample.derived?.capsizeCleared !== true
+      sample.derived?.capsizeCleared !== true &&
+      sample.derived?.capsizeRecalled !== true
     ) {
       return;
     }
@@ -719,7 +724,20 @@ export async function startRecorder(
     const backgrounded =
       typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
-    if (capsizeAllowed && metrics.capsize && !capsizeActive) {
+    if (capsizeRecallHold) {
+      if (!metrics.capsize) {
+        capsizeRecallHold = false;
+        queueSample(
+          telemetrySample(r.t, {
+            motion: latestMotion,
+            hr: latestHr,
+            derived: { ...latestDerived, capsize: false, capsizeCleared: true },
+          }),
+        );
+        void pushBatch();
+        onLog('Capsize re-armed — boat upright after recall');
+      }
+    } else if (capsizeAllowed && metrics.capsize && !capsizeActive) {
       capsizeActive = true;
       triggerCapsizeAlert();
       if (IS_NATIVE) void showCapsizeAlertNotification(true);
@@ -847,7 +865,9 @@ export async function startRecorder(
           // Native owns tip detection with screen off — mirror into WebView HUD.
           if (typeof pulse.capsizeActive === 'boolean') {
             const tipped = pulse.capsizeActive;
-            if (tipped && !capsizeActive) {
+            if (capsizeRecallHold) {
+              if (!tipped) capsizeRecallHold = false;
+            } else if (tipped && !capsizeActive) {
               capsizeActive = true;
               stats.capsize = true;
               onLog('CAPSIZE ALERT — native tip detected');
@@ -988,6 +1008,30 @@ export async function startRecorder(
       if (!ok) {
         onLog('Could not clear crew message on server — try again.', false);
       }
+    },
+    async recallCapsize() {
+      const stillTipped = capsizeActive || latestDerived?.capsize === true;
+      capsizeRecallHold = true;
+      capsizeActive = false;
+      stats.capsize = false;
+      if (IS_NATIVE) void clearCapsizeAlertNotification();
+      if (nativeCapsizeMonitorOn) void recallNativeCapsize();
+      latestDerived = {
+        ...latestDerived,
+        capsize: false,
+        capsizeRecalled: true,
+        capsizeCleared: !stillTipped,
+      };
+      queueSample(
+        telemetrySample(Date.now(), {
+          motion: latestMotion,
+          hr: latestHr,
+          derived: latestDerived,
+        }),
+      );
+      void pushBatch();
+      onLog("Capsize alarm recalled — I'm OK / false alarm");
+      onCapsize?.(false);
     },
     async stopForGeofenceStandby() {
       stopped = true;
