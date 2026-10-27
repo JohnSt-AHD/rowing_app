@@ -1,6 +1,8 @@
 const db = require('./db');
 const {
   GPS_OUTLIER_MAX_ROWING_MPS,
+  GPS_OUTLIER_MAX_CAR_MPS,
+  gpsOutlierLimitsForMode,
   isGpsFixOutlier,
   isGpsFixForMapPosition,
   filterOutlierGpsFixes,
@@ -23,6 +25,10 @@ globalThis.__rnzLastGpsByDevice = lastGpsByDevice;
 /** Last accepted GPS fix per org:device — used to reject teleports on ingest. */
 const lastAcceptedGpsFix = globalThis.__rnzLastAcceptedGpsFix ?? new Map();
 globalThis.__rnzLastAcceptedGpsFix = lastAcceptedGpsFix;
+/** Org GPS outlier mode cache — fleet-config Car test, read on ingest. */
+const orgGpsOutlierModeCache = globalThis.__rnzOrgGpsOutlierMode ?? new Map();
+globalThis.__rnzOrgGpsOutlierMode = orgGpsOutlierModeCache;
+const ORG_GPS_OUTLIER_MODE_TTL_MS = 8000;
 
 function orgSessionKey(orgId, sessionId) {
   return `${orgId}:${sessionId}`;
@@ -52,7 +58,7 @@ const MAX_CAR_PREDICT_MPS = MAX_CAR_PREDICT_KMH / 3.6;
 /** Max offset from raw when predicting at car speeds (~2.5 s at 120 km/h). */
 const MAX_CAR_SMOOTH_OFFSET_M = Math.ceil(MAX_CAR_PREDICT_MPS * MAX_PREDICT_SEC);
 /** Outlier jump threshold while warming track in car mode (m/s). */
-const MAX_CAR_TRACK_SPEED_MPS = 38;
+const MAX_CAR_TRACK_SPEED_MPS = GPS_OUTLIER_MAX_CAR_MPS;
 /** Only predict when GPS fix is fresher than this (seconds). */
 const MAX_PREDICT_FIX_AGE_SEC = 30;
 /** Rolling window for coach-facing pace (path distance / time). */
@@ -116,6 +122,45 @@ function predictLimitsForMode(predictMode) {
     maxSpeedMps: MAX_ROWING_PREDICT_MPS,
     maxOffsetM: MAX_SMOOTH_OFFSET_M,
     maxTrackSpeedMps: GPS_OUTLIER_MAX_ROWING_MPS,
+  };
+}
+
+function setOrgGpsOutlierModeCache(orgId, mode) {
+  if (orgId == null) return;
+  orgGpsOutlierModeCache.set(orgId, {
+    mode: parsePredictMode(mode),
+    at: Date.now(),
+  });
+}
+
+/**
+ * Org Car test flag — default rowing so RNZ boats stay on boat limits.
+ * @param {number|string|null|undefined} orgId
+ * @returns {Promise<'rowing' | 'car'>}
+ */
+async function getOrgGpsOutlierMode(orgId) {
+  if (orgId == null) return 'rowing';
+  const cached = orgGpsOutlierModeCache.get(orgId);
+  if (cached && Date.now() - cached.at < ORG_GPS_OUTLIER_MODE_TTL_MS) {
+    return cached.mode;
+  }
+  try {
+    const settings = await db.getOrgClientSettings(orgId);
+    const mode = parsePredictMode(settings?.predictMode);
+    setOrgGpsOutlierModeCache(orgId, mode);
+    return mode;
+  } catch (err) {
+    console.error('[ingest-store] getOrgGpsOutlierMode failed:', err);
+    return cached?.mode || 'rowing';
+  }
+}
+
+function gpsOutlierOptsForMode(mode, extra = {}) {
+  const limits = gpsOutlierLimitsForMode(mode);
+  return {
+    mode: parsePredictMode(mode),
+    maxMps: extra.maxMps ?? limits.maxMps,
+    maxJumpM: extra.maxJumpM ?? limits.maxJumpM,
   };
 }
 
@@ -650,10 +695,13 @@ function resetGpsSmoothState(fix) {
  * Track last fix + velocity for bounded predict-to-now on the map overlay.
  * @param {string} deviceId
  * @param {{ t:number, lat:number, lon:number, acc:number|null, spd:number|null, hdg:number|null }} fix
- * @param {{ maxTrackSpeedMps?: number }} [opts]
+ * @param {{ maxTrackSpeedMps?: number, mode?: 'rowing' | 'car' }} [opts]
  */
 function updateGpsTrack(deviceId, fix, opts = {}) {
-  const maxTrackSpeedMps = opts.maxTrackSpeedMps ?? MAX_TRACK_SPEED_MPS;
+  const extra = {};
+  if (opts.maxTrackSpeedMps != null) extra.maxMps = opts.maxTrackSpeedMps;
+  const outlierOpts = gpsOutlierOptsForMode(opts.mode, extra);
+  const maxTrackSpeedMps = outlierOpts.maxMps;
   const key = String(deviceId);
   const prev = gpsTracks.get(key);
   if (!prev) {
@@ -688,7 +736,7 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
     lon: prev.lon,
     acc: null,
   };
-  if (isGpsFixOutlier(prevFix, fix, { maxMps: maxTrackSpeedMps })) {
+  if (isGpsFixOutlier(prevFix, fix, outlierOpts)) {
     metrics.gpsOutliersRejected++;
     return false;
   }
@@ -981,6 +1029,10 @@ function resolveDisplayPathSpeedMps(orgId, deviceId, rawPath, live = true) {
 /** @param {object[]} positions @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice @param {number} orgId */
 function attachPathPaceToMapPositions(positions, fixesByDevice, orgId) {
   for (const p of positions) {
+    if (isManagerDevice(p)) {
+      stripCoachPerformanceFields(p);
+      continue;
+    }
     const fixes = fixesByDevice.get(p.deviceId);
     const pathSpeed = pathSpeedMpsFromFixes(fixes);
     const recentSpeed = recentSegmentSpeedMpsFromFixes(fixes);
@@ -1014,6 +1066,10 @@ function attachPathPaceToMapPositions(positions, fixesByDevice, orgId) {
 /** @param {object[]} devices @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice @param {number} orgId */
 function attachPathPaceToDevices(devices, fixesByDevice, orgId) {
   for (const dev of devices) {
+    if (isManagerDevice(dev)) {
+      stripCoachPerformanceFields(dev);
+      continue;
+    }
     const fixes = fixesByDevice.get(dev.deviceId);
     const pathSpeed = pathSpeedMpsFromFixes(fixes);
     const recentSpeed = recentSegmentSpeedMpsFromFixes(fixes);
@@ -1122,6 +1178,13 @@ async function loadStrokeRateReadingsByDevice(orgId, windowMs, telemetryByDevice
 /** @param {object[]} positions @param {Map<string, { t:number, strokeRate:number }[]>} readingsByDevice */
 function attachStrokeMedianToMapPositions(positions, readingsByDevice) {
   for (const p of positions) {
+    if (isManagerDevice(p)) {
+      p.strokeRateMedian = null;
+      p.displayStrokeRate = null;
+      p.strokeRate = null;
+      p.strokeRateValid = false;
+      continue;
+    }
     const readings = readingsByDevice.get(p.deviceId);
     const median = medianStrokeRateFromReadings(readings);
     p.strokeRateMedian = median;
@@ -1142,6 +1205,11 @@ function attachStrokeMedianToMapPositions(positions, readingsByDevice) {
 /** @param {object[]} devices @param {Map<string, { t:number, strokeRate:number }[]>} readingsByDevice */
 function attachStrokeMedianToDevices(devices, readingsByDevice) {
   for (const dev of devices) {
+    if (isManagerDevice(dev)) {
+      dev.strokeRateMedian = null;
+      dev.displayStrokeRate = null;
+      continue;
+    }
     const readings = readingsByDevice.get(dev.deviceId);
     const median = medianStrokeRateFromReadings(readings);
     dev.strokeRateMedian = median;
@@ -1157,6 +1225,7 @@ function warmGpsTracksFromFixesByDevice(orgId, fixesByDevice, opts = {}) {
   if (!fixesByDevice?.size) return;
   const trackOpts = {
     maxTrackSpeedMps: opts.maxTrackSpeedMps ?? MAX_TRACK_SPEED_MPS,
+    mode: opts.mode,
   };
   for (const [deviceId, fixes] of fixesByDevice) {
     if (!deviceId || !fixes?.length) continue;
@@ -1193,6 +1262,7 @@ function warmGpsTracksFromSamplesByDevice(orgId, byDevice, opts = {}) {
   if (!byDevice) return;
   const trackOpts = {
     maxTrackSpeedMps: opts.maxTrackSpeedMps ?? MAX_TRACK_SPEED_MPS,
+    mode: opts.mode,
   };
   const entries =
     byDevice instanceof Map
@@ -1230,6 +1300,8 @@ function attachSmoothMapCoords(rawPositions, predictMode = 'rowing', orgId = nul
         ...p,
         smoothLatitude: rawLat,
         smoothLongitude: rawLon,
+        emaLatitude: rawLat,
+        emaLongitude: rawLon,
         smoothFixAgeSec: p.fixAgeSec,
         smoothed: false,
       };
@@ -1300,6 +1372,25 @@ function attachSmoothMapCoords(rawPositions, predictMode = 'rowing', orgId = nul
       limits.maxOffsetM,
     );
 
+    let emaLat = rawLat;
+    let emaLon = rawLon;
+    if (
+      track?.smoothLat != null &&
+      track?.smoothLon != null &&
+      Number.isFinite(track.smoothLat) &&
+      Number.isFinite(track.smoothLon)
+    ) {
+      emaLat = track.smoothLat;
+      emaLon = track.smoothLon;
+    }
+    const emaClamped = clampOffsetFromRaw(
+      rawLat,
+      rawLon,
+      emaLat,
+      emaLon,
+      limits.maxOffsetM,
+    );
+
     const smoothAgeSec =
       fixAgeSec != null && Number.isFinite(fixAgeSec)
         ? Math.round(fixAgeSec)
@@ -1315,6 +1406,8 @@ function attachSmoothMapCoords(rawPositions, predictMode = 'rowing', orgId = nul
           : null),
       smoothLatitude: clamped.lat,
       smoothLongitude: clamped.lon,
+      emaLatitude: emaClamped.lat,
+      emaLongitude: emaClamped.lon,
       smoothFixAgeSec: smoothAgeSec,
       smoothed: clamped.offsetM > 1.5,
     };
@@ -1358,7 +1451,8 @@ function noteDeviceTelemetry(deviceId, samples) {
   }
 }
 
-function sanitizeAndTrackSamples(deviceId, samples) {
+function sanitizeAndTrackSamples(deviceId, samples, outlierMode = 'rowing') {
+  const outlierOpts = gpsOutlierOptsForMode(outlierMode);
   const out = [];
   let dropped = 0;
   for (const sample of samples) {
@@ -1380,7 +1474,7 @@ function sanitizeAndTrackSamples(deviceId, samples) {
         next = rest;
       } else {
         const prev = lastAcceptedGpsFixFor(deviceId);
-        if (prev && isGpsFixOutlier(prev, fix)) {
+        if (prev && isGpsFixOutlier(prev, fix, outlierOpts)) {
           metrics.gpsOutliersRejected++;
           const { gps, ...rest } = sample;
           const hasPayload =
@@ -1394,7 +1488,7 @@ function sanitizeAndTrackSamples(deviceId, samples) {
           if (isGpsFixForMapPosition(fix.sampleSource)) {
             rememberAcceptedGpsFix(deviceId, fix);
             const trackFix = gpsFromSample(sample, { forTrack: true, forMapPosition: true });
-            if (trackFix) updateGpsTrack(deviceId, trackFix);
+            if (trackFix) updateGpsTrack(deviceId, trackFix, { mode: outlierMode });
           } else {
             metrics.gpsCachePositionSkipped++;
           }
@@ -1592,7 +1686,8 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   }
   if (!samples.length) return { received: 0 };
   const scopedDevice = orgDeviceKey(orgId, deviceId);
-  const clean = sanitizeAndTrackSamples(scopedDevice, samples);
+  const outlierMode = await getOrgGpsOutlierMode(orgId);
+  const clean = sanitizeAndTrackSamples(scopedDevice, samples, outlierMode);
   reconcileSampleTimes(clean.samples, now);
   if (!clean.samples.length) {
     metrics.droppedSamples += clean.dropped || 0;
@@ -1605,6 +1700,9 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
     boatClass: boatMeta?.boatClass,
     deviceId,
   });
+  if (skipSuppress) {
+    clean.samples = stripManagerSamplePerformance(clean.samples);
+  }
   const geofenceFilter = skipSuppress
     ? { samples: clean.samples, dropped: 0 }
     : await filterSamplesInsideSuppressZones(
@@ -1842,6 +1940,65 @@ function isManagerDevice(entry) {
   return /^coach\s/i.test(String(entry?.deviceId || '').trim());
 }
 
+/** Manager tablets share location only — never pace / SPM / HR / prognostic. */
+function stripCoachPerformanceFields(target) {
+  if (!target || typeof target !== 'object') return target;
+  target.speed = null;
+  target.pathSpeedMps = null;
+  target.recentPathSpeedMps = null;
+  target.displaySpeedMps = null;
+  target.strokeRate = null;
+  target.strokeRateValid = false;
+  target.strokeRateMedian = null;
+  target.displayStrokeRate = null;
+  target.heartRate = null;
+  if (target.rowing && typeof target.rowing === 'object') {
+    target.rowing.strokeRate = null;
+    target.rowing.strokeRateValid = false;
+  }
+  if (target.hr && typeof target.hr === 'object' && !Array.isArray(target.hr)) {
+    target.hr = { present: false, rateHz: 0, count: 0, last: null, ageSec: null };
+  } else {
+    target.hr = null;
+  }
+  return target;
+}
+
+function applyManagerDeviceIdentity(dev) {
+  if (!isManagerDevice(dev)) return false;
+  dev.source = dev.source || 'manager';
+  dev.role = 'coach';
+  if (!dev.boatClass) dev.boatClass = 'Coach';
+  stripCoachPerformanceFields(dev);
+  return true;
+}
+
+/** Drop performance payloads from Manager location uploads (keep lat/lon/hdg/acc + heartbeat). */
+function stripManagerSamplePerformance(samples) {
+  if (!Array.isArray(samples)) return samples;
+  return samples.map((sample) => {
+    if (!sample || typeof sample !== 'object') return sample;
+    const next = { ...sample };
+    if (next.gps && typeof next.gps === 'object') {
+      const gps = { ...next.gps };
+      delete gps.spd;
+      delete gps.speed;
+      next.gps = gps;
+    }
+    if ('hr' in next) delete next.hr;
+    if ('motion' in next) delete next.motion;
+    if (next.derived && typeof next.derived === 'object') {
+      const keep = {};
+      if (next.derived.heartbeat === true) keep.heartbeat = true;
+      if (next.derived.batteryPct != null && Number.isFinite(Number(next.derived.batteryPct))) {
+        keep.batteryPct = next.derived.batteryPct;
+      }
+      next.derived = keep;
+    }
+    return next;
+  });
+}
+
 function resolveDeviceSource(entry) {
   const src = String(entry?.source || '').trim();
   if (src) return src;
@@ -1864,6 +2021,7 @@ function attachCoachRoleToMapPositions(positions, sessionByDevice) {
     p.source = source || 'manager';
     p.role = 'coach';
     if (!p.boatClass) p.boatClass = 'Coach';
+    stripCoachPerformanceFields(p);
   }
   return positions;
 }
@@ -2285,11 +2443,7 @@ async function listDevices(orgId, opts = {}) {
           const inferred = db.inferBoatClassFromDeviceId(dev.deviceId);
           if (inferred) dev.boatClass = inferred;
         }
-        if (isManagerDevice(dev)) {
-          dev.source = dev.source || 'manager';
-          dev.role = 'coach';
-          if (!dev.boatClass) dev.boatClass = 'Coach';
-        }
+        applyManagerDeviceIdentity(dev);
         mergeListDeviceDbTelemetry(
           dev,
           rowingTel.get(dev.deviceId),
@@ -2311,11 +2465,7 @@ async function listDevices(orgId, opts = {}) {
   // (in-memory sticky on other Vercel instances can survive Acknowledge and re-alarm).
   for (const dev of byDevice.values()) {
     if (dev.rowing) dev.rowing.capsize = false;
-    if (isManagerDevice(dev)) {
-      dev.source = dev.source || 'manager';
-      dev.role = 'coach';
-      if (!dev.boatClass) dev.boatClass = 'Coach';
-    }
+    applyManagerDeviceIdentity(dev);
   }
   if (hasPostgres && dbCapsizeAlerts) {
     forceCapsizeAlertsOnDevices(
@@ -2388,6 +2538,7 @@ async function listDevices(orgId, opts = {}) {
   const devices = [...byDevice.values()].sort(
     (a, b) => b.lastSeenMs - a.lastSeenMs,
   );
+  attachEmaCoordsToDevices(orgId, devices);
   // Path pace + stroke median live on /api/map-positions (dashboard/coach merge map data).
   const onlineDevices = devices.filter((d) => d.online);
   const gpsAges = onlineDevices
@@ -2760,6 +2911,88 @@ function mergeListDeviceDbTelemetry(dev, tel, batteryTel, strokeTel, motionSampl
   }
 }
 
+function attachEmaCoordsToDevices(orgId, devices) {
+  if (!orgId || !devices?.length) return;
+  for (const dev of devices) {
+    const track = gpsTracks.get(orgDeviceKey(orgId, dev.deviceId));
+    if (!track || !dev.gps?.last) continue;
+    if (
+      track.smoothLat == null ||
+      track.smoothLon == null ||
+      !Number.isFinite(track.smoothLat) ||
+      !Number.isFinite(track.smoothLon)
+    ) {
+      continue;
+    }
+    const rawLat = dev.gps.last.lat;
+    const rawLon = dev.gps.last.lon;
+    if (rawLat == null || rawLon == null) continue;
+    const clamped = clampOffsetFromRaw(
+      rawLat,
+      rawLon,
+      track.smoothLat,
+      track.smoothLon,
+      MAX_SMOOTH_OFFSET_M,
+    );
+    dev.gps.emaLatitude = clamped.lat;
+    dev.gps.emaLongitude = clamped.lon;
+    dev.gps.last.smoothLat = clamped.lat;
+    dev.gps.last.smoothLon = clamped.lon;
+  }
+}
+
+/**
+ * Replay ingest EMA onto a history track (α 0.28–0.48, 10 m clamp, reset after 30 s).
+ * Existing smoothLat/smoothLon values are kept.
+ * @param {{ track?: object[] } | null} payload
+ */
+function attachEmaToDashboardHistory(payload) {
+  if (!payload?.track?.length) return payload;
+  let smoothLat = null;
+  let smoothLon = null;
+  let prevT = null;
+  for (const p of payload.track) {
+    if (p.lat == null || p.lon == null) continue;
+    if (
+      p.smoothLat != null &&
+      p.smoothLon != null &&
+      Number.isFinite(Number(p.smoothLat)) &&
+      Number.isFinite(Number(p.smoothLon))
+    ) {
+      smoothLat = Number(p.smoothLat);
+      smoothLon = Number(p.smoothLon);
+      prevT = p.t;
+      continue;
+    }
+    const t = Number(p.t);
+    const dtSec =
+      prevT != null && Number.isFinite(t) && Number.isFinite(prevT)
+        ? (t - prevT) / 1000
+        : null;
+    if (smoothLat == null || dtSec == null || dtSec < 0 || dtSec > 30) {
+      smoothLat = p.lat;
+      smoothLon = p.lon;
+    } else {
+      const alpha = emaAlphaForAccuracy(p.acc);
+      smoothLat = alpha * p.lat + (1 - alpha) * smoothLat;
+      smoothLon = alpha * p.lon + (1 - alpha) * smoothLon;
+      const clamped = clampOffsetFromRaw(
+        p.lat,
+        p.lon,
+        smoothLat,
+        smoothLon,
+        MAX_SMOOTH_OFFSET_M,
+      );
+      smoothLat = clamped.lat;
+      smoothLon = clamped.lon;
+    }
+    p.smoothLat = smoothLat;
+    p.smoothLon = smoothLon;
+    prevT = t;
+  }
+  return payload;
+}
+
 function applyRegistryGpsToDevice(device, registryFix, now) {
   if (!registryFix) return device;
   const gps = device.gps || {};
@@ -3060,8 +3293,9 @@ function filterMapPositionsAfterSessionEnd(positions, opts) {
 }
 
 /** Replace raw map coords when the latest fix teleports vs the warmed track. */
-function rejectOutlierMapPositions(positions, orgId) {
+function rejectOutlierMapPositions(positions, orgId, outlierMode = 'rowing') {
   if (!Array.isArray(positions) || orgId == null) return positions;
+  const outlierOpts = gpsOutlierOptsForMode(outlierMode);
   return positions.map((p) => {
     if (p.latitude == null || p.longitude == null) return p;
     const trackKey = orgDeviceKey(orgId, p.deviceId);
@@ -3074,7 +3308,7 @@ function rejectOutlierMapPositions(positions, orgId) {
       lon: p.longitude,
       acc: p.accuracy ?? null,
     };
-    if (!isGpsFixOutlier(prev, fix)) return p;
+    if (!isGpsFixOutlier(prev, fix, outlierOpts)) return p;
     metrics.gpsOutliersRejected++;
     return {
       ...p,
@@ -3088,8 +3322,12 @@ function rejectOutlierMapPositions(positions, orgId) {
 async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   metrics.mapPolls++;
   const predictMode = parsePredictMode(opts.predictMode);
+  const outlierMode = await getOrgGpsOutlierMode(orgId);
   const limits = predictLimitsForMode(predictMode);
-  const trackOpts = { maxTrackSpeedMps: limits.maxTrackSpeedMps };
+  const trackOpts = {
+    maxTrackSpeedMps: predictLimitsForMode(outlierMode).maxTrackSpeedMps,
+    mode: outlierMode,
+  };
   const rowingWindowMs = Math.min(staleMs, 120000);
   // Keep map polls light - 30min x all devices was timing out on Vercel (Failed to fetch).
   const telemetryWindowMs = Math.min(rowingWindowMs, 3 * 60 * 1000);
@@ -3117,7 +3355,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       );
       await warmGpsTracksFromRecentDbFixes(orgId, telemetryWindowMs, trackOpts);
       warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
-      const filtered = rejectOutlierMapPositions(rawMerged, orgId);
+      const filtered = rejectOutlierMapPositions(rawMerged, orgId, outlierMode);
       const positions = attachSmoothMapCoords(filtered, predictMode, orgId);
 
       attachRowingToMapPositions(positions, rowingByDevice);
@@ -3174,7 +3412,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   ]);
   await warmGpsTracksFromRecentDbFixes(orgId, telemetryWindowMs, trackOpts);
   warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
-  const filtered = rejectOutlierMapPositions(rawMerged, orgId);
+  const filtered = rejectOutlierMapPositions(rawMerged, orgId, outlierMode);
   const mapped = attachSmoothMapCoords(filtered, predictMode, orgId).map((p) => {
     const rowing = rowingByDevice.get(p.deviceId) || {};
     return {
@@ -3324,6 +3562,14 @@ async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
     }
     if (pp.displaySpeedMps != null && Number.isFinite(pp.displaySpeedMps)) {
       attrs.displaySpeedMps = pp.displaySpeedMps;
+    }
+    if (isManagerDevice({ deviceId: pp.deviceId, boatClass: p.attributes?.boatClass, source: p.attributes?.source })) {
+      p.speed = null;
+      if (p.attributes) {
+        delete p.attributes.pathSpeedMps;
+        delete p.attributes.displaySpeedMps;
+      }
+      continue;
     }
     const coachSpeed = pp.displaySpeedMps ?? pp.pathSpeedMps;
     if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
@@ -3477,6 +3723,14 @@ async function enrichTraccarSnapshotCoach(orgId, snapshot) {
       source: sess?.source || target.attributes?.source || 'manager',
       boatClass: sess?.boatClass || target.attributes?.boatClass || 'Coach',
     };
+    if (target.speed != null) target.speed = null;
+    if (target.attributes) {
+      delete target.attributes.pathSpeedMps;
+      delete target.attributes.displaySpeedMps;
+      delete target.attributes.strokeRate;
+      delete target.attributes.hr;
+      delete target.attributes.heartRate;
+    }
   };
   for (const d of snapshot.devices || []) {
     mark(d.uniqueId || d.name, d);
@@ -3616,7 +3870,9 @@ async function listHistoryDevices(orgId) {
 async function getDashboardHistory(orgId, uniqueId, fromIso, toIso) {
   if (!db.hasDb()) return null;
   try {
-    return await db.getDashboardHistory(orgId, uniqueId, fromIso, toIso);
+    return attachEmaToDashboardHistory(
+      await db.getDashboardHistory(orgId, uniqueId, fromIso, toIso),
+    );
   } catch (err) {
     console.error('[ingest-store] getDashboardHistory failed:', err);
     return null;
@@ -3626,7 +3882,9 @@ async function getDashboardHistory(orgId, uniqueId, fromIso, toIso) {
 async function getDashboardHistoryBySession(orgId, sessionId) {
   if (!db.hasDb()) return null;
   try {
-    return await db.getDashboardHistoryBySession(orgId, sessionId);
+    return attachEmaToDashboardHistory(
+      await db.getDashboardHistoryBySession(orgId, sessionId),
+    );
   } catch (err) {
     console.error('[ingest-store] getDashboardHistoryBySession failed:', err);
     return null;
@@ -3762,6 +4020,8 @@ module.exports = {
   getTraccarSnapshot,
   getMapPositions,
   parsePredictMode,
+  getOrgGpsOutlierMode,
+  setOrgGpsOutlierModeCache,
   getRouteHistory,
   listSessionsHistory,
   getLogbook,

@@ -10,6 +10,10 @@ const GPS_OUTLIER_MAX_JUMP_M = 40;
 const GPS_OUTLIER_MAX_DT_SEC = 8;
 /** Accuracy above this (m) makes moderate jumps easier to reject. */
 const GPS_OUTLIER_BAD_ACC_M = 30;
+/** Car-test implied speed (m/s). Matches ingest-store MAX_CAR_TRACK_SPEED_MPS (~137 km/h). */
+const GPS_OUTLIER_MAX_CAR_MPS = 38;
+/** Car-test jump (m) within GPS_OUTLIER_MAX_DT_SEC (38 m/s × 8 s). */
+const GPS_OUTLIER_MAX_CAR_JUMP_M = 304;
 
 /** Native re-upload paths — keep device online but do not move live map position. */
 const GPS_CACHE_SAMPLE_SOURCES = new Set([
@@ -114,9 +118,37 @@ function distanceMeters(aLat, aLon, bLat, bLon) {
 }
 
 /**
+ * @param {string | undefined | null} mode
+ * @returns {'rowing' | 'car'}
+ */
+function parseGpsOutlierMode(mode) {
+  const m = String(mode || '')
+    .trim()
+    .toLowerCase();
+  return m === 'car' ? 'car' : 'rowing';
+}
+
+/**
+ * @param {string | undefined | null} mode
+ * @returns {{ maxMps: number, maxJumpM: number }}
+ */
+function gpsOutlierLimitsForMode(mode) {
+  if (parseGpsOutlierMode(mode) === 'car') {
+    return {
+      maxMps: GPS_OUTLIER_MAX_CAR_MPS,
+      maxJumpM: GPS_OUTLIER_MAX_CAR_JUMP_M,
+    };
+  }
+  return {
+    maxMps: GPS_OUTLIER_MAX_ROWING_MPS,
+    maxJumpM: GPS_OUTLIER_MAX_JUMP_M,
+  };
+}
+
+/**
  * @param {{ t: number, lat: number, lon: number, acc?: number|null }} prev
  * @param {{ t: number, lat: number, lon: number, acc?: number|null }} fix
- * @param {{ maxMps?: number, maxJumpM?: number, maxDtSec?: number, badAccM?: number }} [opts]
+ * @param {{ mode?: 'rowing' | 'car', maxMps?: number, maxJumpM?: number, maxDtSec?: number, badAccM?: number }} [opts]
  */
 function isGpsFixOutlier(prev, fix, opts = {}) {
   if (!prev || !fix) return false;
@@ -131,8 +163,9 @@ function isGpsFixOutlier(prev, fix, opts = {}) {
     return false;
   }
 
-  const maxMps = opts.maxMps ?? GPS_OUTLIER_MAX_ROWING_MPS;
-  const maxJumpM = opts.maxJumpM ?? GPS_OUTLIER_MAX_JUMP_M;
+  const modeLimits = gpsOutlierLimitsForMode(opts.mode);
+  const maxMps = opts.maxMps ?? modeLimits.maxMps;
+  const maxJumpM = opts.maxJumpM ?? modeLimits.maxJumpM;
   const maxDtSec = opts.maxDtSec ?? GPS_OUTLIER_MAX_DT_SEC;
   const badAccM = opts.badAccM ?? GPS_OUTLIER_BAD_ACC_M;
 
@@ -162,15 +195,18 @@ function isGpsFixOutlier(prev, fix, opts = {}) {
   return false;
 }
 
-/** @param {{ t: number, lat: number, lon: number, acc?: number|null }[]} fixes */
-function filterOutlierGpsFixes(fixes) {
+/**
+ * @param {{ t: number, lat: number, lon: number, acc?: number|null }[]} fixes
+ * @param {{ mode?: 'rowing' | 'car', maxMps?: number, maxJumpM?: number, maxDtSec?: number, badAccM?: number }} [opts]
+ */
+function filterOutlierGpsFixes(fixes, opts = {}) {
   if (!fixes?.length) return [];
   const sorted = [...fixes].sort((a, b) => a.t - b.t);
   /** @type {typeof fixes} */
   const out = [];
   for (const fix of sorted) {
     const prev = out[out.length - 1];
-    if (prev && isGpsFixOutlier(prev, fix)) continue;
+    if (prev && isGpsFixOutlier(prev, fix, opts)) continue;
     out.push(fix);
   }
   return out;
@@ -179,10 +215,14 @@ function filterOutlierGpsFixes(fixes) {
 module.exports = {
   GPS_OUTLIER_MAX_ROWING_MPS,
   GPS_OUTLIER_MAX_JUMP_M,
+  GPS_OUTLIER_MAX_CAR_MPS,
+  GPS_OUTLIER_MAX_CAR_JUMP_M,
   GPS_OUTLIER_MAX_DT_SEC,
   GPS_OUTLIER_BAD_ACC_M,
   GPS_CACHE_SAMPLE_SOURCES,
   SAMPLE_CLOCK_SKEW_MS,
+  parseGpsOutlierMode,
+  gpsOutlierLimitsForMode,
   distanceMeters,
   isGpsFixOutlier,
   isGpsFixForMapPosition,

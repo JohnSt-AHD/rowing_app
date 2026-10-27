@@ -704,7 +704,7 @@
         </div>
         <div class="info-tip-panel" id="info-tip-settings" hidden>
           <p>Ingest token must match <code>INGEST_TOKEN</code> on Vercel. Map position is display-only: Raw shows the last GPS fix; Smoothed predicts to now using motion between fixes; Show both overlays raw and the server EMA filter (not the 1 s glide).</p>
-          <p>Predict speed cap limits that offset (rowing vs car testing). Refresh is how often this page polls. Hide offline after drops stale boats from the map.</p>
+          <p>GPS test mode is organisation-wide: Rowing keeps boat outlier limits; Car test also accepts car-speed GPS on ingest (up to 120 km/h) so driving keeps 3 s fixes. Use Car test only — not race day. Refresh is how often this page polls. Hide offline after drops stale boats from the map.</p>
           <p>Rower client settings are organisation-wide and load on phones via fleet-config (no Manager app required).</p>
           <p><strong>Club admin (RNZ)</strong> uses a separate <code>ADMIN_TOKEN</code> on Vercel — not the club ingest token. You can generate a random token or set the club password coaches and phones type.</p>
         </div>
@@ -823,10 +823,10 @@
               </select>
             </label>
             <label class="ahd-field" id="predictModeField">
-              Predict speed cap
+              GPS test mode
               <select id="predictMode">
-                <option value="rowing" selected>Rowing boats (12 m/s)</option>
-                <option value="car">Car test (120 km/h)</option>
+                <option value="rowing" selected>Rowing boats (default)</option>
+                <option value="car">Car test — accept car-speed GPS (not race day)</option>
               </select>
             </label>
             <label class="ahd-field">
@@ -849,6 +849,8 @@
             </label>
             <button type="button" class="hub-btn hub-btn--primary" id="applyBtn">Apply</button>
           </div>
+          <p class="field-hint" id="predictModeHint">Car test is organisation-wide and for road checks only. It keeps driving GPS (up to 120 km/h / 38 m/s) instead of stripping it as a boat outlier. Leave on Rowing for race day.</p>
+          <p class="poll-line" id="predictModeStatus" role="status"></p>
           <p class="poll-line poll-line--warn" id="storageWarning" hidden></p>
         </div>
       </section>

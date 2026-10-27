@@ -950,6 +950,10 @@ async function ensureFleetConfigTables() {
     ALTER TABLE rnz_orgs
     ADD COLUMN IF NOT EXISTS show_other_boats_on_map BOOLEAN NOT NULL DEFAULT false
   `;
+  await sql`
+    ALTER TABLE rnz_orgs
+    ADD COLUMN IF NOT EXISTS predict_mode TEXT NOT NULL DEFAULT 'rowing'
+  `;
 }
 
 const {
@@ -961,8 +965,13 @@ const {
   memoryDefaults,
 } = require('./fleet-config-defaults');
 
-/** @type {Map<number, { showOtherBoatsOnMap: boolean }>} */
+/** @type {Map<number, { showOtherBoatsOnMap: boolean, predictMode: string }>} */
 const memoryOrgClientSettings = new Map();
+
+function parseOrgPredictMode(mode) {
+  const { parseGpsOutlierMode } = require('./gps-outlier');
+  return parseGpsOutlierMode(mode);
+}
 
 async function ensureFleetConfigSeed(orgId) {
   if (!hasDb()) return;
@@ -1120,48 +1129,69 @@ async function deleteBoat(orgId, id) {
   return (del.rowCount ?? 0) > 0;
 }
 
+function normalizeOrgClientSettings(row, fallback = defaultOrgClientSettings()) {
+  return {
+    showOtherBoatsOnMap:
+      row?.showOtherBoatsOnMap != null
+        ? Boolean(row.showOtherBoatsOnMap)
+        : row?.show_other_boats_on_map != null
+          ? Boolean(row.show_other_boats_on_map)
+          : Boolean(fallback.showOtherBoatsOnMap),
+    predictMode: parseOrgPredictMode(row?.predictMode ?? row?.predict_mode ?? fallback.predictMode),
+  };
+}
+
 async function getOrgClientSettings(orgId) {
   const defaults = defaultOrgClientSettings();
   if (!hasDb()) {
-    return { ...defaults, ...(memoryOrgClientSettings.get(orgId) || {}) };
+    return normalizeOrgClientSettings(memoryOrgClientSettings.get(orgId) || {}, defaults);
   }
   await ensureOrgsBootstrapped();
   await ensureFleetConfigTables();
   const sql = await getSql();
   const rows = await sql`
-    SELECT show_other_boats_on_map
+    SELECT show_other_boats_on_map, predict_mode
     FROM rnz_orgs
     WHERE id = ${orgId}
     LIMIT 1
   `;
   const row = rows.rows[0];
   if (!row) return defaults;
-  return {
-    showOtherBoatsOnMap: Boolean(row.show_other_boats_on_map),
-  };
+  return normalizeOrgClientSettings(row, defaults);
 }
 
-async function setShowOtherBoatsOnMap(orgId, enabled) {
-  const showOtherBoatsOnMap = Boolean(enabled);
+async function setOrgClientSettings(orgId, patch = {}) {
+  const current = await getOrgClientSettings(orgId);
+  const next = normalizeOrgClientSettings(
+    {
+      showOtherBoatsOnMap:
+        'showOtherBoatsOnMap' in patch ? patch.showOtherBoatsOnMap : current.showOtherBoatsOnMap,
+      predictMode: 'predictMode' in patch ? patch.predictMode : current.predictMode,
+    },
+    current,
+  );
   if (!hasDb()) {
-    memoryOrgClientSettings.set(orgId, { showOtherBoatsOnMap });
-    return getOrgClientSettings(orgId);
+    memoryOrgClientSettings.set(orgId, next);
+    return next;
   }
   await ensureOrgsBootstrapped();
   await ensureFleetConfigTables();
   const sql = await getSql();
   const updated = await sql`
     UPDATE rnz_orgs
-    SET show_other_boats_on_map = ${showOtherBoatsOnMap}
+    SET show_other_boats_on_map = ${next.showOtherBoatsOnMap},
+        predict_mode = ${next.predictMode}
     WHERE id = ${orgId}
-    RETURNING show_other_boats_on_map
+    RETURNING show_other_boats_on_map, predict_mode
   `;
   if (!updated.rows.length) {
     throw new Error('Organisation not found');
   }
-  return {
-    showOtherBoatsOnMap: Boolean(updated.rows[0].show_other_boats_on_map),
-  };
+  return normalizeOrgClientSettings(updated.rows[0], next);
+}
+
+async function setShowOtherBoatsOnMap(orgId, enabled) {
+  return setOrgClientSettings(orgId, { showOtherBoatsOnMap: enabled });
 }
 
 async function getFleetConfig(orgId) {
@@ -1680,7 +1710,14 @@ function derivedGpsSpeedMps(prev, next) {
  * @param {Array<{ t: number, gps?: object }>} samples
  */
 async function updateDeviceLatestGps(orgId, uniqueId, samples) {
-  const { isGpsFixOutlier, isGpsFixForMapPosition, pickEffectiveSampleTimeMs } = require('./gps-outlier');
+  const {
+    isGpsFixOutlier,
+    isGpsFixForMapPosition,
+    pickEffectiveSampleTimeMs,
+    gpsOutlierLimitsForMode,
+  } = require('./gps-outlier');
+  const orgSettings = await getOrgClientSettings(orgId);
+  const outlierOpts = gpsOutlierLimitsForMode(orgSettings.predictMode);
   let best = null;
   const now = Date.now();
   for (const s of samples) {
@@ -1743,7 +1780,7 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
           ? Number(prev.last_gps_accuracy)
           : null,
     };
-    if (isGpsFixOutlier(prevFix, best)) {
+    if (isGpsFixOutlier(prevFix, best, outlierOpts)) {
       return;
     }
     const derived = derivedGpsSpeedMps(prevFix, best);
@@ -4524,6 +4561,7 @@ module.exports = {
   removeCapsizeNotifyEmail,
   getFleetConfig,
   getOrgClientSettings,
+  setOrgClientSettings,
   setShowOtherBoatsOnMap,
   listCoaches,
   createCoach,

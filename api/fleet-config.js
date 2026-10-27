@@ -57,13 +57,19 @@ module.exports = async function handler(req, res) {
 
   if (req.method === 'PATCH' && type === 'settings') {
     try {
-      if (!('showOtherBoatsOnMap' in body)) {
+      const hasShow = 'showOtherBoatsOnMap' in body;
+      const hasPredict = 'predictMode' in body;
+      if (!hasShow && !hasPredict) {
         return res.status(400).json({
           ok: false,
-          error: 'showOtherBoatsOnMap is required',
+          error: 'showOtherBoatsOnMap or predictMode is required',
         });
       }
-      const client = await db.setShowOtherBoatsOnMap(org.id, body.showOtherBoatsOnMap);
+      const patch = {};
+      if (hasShow) patch.showOtherBoatsOnMap = body.showOtherBoatsOnMap;
+      if (hasPredict) patch.predictMode = body.predictMode;
+      const client = await db.setOrgClientSettings(org.id, patch);
+      store.setOrgGpsOutlierModeCache?.(org.id, client.predictMode);
       return res.status(200).json({
         ok: true,
         persisted: db.hasDb(),

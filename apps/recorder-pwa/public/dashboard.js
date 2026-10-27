@@ -118,6 +118,40 @@ function updatePredictModeField() {
   if (field) field.classList.toggle('ahd-field--muted', !smoothed);
 }
 
+function setPredictModeStatus(text, isError) {
+  const el = $('#predictModeStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('poll-line--warn', Boolean(isError));
+}
+
+async function persistPredictMode(mode) {
+  const predictMode = mode === 'car' ? 'car' : 'rowing';
+  setPredictModeStatus('Saving GPS test mode…');
+  try {
+    const res = await fetch(`${apiBase()}/api/fleet-config`, {
+      method: 'PATCH',
+      headers: { ...headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'settings', predictMode }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Save failed (${res.status})`);
+    if (data.predictMode === 'car' || data.predictMode === 'rowing') {
+      localStorage.setItem(LS_PREDICT_MODE, data.predictMode);
+      if ($('#predictMode')) $('#predictMode').value = data.predictMode;
+    }
+    setPredictModeStatus(
+      data.predictMode === 'car'
+        ? 'Car test on for this organisation — ingest keeps driving GPS (testing only).'
+        : 'GPS test mode: rowing boats (default).',
+    );
+    return data;
+  } catch (err) {
+    setPredictModeStatus(err.message || 'Could not save GPS test mode', true);
+    return null;
+  }
+}
+
 function serverEmaLatLon(p) {
   const lat = p?.emaLatitude ?? p?.smoothLatitude;
   const lon = p?.emaLongitude ?? p?.smoothLongitude;
@@ -2113,7 +2147,10 @@ function init() {
     $(sel)?.addEventListener('change', () => {
       savePrefs();
       updateRefreshRateLabel();
-      if (sel === '#predictMode' && isMapSmoothed()) void poll();
+      if (sel === '#predictMode') {
+        void persistPredictMode(currentPredictMode());
+        if (isMapSmoothed()) void poll();
+      }
     });
   });
   $('#mapPositionMode')?.addEventListener('change', () => {

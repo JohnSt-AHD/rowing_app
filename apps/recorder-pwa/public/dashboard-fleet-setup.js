@@ -121,6 +121,15 @@
     if (toggle) {
       toggle.checked = Boolean(data?.showOtherBoatsOnMap);
     }
+    const predict = document.getElementById('predictMode');
+    if (predict && (data?.predictMode === 'car' || data?.predictMode === 'rowing')) {
+      predict.value = data.predictMode;
+      try {
+        localStorage.setItem('rnz_dashboard_predict_mode', data.predictMode);
+      } catch {
+        /* ignore */
+      }
+    }
     const note = document.getElementById('orgClientSettingsStorageNote');
     if (note) {
       note.textContent = data?.persisted

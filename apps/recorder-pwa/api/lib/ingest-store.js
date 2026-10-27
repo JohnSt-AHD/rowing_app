@@ -1,6 +1,8 @@
 const db = require('./db');
 const {
   GPS_OUTLIER_MAX_ROWING_MPS,
+  GPS_OUTLIER_MAX_CAR_MPS,
+  gpsOutlierLimitsForMode,
   isGpsFixOutlier,
   isGpsFixForMapPosition,
   filterOutlierGpsFixes,
@@ -23,6 +25,10 @@ globalThis.__rnzLastGpsByDevice = lastGpsByDevice;
 /** Last accepted GPS fix per org:device — used to reject teleports on ingest. */
 const lastAcceptedGpsFix = globalThis.__rnzLastAcceptedGpsFix ?? new Map();
 globalThis.__rnzLastAcceptedGpsFix = lastAcceptedGpsFix;
+/** Org GPS outlier mode cache — fleet-config Car test, read on ingest. */
+const orgGpsOutlierModeCache = globalThis.__rnzOrgGpsOutlierMode ?? new Map();
+globalThis.__rnzOrgGpsOutlierMode = orgGpsOutlierModeCache;
+const ORG_GPS_OUTLIER_MODE_TTL_MS = 8000;
 
 function orgSessionKey(orgId, sessionId) {
   return `${orgId}:${sessionId}`;
@@ -52,7 +58,7 @@ const MAX_CAR_PREDICT_MPS = MAX_CAR_PREDICT_KMH / 3.6;
 /** Max offset from raw when predicting at car speeds (~2.5 s at 120 km/h). */
 const MAX_CAR_SMOOTH_OFFSET_M = Math.ceil(MAX_CAR_PREDICT_MPS * MAX_PREDICT_SEC);
 /** Outlier jump threshold while warming track in car mode (m/s). */
-const MAX_CAR_TRACK_SPEED_MPS = 38;
+const MAX_CAR_TRACK_SPEED_MPS = GPS_OUTLIER_MAX_CAR_MPS;
 /** Only predict when GPS fix is fresher than this (seconds). */
 const MAX_PREDICT_FIX_AGE_SEC = 30;
 /** Rolling window for coach-facing pace (path distance / time). */
@@ -116,6 +122,45 @@ function predictLimitsForMode(predictMode) {
     maxSpeedMps: MAX_ROWING_PREDICT_MPS,
     maxOffsetM: MAX_SMOOTH_OFFSET_M,
     maxTrackSpeedMps: GPS_OUTLIER_MAX_ROWING_MPS,
+  };
+}
+
+function setOrgGpsOutlierModeCache(orgId, mode) {
+  if (orgId == null) return;
+  orgGpsOutlierModeCache.set(orgId, {
+    mode: parsePredictMode(mode),
+    at: Date.now(),
+  });
+}
+
+/**
+ * Org Car test flag — default rowing so RNZ boats stay on boat limits.
+ * @param {number|string|null|undefined} orgId
+ * @returns {Promise<'rowing' | 'car'>}
+ */
+async function getOrgGpsOutlierMode(orgId) {
+  if (orgId == null) return 'rowing';
+  const cached = orgGpsOutlierModeCache.get(orgId);
+  if (cached && Date.now() - cached.at < ORG_GPS_OUTLIER_MODE_TTL_MS) {
+    return cached.mode;
+  }
+  try {
+    const settings = await db.getOrgClientSettings(orgId);
+    const mode = parsePredictMode(settings?.predictMode);
+    setOrgGpsOutlierModeCache(orgId, mode);
+    return mode;
+  } catch (err) {
+    console.error('[ingest-store] getOrgGpsOutlierMode failed:', err);
+    return cached?.mode || 'rowing';
+  }
+}
+
+function gpsOutlierOptsForMode(mode, extra = {}) {
+  const limits = gpsOutlierLimitsForMode(mode);
+  return {
+    mode: parsePredictMode(mode),
+    maxMps: extra.maxMps ?? limits.maxMps,
+    maxJumpM: extra.maxJumpM ?? limits.maxJumpM,
   };
 }
 
@@ -650,10 +695,13 @@ function resetGpsSmoothState(fix) {
  * Track last fix + velocity for bounded predict-to-now on the map overlay.
  * @param {string} deviceId
  * @param {{ t:number, lat:number, lon:number, acc:number|null, spd:number|null, hdg:number|null }} fix
- * @param {{ maxTrackSpeedMps?: number }} [opts]
+ * @param {{ maxTrackSpeedMps?: number, mode?: 'rowing' | 'car' }} [opts]
  */
 function updateGpsTrack(deviceId, fix, opts = {}) {
-  const maxTrackSpeedMps = opts.maxTrackSpeedMps ?? MAX_TRACK_SPEED_MPS;
+  const extra = {};
+  if (opts.maxTrackSpeedMps != null) extra.maxMps = opts.maxTrackSpeedMps;
+  const outlierOpts = gpsOutlierOptsForMode(opts.mode, extra);
+  const maxTrackSpeedMps = outlierOpts.maxMps;
   const key = String(deviceId);
   const prev = gpsTracks.get(key);
   if (!prev) {
@@ -688,7 +736,7 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
     lon: prev.lon,
     acc: null,
   };
-  if (isGpsFixOutlier(prevFix, fix, { maxMps: maxTrackSpeedMps })) {
+  if (isGpsFixOutlier(prevFix, fix, outlierOpts)) {
     metrics.gpsOutliersRejected++;
     return false;
   }
@@ -1177,6 +1225,7 @@ function warmGpsTracksFromFixesByDevice(orgId, fixesByDevice, opts = {}) {
   if (!fixesByDevice?.size) return;
   const trackOpts = {
     maxTrackSpeedMps: opts.maxTrackSpeedMps ?? MAX_TRACK_SPEED_MPS,
+    mode: opts.mode,
   };
   for (const [deviceId, fixes] of fixesByDevice) {
     if (!deviceId || !fixes?.length) continue;
@@ -1213,6 +1262,7 @@ function warmGpsTracksFromSamplesByDevice(orgId, byDevice, opts = {}) {
   if (!byDevice) return;
   const trackOpts = {
     maxTrackSpeedMps: opts.maxTrackSpeedMps ?? MAX_TRACK_SPEED_MPS,
+    mode: opts.mode,
   };
   const entries =
     byDevice instanceof Map
@@ -1401,7 +1451,8 @@ function noteDeviceTelemetry(deviceId, samples) {
   }
 }
 
-function sanitizeAndTrackSamples(deviceId, samples) {
+function sanitizeAndTrackSamples(deviceId, samples, outlierMode = 'rowing') {
+  const outlierOpts = gpsOutlierOptsForMode(outlierMode);
   const out = [];
   let dropped = 0;
   for (const sample of samples) {
@@ -1423,7 +1474,7 @@ function sanitizeAndTrackSamples(deviceId, samples) {
         next = rest;
       } else {
         const prev = lastAcceptedGpsFixFor(deviceId);
-        if (prev && isGpsFixOutlier(prev, fix)) {
+        if (prev && isGpsFixOutlier(prev, fix, outlierOpts)) {
           metrics.gpsOutliersRejected++;
           const { gps, ...rest } = sample;
           const hasPayload =
@@ -1437,7 +1488,7 @@ function sanitizeAndTrackSamples(deviceId, samples) {
           if (isGpsFixForMapPosition(fix.sampleSource)) {
             rememberAcceptedGpsFix(deviceId, fix);
             const trackFix = gpsFromSample(sample, { forTrack: true, forMapPosition: true });
-            if (trackFix) updateGpsTrack(deviceId, trackFix);
+            if (trackFix) updateGpsTrack(deviceId, trackFix, { mode: outlierMode });
           } else {
             metrics.gpsCachePositionSkipped++;
           }
@@ -1635,7 +1686,8 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   }
   if (!samples.length) return { received: 0 };
   const scopedDevice = orgDeviceKey(orgId, deviceId);
-  const clean = sanitizeAndTrackSamples(scopedDevice, samples);
+  const outlierMode = await getOrgGpsOutlierMode(orgId);
+  const clean = sanitizeAndTrackSamples(scopedDevice, samples, outlierMode);
   reconcileSampleTimes(clean.samples, now);
   if (!clean.samples.length) {
     metrics.droppedSamples += clean.dropped || 0;
@@ -3241,8 +3293,9 @@ function filterMapPositionsAfterSessionEnd(positions, opts) {
 }
 
 /** Replace raw map coords when the latest fix teleports vs the warmed track. */
-function rejectOutlierMapPositions(positions, orgId) {
+function rejectOutlierMapPositions(positions, orgId, outlierMode = 'rowing') {
   if (!Array.isArray(positions) || orgId == null) return positions;
+  const outlierOpts = gpsOutlierOptsForMode(outlierMode);
   return positions.map((p) => {
     if (p.latitude == null || p.longitude == null) return p;
     const trackKey = orgDeviceKey(orgId, p.deviceId);
@@ -3255,7 +3308,7 @@ function rejectOutlierMapPositions(positions, orgId) {
       lon: p.longitude,
       acc: p.accuracy ?? null,
     };
-    if (!isGpsFixOutlier(prev, fix)) return p;
+    if (!isGpsFixOutlier(prev, fix, outlierOpts)) return p;
     metrics.gpsOutliersRejected++;
     return {
       ...p,
@@ -3269,8 +3322,12 @@ function rejectOutlierMapPositions(positions, orgId) {
 async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   metrics.mapPolls++;
   const predictMode = parsePredictMode(opts.predictMode);
+  const outlierMode = await getOrgGpsOutlierMode(orgId);
   const limits = predictLimitsForMode(predictMode);
-  const trackOpts = { maxTrackSpeedMps: limits.maxTrackSpeedMps };
+  const trackOpts = {
+    maxTrackSpeedMps: predictLimitsForMode(outlierMode).maxTrackSpeedMps,
+    mode: outlierMode,
+  };
   const rowingWindowMs = Math.min(staleMs, 120000);
   // Keep map polls light - 30min x all devices was timing out on Vercel (Failed to fetch).
   const telemetryWindowMs = Math.min(rowingWindowMs, 3 * 60 * 1000);
@@ -3298,7 +3355,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       );
       await warmGpsTracksFromRecentDbFixes(orgId, telemetryWindowMs, trackOpts);
       warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
-      const filtered = rejectOutlierMapPositions(rawMerged, orgId);
+      const filtered = rejectOutlierMapPositions(rawMerged, orgId, outlierMode);
       const positions = attachSmoothMapCoords(filtered, predictMode, orgId);
 
       attachRowingToMapPositions(positions, rowingByDevice);
@@ -3355,7 +3412,7 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
   ]);
   await warmGpsTracksFromRecentDbFixes(orgId, telemetryWindowMs, trackOpts);
   warmGpsTracksFromSamplesByDevice(orgId, telemetryByDevice, trackOpts);
-  const filtered = rejectOutlierMapPositions(rawMerged, orgId);
+  const filtered = rejectOutlierMapPositions(rawMerged, orgId, outlierMode);
   const mapped = attachSmoothMapCoords(filtered, predictMode, orgId).map((p) => {
     const rowing = rowingByDevice.get(p.deviceId) || {};
     return {
@@ -3963,6 +4020,8 @@ module.exports = {
   getTraccarSnapshot,
   getMapPositions,
   parsePredictMode,
+  getOrgGpsOutlierMode,
+  setOrgGpsOutlierModeCache,
   getRouteHistory,
   listSessionsHistory,
   getLogbook,

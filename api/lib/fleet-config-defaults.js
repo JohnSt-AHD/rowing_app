@@ -54,7 +54,7 @@ function normalizeBoat(row) {
 
 /** Org client flags — default OFF for privacy (other boats on rower map). */
 function defaultOrgClientSettings() {
-  return { showOtherBoatsOnMap: false };
+  return { showOtherBoatsOnMap: false, predictMode: 'rowing' };
 }
 
 function memoryDefaults() {
