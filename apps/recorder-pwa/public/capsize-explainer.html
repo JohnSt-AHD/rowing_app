@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a1628" />
+    <title>How capsize alerts work — CrewSight simulation</title>
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" />
+    <link rel="stylesheet" href="/capsize-explainer.css?v=8" />
+  </head>
+  <body>
+    <header class="ex-top">
+      <div class="ex-top__brand">
+        <img src="/assets/crewsight/crewsight-logo-full-color.png" alt="CrewSight" width="220" height="56" />
+        <div>
+          <h1>How capsize alerts work</h1>
+          <p>RowSafe · athlete phone · Manager — same rules as live, none of the boats.</p>
+        </div>
+      </div>
+      <span class="ex-sim-pill" title="This page never calls ingest, tokens, or production APIs">Simulation — not live boats</span>
+    </header>
+
+    <section class="ex-controls" aria-label="Simulation controls">
+      <label class="ex-field">
+        <span>Scenario</span>
+        <select id="scenarioSelect"></select>
+      </label>
+      <button type="button" class="ex-btn ex-btn--gold" id="triggerBtn">Trigger capsize</button>
+      <button type="button" class="ex-btn" id="rightBtn">Right the boat</button>
+      <button type="button" class="ex-btn" id="fastForwardBtn">Fast-forward 12h</button>
+      <button type="button" class="ex-btn" id="resetBtn">Reset views</button>
+      <button type="button" class="ex-btn" id="clearLogBtn">Clear log</button>
+      <p class="ex-hint" id="scenarioHint"></p>
+    </section>
+
+    <section class="ex-frames" aria-label="Three product views">
+      <article class="ex-frame ex-frame--rowsafe" data-frame="rowsafe">
+        <header class="ex-bezel">
+          <span>RowSafe · live fleet map</span>
+          <span class="ex-sim-pill ex-sim-pill--sm">Simulation — not live boats</span>
+        </header>
+        <div class="rs-page" id="rowsafeView"></div>
+      </article>
+
+      <article class="ex-frame ex-frame--phone" data-frame="phone">
+        <header class="ex-bezel">
+          <span>Athlete phone · CrewSight</span>
+          <div class="ex-bezel__tools">
+            <button type="button" class="ex-orient" id="phoneOrientBtn" aria-pressed="false">Portrait</button>
+            <span class="ex-sim-pill ex-sim-pill--sm">Simulation — not live boats</span>
+          </div>
+        </header>
+        <div class="phone-stage" id="phoneStage">
+          <div class="phone-bezel" id="phoneBezel">
+            <div class="phone-notch" aria-hidden="true"></div>
+            <div class="phone-screen" id="phoneView"></div>
+          </div>
+          <div class="phone-bezel phone-bezel--second" id="phoneBezelB" hidden>
+            <div class="phone-notch" aria-hidden="true"></div>
+            <div class="phone-screen" id="phoneViewB"></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="ex-frame ex-frame--manager" data-frame="manager">
+        <header class="ex-bezel">
+          <span>Manager · Coach Tom</span>
+          <span class="ex-sim-pill ex-sim-pill--sm">Simulation — not live boats</span>
+        </header>
+        <div class="mgr-page" id="managerView"></div>
+      </article>
+    </section>
+
+    <section class="ex-log-wrap" aria-label="Simulation event log">
+      <div class="ex-log-head">
+        <h2>Event log</h2>
+        <p>In-memory only. Tip, reconnect, on the way, crew safe, 12h expire.</p>
+      </div>
+      <ol class="ex-log" id="eventLog"></ol>
+    </section>
+
+    <footer class="ex-foot">
+      <p>
+        Pure simulation — no ingest, no tokens, no writes to production.
+        Linked from RowSafe as <strong>How capsize alerts work (simulation)</strong>.
+      </p>
+    </footer>
+
+    <script src="/capsize-explainer.js?v=8"></script>
+  </body>
+</html>

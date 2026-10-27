@@ -1,6 +1,6 @@
-/** NZ-day log of active / acknowledged capsize alerts on this Manager. */
+/** NZ-day log of active / responding / crew-safe capsize alerts on this Manager. */
 
-export type CapsizeLogStatus = 'active' | 'acknowledged' | 'cleared';
+export type CapsizeLogStatus = 'active' | 'responding' | 'acknowledged' | 'cleared';
 
 export type CapsizeLogEntry = {
   id: string;
@@ -12,8 +12,29 @@ export type CapsizeLogEntry = {
   status: CapsizeLogStatus;
   ackedAt?: number;
   ackedBy?: string;
-  ackSource?: 'manager' | 'rowsafe' | 'remote';
+  ackSource?: 'manager' | 'rowsafe' | 'remote' | 'athlete';
+  respondingAt?: number;
+  respondingBy?: string;
+  respondingSource?: 'manager' | 'rowsafe' | 'remote' | 'athlete';
 };
+
+export function isOpenCapsizeStatus(status?: string | null): boolean {
+  return status === 'active' || status === 'responding' || status === 'acknowledged';
+}
+
+export function isRespondingCapsizeStatus(status?: string | null): boolean {
+  return status === 'responding' || status === 'acknowledged';
+}
+
+export function onTheWayLine(name?: string | null): string {
+  const who = String(name || '').trim();
+  return who ? `${who} is on the way` : 'A coach is on the way';
+}
+
+export function crewSafeLine(name?: string | null): string {
+  const who = String(name || '').trim();
+  return who ? `Crew safe · ${who}` : 'Crew safe';
+}
 
 const LS_KEY = 'crewsight_capsize_day_log_v1';
 
@@ -63,12 +84,12 @@ export function upsertActiveCapsize(input: {
 }): CapsizeLogEntry {
   const store = loadStore();
   const existing = store.events.find(
-    (e) => e.deviceId === input.deviceId && e.status === 'active',
+    (e) => e.deviceId === input.deviceId && isOpenCapsizeStatus(e.status),
   );
   const recentAck = store.events.find(
     (e) =>
       e.deviceId === input.deviceId &&
-      e.status !== 'active' &&
+      e.status === 'cleared' &&
       e.ackedAt != null &&
       Date.now() - e.ackedAt < 60_000,
   );
@@ -103,9 +124,31 @@ export function acknowledgeCapsizeLog(
   const now = Date.now();
   const ids = deviceIds ? new Set(deviceIds) : null;
   for (const e of store.events) {
-    if (e.status !== 'active') continue;
+    if (!isOpenCapsizeStatus(e.status)) continue;
     if (ids && !ids.has(e.deviceId)) continue;
-    e.status = 'acknowledged';
+    e.status = 'responding';
+    e.ackedAt = now;
+    e.ackedBy = ackedBy;
+    e.ackSource = source;
+    if (e.respondingAt == null) e.respondingAt = now;
+    e.respondingBy = ackedBy;
+    e.respondingSource = source;
+  }
+  saveStore(store);
+}
+
+export function markCapsizeLogSafe(
+  deviceIds: string[] | null,
+  ackedBy: string,
+  source: CapsizeLogEntry['ackSource'] = 'manager',
+): void {
+  const store = loadStore();
+  const now = Date.now();
+  const ids = deviceIds ? new Set(deviceIds) : null;
+  for (const e of store.events) {
+    if (!isOpenCapsizeStatus(e.status)) continue;
+    if (ids && !ids.has(e.deviceId)) continue;
+    e.status = 'cleared';
     e.ackedAt = now;
     e.ackedBy = ackedBy;
     e.ackSource = source;
@@ -119,7 +162,7 @@ export function markMissingCapsizesClearedRemote(stillActiveIds: string[]): void
   const live = new Set(stillActiveIds);
   let changed = false;
   for (const e of store.events) {
-    if (e.status !== 'active') continue;
+    if (!isOpenCapsizeStatus(e.status)) continue;
     if (live.has(e.deviceId)) continue;
     e.status = 'cleared';
     e.ackedAt = Date.now();
@@ -142,7 +185,7 @@ export function replaceCapsizeDayLogFromServer(events: CapsizeLogEntry[]): void 
   const serverDevices = new Set(events.map((e) => e.deviceId));
   const keepLocal = local.events.filter((e) => {
     if (serverIds.has(e.id) || serverDevices.has(e.deviceId)) return false;
-    return e.status === 'active' && Date.now() - e.startedAt < 30_000;
+    return isOpenCapsizeStatus(e.status) && Date.now() - e.startedAt < 30_000;
   });
   saveStore({ day: today, events: [...events, ...keepLocal] });
 }
@@ -158,17 +201,30 @@ export function formatNzTime(ms: number): string {
 }
 
 export function formatCapsizeAckLine(e: CapsizeLogEntry): string {
-  if (e.status === 'acknowledged') {
-    const when = e.ackedAt ? formatNzTime(e.ackedAt) : '';
-    const who = e.ackedBy || (e.ackSource === 'rowsafe' ? 'RowSafe' : 'CrewSight Manager');
+  if (isRespondingCapsizeStatus(e.status)) {
+    const when = e.respondingAt || e.ackedAt ? formatNzTime(e.respondingAt || e.ackedAt || 0) : '';
+    const who =
+      e.respondingBy ||
+      e.ackedBy ||
+      (e.respondingSource === 'rowsafe' || e.ackSource === 'rowsafe' ? 'A coach' : '');
     const via =
-      e.ackSource === 'rowsafe' ? ' (RowSafe)' : e.ackSource === 'manager' ? ' (Manager)' : '';
-    return `Acknowledged ${when} by ${who}${via}`.replace(/\s+/g, ' ').trim();
+      e.respondingSource === 'rowsafe' || e.ackSource === 'rowsafe'
+        ? ' (RowSafe)'
+        : e.respondingSource === 'manager' || e.ackSource === 'manager'
+          ? ' (Manager)'
+          : '';
+    return `${onTheWayLine(who)} ${when}${via}`.replace(/\s+/g, ' ').trim();
   }
   if (e.status === 'cleared') {
-    return `Cleared ${e.ackedAt ? formatNzTime(e.ackedAt) : ''} · ${e.ackedBy || 'RowSafe or another Manager'}`
-      .replace(/\s+/g, ' ')
-      .trim();
+    const when = e.ackedAt ? formatNzTime(e.ackedAt) : '';
+    const who =
+      e.ackedBy ||
+      (e.ackSource === 'athlete'
+        ? 'Athlete'
+        : e.ackSource === 'rowsafe'
+          ? 'RowSafe'
+          : 'CrewSight Manager');
+    return `${crewSafeLine(who)} ${when}`.replace(/\s+/g, ' ').trim();
   }
   return 'Active — not acknowledged';
 }

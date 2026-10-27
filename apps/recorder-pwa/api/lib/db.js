@@ -187,6 +187,11 @@ async function initSchema() {
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_active BOOLEAN NOT NULL DEFAULT false`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_at TIMESTAMPTZ`;
   await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_cleared_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_hold_until_upright BOOLEAN NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_responding BOOLEAN NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_responding_by TEXT`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_responding_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_responding_source TEXT`;
   await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'recorder'`;
   await sql`ALTER TABLE rnz_sessions ADD COLUMN IF NOT EXISTS rower_name TEXT`;
   try {
@@ -653,6 +658,9 @@ async function ensureCapsizeDayLogTable() {
       ack_source TEXT
     )
   `;
+  await sql`ALTER TABLE rnz_capsize_day_log ADD COLUMN IF NOT EXISTS responding_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE rnz_capsize_day_log ADD COLUMN IF NOT EXISTS responding_by TEXT`;
+  await sql`ALTER TABLE rnz_capsize_day_log ADD COLUMN IF NOT EXISTS responding_source TEXT`;
   await sql`
     CREATE INDEX IF NOT EXISTS idx_rnz_capsize_day_log_org_day
       ON rnz_capsize_day_log (org_id, day_key, started_at DESC)
@@ -662,6 +670,15 @@ async function ensureCapsizeDayLogTable() {
       ON rnz_capsize_day_log (org_id, day_key, device_id)
       WHERE status = 'active'
   `;
+  try {
+    await sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_rnz_capsize_day_log_open
+        ON rnz_capsize_day_log (org_id, day_key, device_id)
+        WHERE status IN ('active', 'responding', 'acknowledged')
+    `;
+  } catch (err) {
+    console.error('[db] open capsize day-log index failed:', err);
+  }
 }
 
 function mapCapsizeDayLogRow(row) {
@@ -679,6 +696,9 @@ function mapCapsizeDayLogRow(row) {
     ackedAt: Number.isFinite(ackedAt) ? ackedAt : undefined,
     ackedBy: row.acked_by ? String(row.acked_by) : undefined,
     ackSource: row.ack_source ? String(row.ack_source) : undefined,
+    respondingAt: row.responding_at ? new Date(row.responding_at).getTime() : undefined,
+    respondingBy: row.responding_by ? String(row.responding_by) : undefined,
+    respondingSource: row.responding_source ? String(row.responding_source) : undefined,
   };
 }
 
@@ -687,7 +707,8 @@ async function listCapsizeDayLog(orgId, dayKey) {
   await ensureOrgsBootstrapped();
   await ensureCapsizeDayLogTable();
   const rows = await sql`
-    SELECT id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+    SELECT id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source,
+           responding_at, responding_by, responding_source
     FROM rnz_capsize_day_log
     WHERE org_id = ${orgId} AND day_key = ${dayKey}
     ORDER BY started_at DESC
@@ -716,12 +737,13 @@ async function upsertCapsizeDayLogActive(orgId, input) {
   const lon = input.lon != null && Number.isFinite(Number(input.lon)) ? Number(input.lon) : null;
 
   const recent = await sql`
-    SELECT id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+    SELECT id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source,
+           responding_at, responding_by, responding_source
     FROM rnz_capsize_day_log
     WHERE org_id = ${orgId}
       AND day_key = ${dayKey}
       AND device_id = ${deviceId}
-      AND status <> 'active'
+      AND status = 'cleared'
       AND acked_at IS NOT NULL
       AND acked_at > NOW() - INTERVAL '60 seconds'
     ORDER BY acked_at DESC
@@ -738,8 +760,9 @@ async function upsertCapsizeDayLogActive(orgId, input) {
     WHERE org_id = ${orgId}
       AND day_key = ${dayKey}
       AND device_id = ${deviceId}
-      AND status = 'active'
-    RETURNING id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+      AND status IN ('active', 'responding', 'acknowledged')
+    RETURNING id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source,
+              responding_at, responding_by, responding_source
   `;
   if (updated.rows[0]) return mapCapsizeDayLogRow(updated.rows[0]);
 
@@ -760,17 +783,19 @@ async function upsertCapsizeDayLogActive(orgId, input) {
         to_timestamp(${startedAtMs} / 1000.0),
         'active'
       )
-      RETURNING id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+      RETURNING id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source,
+                responding_at, responding_by, responding_source
     `;
     return mapCapsizeDayLogRow(inserted.rows[0]);
   } catch (err) {
     const existing = await sql`
-      SELECT id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source
+      SELECT id, device_id, name, lat, lon, started_at, status, acked_at, acked_by, ack_source,
+             responding_at, responding_by, responding_source
       FROM rnz_capsize_day_log
       WHERE org_id = ${orgId}
         AND day_key = ${dayKey}
         AND device_id = ${deviceId}
-        AND status = 'active'
+        AND status IN ('active', 'responding', 'acknowledged')
       ORDER BY started_at DESC
       LIMIT 1
     `;
@@ -791,43 +816,78 @@ async function setCapsizeDayLogStatus(orgId, deviceIds, status, ackedBy, ackSour
   }).format(new Date());
   const ids = Array.isArray(deviceIds) ? deviceIds.map((id) => String(id)).filter(Boolean) : null;
   if (ids && !ids.length) return 0;
+  const responding = status === 'responding' || status === 'acknowledged';
+  const nextStatus = responding ? 'responding' : status;
   if (!ids) {
-    const rows = await sql`
-      UPDATE rnz_capsize_day_log
-      SET
-        status = ${status},
-        acked_at = NOW(),
-        acked_by = ${ackedBy},
-        ack_source = ${ackSource}
-      WHERE org_id = ${orgId}
-        AND day_key = ${dayKey}
-        AND status = 'active'
-      RETURNING id
-    `;
+    const rows = responding
+      ? await sql`
+          UPDATE rnz_capsize_day_log
+          SET
+            status = ${nextStatus},
+            acked_at = NOW(),
+            acked_by = ${ackedBy},
+            ack_source = ${ackSource},
+            responding_at = COALESCE(responding_at, NOW()),
+            responding_by = ${ackedBy},
+            responding_source = ${ackSource}
+          WHERE org_id = ${orgId}
+            AND day_key = ${dayKey}
+            AND status IN ('active', 'responding', 'acknowledged')
+          RETURNING id
+        `
+      : await sql`
+          UPDATE rnz_capsize_day_log
+          SET
+            status = ${nextStatus},
+            acked_at = NOW(),
+            acked_by = ${ackedBy},
+            ack_source = ${ackSource}
+          WHERE org_id = ${orgId}
+            AND day_key = ${dayKey}
+            AND status IN ('active', 'responding', 'acknowledged')
+          RETURNING id
+        `;
     return rows.rowCount ?? rows.rows.length ?? 0;
   }
   let count = 0;
   for (const id of ids) {
-    const rows = await sql`
-      UPDATE rnz_capsize_day_log
-      SET
-        status = ${status},
-        acked_at = NOW(),
-        acked_by = ${ackedBy},
-        ack_source = ${ackSource}
-      WHERE org_id = ${orgId}
-        AND day_key = ${dayKey}
-        AND status = 'active'
-        AND device_id = ${id}
-      RETURNING id
-    `;
+    const rows = responding
+      ? await sql`
+          UPDATE rnz_capsize_day_log
+          SET
+            status = ${nextStatus},
+            acked_at = NOW(),
+            acked_by = ${ackedBy},
+            ack_source = ${ackSource},
+            responding_at = COALESCE(responding_at, NOW()),
+            responding_by = ${ackedBy},
+            responding_source = ${ackSource}
+          WHERE org_id = ${orgId}
+            AND day_key = ${dayKey}
+            AND status IN ('active', 'responding', 'acknowledged')
+            AND device_id = ${id}
+          RETURNING id
+        `
+      : await sql`
+          UPDATE rnz_capsize_day_log
+          SET
+            status = ${nextStatus},
+            acked_at = NOW(),
+            acked_by = ${ackedBy},
+            ack_source = ${ackSource}
+          WHERE org_id = ${orgId}
+            AND day_key = ${dayKey}
+            AND status IN ('active', 'responding', 'acknowledged')
+            AND device_id = ${id}
+          RETURNING id
+        `;
     count += rows.rowCount ?? rows.rows.length ?? 0;
   }
   return count;
 }
 
 async function acknowledgeCapsizeDayLog(orgId, deviceIds, ackedBy, ackSource) {
-  return setCapsizeDayLogStatus(orgId, deviceIds, 'acknowledged', ackedBy, ackSource);
+  return setCapsizeDayLogStatus(orgId, deviceIds, 'responding', ackedBy, ackSource);
 }
 
 async function markCapsizeDayLogCleared(orgId, deviceIds, ackedBy, ackSource) {
@@ -1941,7 +2001,11 @@ async function expireStaleCapsizeAlertsDb(orgId) {
     UPDATE rnz_devices
     SET capsize_alert_active = false,
         capsize_alert_at = NULL,
-        capsize_cleared_at = NOW()
+        capsize_cleared_at = NOW(),
+        capsize_responding = false,
+        capsize_responding_by = NULL,
+        capsize_responding_at = NULL,
+        capsize_responding_source = NULL
     WHERE org_id = ${orgId}
       AND capsize_alert_active = true
       AND capsize_alert_at IS NOT NULL
@@ -2026,23 +2090,52 @@ async function maintainCapsizeAlerts(orgId, uniqueId, opts = {}) {
   return cleared;
 }
 
+async function setCapsizeHoldUntilUpright(orgId, uniqueId, hold) {
+  if (!hasDb() || !uniqueId) return;
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  await sql`
+    UPDATE rnz_devices
+    SET capsize_hold_until_upright = ${Boolean(hold)}
+    WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
+  `;
+}
+
+async function getCapsizeHoldUntilUpright(orgId, uniqueId) {
+  if (!hasDb() || !uniqueId) return false;
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const rows = await sql`
+    SELECT capsize_hold_until_upright
+    FROM rnz_devices
+    WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
+    LIMIT 1
+  `;
+  return Boolean(rows.rows[0]?.capsize_hold_until_upright);
+}
+
 async function raiseCapsizeAlert(orgId, uniqueId, sampleTms) {
   const sql = await getSql();
   await ensureOrgsBootstrapped();
+  if (await getCapsizeHoldUntilUpright(orgId, uniqueId)) return;
   const t =
     sampleTms != null && Number.isFinite(Number(sampleTms))
       ? Number(sampleTms)
       : Date.now();
-  // Shared across Vercel instances — block re-arm for 60s after Acknowledge.
+  // Shared across Vercel instances — block re-arm for 60s after crew-safe.
   const rearmCooldownMs = 60_000;
-  // Bump capsize_alert_at on each new capsize sample so RowSafe can re-alert after acknowledge.
+  // Bump capsize_alert_at on each new tip. Keep an in-flight "on the way" claim.
   await sql`
     UPDATE rnz_devices
     SET capsize_alert_active = true,
         capsize_alert_at = GREATEST(
           COALESCE(capsize_alert_at, to_timestamp(${t} / 1000.0)),
           to_timestamp(${t} / 1000.0)
-        )
+        ),
+        capsize_responding = CASE WHEN capsize_alert_active THEN capsize_responding ELSE false END,
+        capsize_responding_by = CASE WHEN capsize_alert_active THEN capsize_responding_by ELSE NULL END,
+        capsize_responding_at = CASE WHEN capsize_alert_active THEN capsize_responding_at ELSE NULL END,
+        capsize_responding_source = CASE WHEN capsize_alert_active THEN capsize_responding_source ELSE NULL END
     WHERE org_id = ${orgId}
       AND unique_id = ${String(uniqueId)}
       AND (
@@ -2063,7 +2156,11 @@ async function clearCapsizeAlertDb(orgId, uniqueId) {
       UPDATE rnz_devices
       SET capsize_alert_active = false,
           capsize_alert_at = NULL,
-          capsize_cleared_at = NOW()
+          capsize_cleared_at = NOW(),
+          capsize_responding = false,
+          capsize_responding_by = NULL,
+          capsize_responding_at = NULL,
+          capsize_responding_source = NULL
       WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
     `;
     return;
@@ -2072,7 +2169,39 @@ async function clearCapsizeAlertDb(orgId, uniqueId) {
     UPDATE rnz_devices
     SET capsize_alert_active = false,
         capsize_alert_at = NULL,
-        capsize_cleared_at = NOW()
+        capsize_cleared_at = NOW(),
+        capsize_responding = false,
+        capsize_responding_by = NULL,
+        capsize_responding_at = NULL,
+        capsize_responding_source = NULL
+    WHERE org_id = ${orgId} AND capsize_alert_active = true
+  `;
+}
+
+async function markCapsizeRespondingDb(orgId, uniqueId, ackedBy, ackSource) {
+  const sql = await getSql();
+  await ensureOrgsBootstrapped();
+  const by = String(ackedBy || '').trim() || null;
+  const source = String(ackSource || '').trim() || null;
+  if (uniqueId) {
+    await sql`
+      UPDATE rnz_devices
+      SET capsize_responding = true,
+          capsize_responding_by = ${by},
+          capsize_responding_at = NOW(),
+          capsize_responding_source = ${source}
+      WHERE org_id = ${orgId}
+        AND unique_id = ${String(uniqueId)}
+        AND capsize_alert_active = true
+    `;
+    return;
+  }
+  await sql`
+    UPDATE rnz_devices
+    SET capsize_responding = true,
+        capsize_responding_by = ${by},
+        capsize_responding_at = NOW(),
+        capsize_responding_source = ${source}
     WHERE org_id = ${orgId} AND capsize_alert_active = true
   `;
 }
@@ -2098,15 +2227,25 @@ async function getCapsizeAlerts(orgId) {
   const sql = await getSql();
   await ensureOrgsBootstrapped();
   const rows = await sql`
-    SELECT unique_id, capsize_alert_at
+    SELECT unique_id, capsize_alert_at, capsize_responding, capsize_responding_by,
+           capsize_responding_at, capsize_responding_source
     FROM rnz_devices
     WHERE org_id = ${orgId} AND capsize_alert_active = true
   `;
   const map = new Map();
   for (const row of rows.rows) {
+    const responding = Boolean(row.capsize_responding);
     map.set(String(row.unique_id), {
       active: true,
       atMs: row.capsize_alert_at ? new Date(row.capsize_alert_at).getTime() : null,
+      phase: responding ? 'responding' : 'active',
+      respondingBy: row.capsize_responding_by ? String(row.capsize_responding_by) : null,
+      respondingSource: row.capsize_responding_source
+        ? String(row.capsize_responding_source)
+        : null,
+      respondingAt: row.capsize_responding_at
+        ? new Date(row.capsize_responding_at).getTime()
+        : null,
     });
   }
   return map;
@@ -2123,16 +2262,25 @@ async function persistBatch(orgId, sessionId, deviceId, athleteId, samples, boat
   await insertSamples(orgId, sessionId, dev.id, deviceId, samples);
   await updateDeviceLatestGps(orgId, deviceId, samples);
   // capsizeCleared (phone upright) is telemetry/local UX only — do not clear sticky DB alert.
-  // Tip samples in the same batch (or tip-only reconnect) still raise; clear only via Acknowledge / max-age.
+  // Tip samples in the same batch (or tip-only reconnect) still raise; clear only via crew-safe / max-age.
+  // Athlete recall clears via ingest-store → clearCapsizeAlert; this path only holds re-arm until upright.
   let maxCapsizeT = null;
+  let recalled = false;
+  let uprightClear = false;
   for (const sample of samples) {
+    const derived = sample?.derived || {};
+    if (derived.capsizeRecalled === true) recalled = true;
+    if (derived.capsizeCleared === true) uprightClear = true;
     if (sample?.derived?.capsize === true) {
       const t = Number(sample.t);
       if (Number.isFinite(t) && (maxCapsizeT == null || t > maxCapsizeT)) maxCapsizeT = t;
     }
   }
-  const raisedCapsize = maxCapsizeT != null;
+  if (recalled) await setCapsizeHoldUntilUpright(orgId, deviceId, true);
+  const hold = recalled || (await getCapsizeHoldUntilUpright(orgId, deviceId));
+  const raisedCapsize = maxCapsizeT != null && !recalled && !hold;
   if (raisedCapsize) await raiseCapsizeAlert(orgId, deviceId, maxCapsizeT);
+  if (uprightClear) await setCapsizeHoldUntilUpright(orgId, deviceId, false);
   const cleared = await maintainCapsizeAlerts(orgId, deviceId, { raisedCapsize });
   return { ok: true, cleared };
 }
@@ -4490,7 +4638,10 @@ module.exports = {
   listOpenWalkupSessions,
   heartbeatWalkupSession,
   raiseCapsizeAlert,
+  setCapsizeHoldUntilUpright,
+  getCapsizeHoldUntilUpright,
   clearCapsizeAlertDb,
+  markCapsizeRespondingDb,
   getCapsizeClearedAtMs,
   getCapsizeAlerts,
   maintainCapsizeAlerts,

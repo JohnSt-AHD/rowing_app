@@ -54,3 +54,13 @@ Leave `TRACCAR_*` unset to use rowing only. Set both only if you want Traccar fo
 `dashboard.html` — live rates (memory + same ingest).
 
 Overlay maps — live + history from Postgres via snapshot/route.
+
+## 6. Capsize explainer (simulation, not live)
+
+Standalone static page on the CrewSight recorder host:
+
+- Local: http://localhost:5173/capsize-explainer.html
+- Files: `apps/recorder-pwa/public/capsize-explainer.html` (+ `.css` / `.js`)
+- In-memory only — no ingest, tokens, or production writes.
+
+**traccar-overlay change (sibling repo):** `public/rowsafe-map.html` now has a **How capsize alerts work (simulation)** link in the header, capsize panel, and footer. Localhost RowSafe points at `:5173`; deployed RowSafe points at `https://rowing-app-recorder-pwa.vercel.app/capsize-explainer.html`.

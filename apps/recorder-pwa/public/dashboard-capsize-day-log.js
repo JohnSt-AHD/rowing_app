@@ -32,21 +32,29 @@
   }
 
   function formatAckLine(e) {
-    if (e.status === 'acknowledged') {
-      const when = e.ackedAt ? formatNzTime(e.ackedAt) : '';
-      const who = e.ackedBy || (e.ackSource === 'rowsafe' ? 'RowSafe' : 'CrewSight Manager');
+    if (e.status === 'responding' || e.status === 'acknowledged') {
+      const when = e.respondingAt || e.ackedAt ? formatNzTime(e.respondingAt || e.ackedAt) : '';
+      const who = e.respondingBy || e.ackedBy || (e.ackSource === 'rowsafe' ? 'A coach' : '');
       const via =
-        e.ackSource === 'rowsafe'
+        e.respondingSource === 'rowsafe' || e.ackSource === 'rowsafe'
           ? ' (RowSafe)'
-          : e.ackSource === 'manager'
+          : e.ackSource === 'manager' || e.respondingSource === 'manager'
             ? ' (Manager)'
             : '';
-      return `Acknowledged ${when} by ${who}${via}`.replace(/\s+/g, ' ').trim();
+      const name = String(who || '').trim();
+      const line = name ? `${name} is on the way` : 'A coach is on the way';
+      return `${line} ${when}${via}`.replace(/\s+/g, ' ').trim();
     }
     if (e.status === 'cleared') {
-      return `Cleared ${e.ackedAt ? formatNzTime(e.ackedAt) : ''} · ${e.ackedBy || 'RowSafe or another Manager'}`
-        .replace(/\s+/g, ' ')
-        .trim();
+      const when = e.ackedAt ? formatNzTime(e.ackedAt) : '';
+      const who =
+        e.ackedBy ||
+        (e.ackSource === 'athlete'
+          ? 'Athlete'
+          : e.ackSource === 'rowsafe'
+            ? 'RowSafe'
+            : 'CrewSight Manager');
+      return `Crew safe · ${who} ${when}`.replace(/\s+/g, ' ').trim();
     }
     return 'Active — not acknowledged';
   }
@@ -65,7 +73,14 @@
     const out = Array.isArray(events) ? events.slice() : [];
     for (const d of devices || []) {
       if (!d?.rowing?.capsize || !d.deviceId) continue;
-      if (out.some((e) => e.deviceId === d.deviceId && e.status === 'active')) continue;
+      if (
+        out.some(
+          (e) =>
+            e.deviceId === d.deviceId &&
+            (e.status === 'active' || e.status === 'responding' || e.status === 'acknowledged'),
+        )
+      )
+        continue;
       const loc = deviceLatLon(d);
       out.unshift({
         id: `live-${d.deviceId}`,

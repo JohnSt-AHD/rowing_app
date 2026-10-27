@@ -59,10 +59,13 @@ import {
 import { demoMapPositions, isDemoMode } from '../lib/demo-mode';
 import {
   acknowledgeCapsizeLog,
+  crewSafeLine,
   formatCapsizeAckLine,
   formatNzTime,
   listCapsizeDayLog,
+  markCapsizeLogSafe,
   markMissingCapsizesClearedRemote,
+  onTheWayLine,
   replaceCapsizeDayLogForDemo,
   replaceCapsizeDayLogFromServer,
   upsertActiveCapsize,
@@ -183,7 +186,7 @@ export function mountApp(root: HTMLElement): void {
   let capsizeAlarmOscillators: OscillatorNode[] = [];
   let capsizeAlarmSeq = 0;
   let capsizeAlarmTimeouts: ReturnType<typeof setTimeout>[] = [];
-  /** After Acknowledge, mute alarm briefly even if a stale sticky poll flickers. */
+  /** After crew-safe, mute alarm briefly even if a stale sticky poll flickers. */
   let suppressCapsizeAlarmUntilMs = 0;
   /**
    * Local sticky latch: once Manager sees a tip, keep CAPSIZE until Acknowledge
@@ -213,6 +216,32 @@ export function mountApp(root: HTMLElement): void {
     if (latchedCapsizeById.has(d.deviceId)) return true;
     const list = pos ?? positions;
     return list.some((p) => p.deviceId === d.deviceId && p.capsize);
+  }
+
+  function capsizePhaseOf(d?: FleetDevice | null, p?: MapPosition | null): 'none' | 'active' | 'responding' {
+    const latched = d ? latchedCapsizeById.get(d.deviceId) : undefined;
+    const responding =
+      d?.rowing?.capsizePhase === 'responding' ||
+      d?.rowing?.capsizeResponding === true ||
+      Boolean(d?.rowing?.capsizeRespondingBy) ||
+      p?.capsizePhase === 'responding' ||
+      p?.capsizeResponding === true ||
+      Boolean(p?.capsizeRespondingBy) ||
+      latched?.rowing?.capsizePhase === 'responding' ||
+      latched?.rowing?.capsizeResponding === true;
+    if (responding) return 'responding';
+    if (d && deviceHasCapsize(d)) return 'active';
+    if (p?.capsize) return 'active';
+    return 'none';
+  }
+
+  function capsizeRespondingName(d?: FleetDevice | null, p?: MapPosition | null): string {
+    return String(
+      d?.rowing?.capsizeRespondingBy ||
+        p?.capsizeRespondingBy ||
+        (d ? latchedCapsizeById.get(d.deviceId)?.rowing?.capsizeRespondingBy : '') ||
+        '',
+    ).trim();
   }
 
   function isOwnManagerDevice(d?: FleetDevice | null): boolean {
@@ -246,30 +275,50 @@ export function mountApp(root: HTMLElement): void {
     return rows.filter((row) => devicePassesScope(row, (row as CrewTicketRow).mapPosition));
   }
 
-  /** Remember sticky tips from the latest poll (skipped during Acknowledge mute). */
+  function capsizeRowingFrom(src?: {
+    capsize?: boolean;
+    capsizePhase?: 'active' | 'responding';
+    capsizeResponding?: boolean;
+    capsizeRespondingBy?: string | null;
+  } | null) {
+    const phase =
+      src?.capsizePhase === 'responding' || src?.capsizeResponding ? 'responding' : 'active';
+    return {
+      capsize: true as const,
+      capsizePhase: phase,
+      capsizeResponding: phase === 'responding',
+      capsizeRespondingBy: src?.capsizeRespondingBy || null,
+    };
+  }
+
+  /** Remember sticky tips from the latest poll. Crew-safe mute skips fresh unacked tips. */
   function latchCapsizeFromPoll(devs: FleetDevice[], pos: MapPosition[]): void {
-    if (Date.now() < suppressCapsizeAlarmUntilMs) return;
+    const muteActive = Date.now() < suppressCapsizeAlarmUntilMs;
     for (const d of devs) {
       if (!d.rowing?.capsize) continue;
+      const next = capsizeRowingFrom(d.rowing);
+      if (muteActive && next.capsizePhase === 'active') continue;
       latchedCapsizeById.set(d.deviceId, {
         ...d,
-        rowing: { ...(d.rowing || {}), capsize: true },
+        rowing: { ...(d.rowing || {}), ...next },
       });
     }
     for (const p of pos) {
       if (!p.capsize) continue;
+      const next = capsizeRowingFrom(p);
+      if (muteActive && next.capsizePhase === 'active') continue;
       const prev = latchedCapsizeById.get(p.deviceId);
       if (prev) {
         latchedCapsizeById.set(p.deviceId, {
           ...prev,
-          rowing: { ...(prev.rowing || {}), capsize: true },
+          rowing: { ...(prev.rowing || {}), ...next },
         });
       } else {
         latchedCapsizeById.set(p.deviceId, {
           deviceId: p.deviceId,
           online: false,
           lastSeenAgoSec: p.lastSeenAgoSec ?? p.fixAgeSec,
-          rowing: { capsize: true },
+          rowing: next,
         });
       }
     }
@@ -277,16 +326,14 @@ export function mountApp(root: HTMLElement): void {
 
   /** Merge latched sticky devices into the fleet so banner/tickets survive disconnect. */
   function mergeLatchedCapsizeDevices(devs: FleetDevice[]): FleetDevice[] {
-    if (Date.now() < suppressCapsizeAlarmUntilMs || latchedCapsizeById.size === 0) {
-      return devs;
-    }
+    if (latchedCapsizeById.size === 0) return devs;
     const byId = new Map(devs.map((d) => [d.deviceId, { ...d }]));
     for (const [id, latched] of latchedCapsizeById) {
       const cur = byId.get(id);
       if (cur) {
         byId.set(id, {
           ...cur,
-          rowing: { ...(cur.rowing || {}), capsize: true },
+          rowing: { ...(cur.rowing || {}), ...(latched.rowing || {}), capsize: true },
         });
       } else {
         byId.set(id, {
@@ -335,19 +382,41 @@ export function mountApp(root: HTMLElement): void {
 
   function capsizeBannerText(): string {
     const caps = capsizedDevices();
-    const names = caps.map((d) => deviceDisplayName(d)).filter(Boolean);
-    const namePart = names.length ? `: ${names.join(', ')}` : '';
-    const n = caps.length || 1;
-    return `${n} CAPSIZE${namePart} — check crew now. Tap Acknowledge when help is on the way.`;
+    const active = caps.filter((d) => capsizePhaseOf(d) !== 'responding');
+    const responding = caps.filter((d) => capsizePhaseOf(d) === 'responding');
+    const parts: string[] = [];
+    if (active.length) {
+      const names = active.map((d) => deviceDisplayName(d)).filter(Boolean);
+      const namePart = names.length ? `: ${names.join(', ')}` : '';
+      parts.push(
+        `${active.length} CAPSIZE${namePart} — check crew now. Tap Acknowledge when you are on the way.`,
+      );
+    }
+    if (responding.length) {
+      const named = responding
+        .map((d) => capsizeRespondingName(d))
+        .find((name) => Boolean(name));
+      const boats = responding.map((d) => deviceDisplayName(d)).filter(Boolean);
+      const boatPart = boats.length ? ` to ${boats.join(', ')}` : '';
+      parts.push(`${onTheWayLine(named)}${boatPart}. Tap Crew safe when the crew is OK.`);
+    }
+    return parts.join(' ');
   }
 
   function updateCapsizeBanner(): void {
     const caps = capsizedDevices();
     const banner = root.querySelector('[data-capsize-banner]') as HTMLElement | null;
     if (!banner) return;
+    const activeN = caps.filter((d) => capsizePhaseOf(d) !== 'responding').length;
+    const respondingN = caps.length - activeN;
     banner.hidden = caps.length === 0;
+    banner.classList.toggle('capsize-banner--responding', caps.length > 0 && activeN === 0);
     const text = banner.querySelector('[data-capsize-text]');
     if (text) text.textContent = caps.length > 0 ? capsizeBannerText() : '';
+    const ackBtn = banner.querySelector('[data-capsize-clear]') as HTMLButtonElement | null;
+    const safeBtn = banner.querySelector('[data-capsize-safe]') as HTMLButtonElement | null;
+    if (ackBtn) ackBtn.hidden = activeN === 0 && respondingN > 0;
+    if (safeBtn) safeBtn.hidden = caps.length === 0;
   }
 
   function monitorBarHtml(): string {
@@ -398,25 +467,62 @@ export function mountApp(root: HTMLElement): void {
 
   async function acknowledgeCapsizeAlerts() {
     stopCapsizeAlarmLoop();
-    suppressCapsizeAlarmUntilMs = Date.now() + 60_000;
-    latchedCapsizeById.clear();
     try {
-      const ids = capsizedDevices().map((d) => d.deviceId);
+      const ids = capsizedDevices()
+        .filter((d) => capsizePhaseOf(d) !== 'responding')
+        .map((d) => d.deviceId);
+      const targetIds = ids.length ? ids : capsizedDevices().map((d) => d.deviceId);
       const ackedBy = managerAckName();
-      acknowledgeCapsizeLog(ids, ackedBy, 'manager');
+      acknowledgeCapsizeLog(targetIds, ackedBy, 'manager');
+      for (const id of targetIds) {
+        const prev = latchedCapsizeById.get(id);
+        latchedCapsizeById.set(id, {
+          ...(prev || { deviceId: id, online: false }),
+          rowing: {
+            ...(prev?.rowing || {}),
+            capsize: true,
+            capsizePhase: 'responding',
+            capsizeResponding: true,
+            capsizeRespondingBy: ackedBy,
+          },
+        });
+      }
       const result = (await clearCapsizeAlert(settings, undefined, {
         ackedBy,
         ackSource: 'manager',
+        ackKind: 'responding',
       })) as {
         helpNotified?: string[];
-        cleared?: string[];
+        responded?: string[];
       };
       const helped = Array.isArray(result?.helpNotified) ? result.helpNotified.length : 0;
       setStatus(
         helped > 0
-          ? `Acknowledged — help message sent to ${helped} crew device(s)`
-          : 'Acknowledged — help message sent',
+          ? `${onTheWayLine(ackedBy)} — help message sent to ${helped} crew device(s)`
+          : onTheWayLine(ackedBy),
       );
+      await pollLive();
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e), true);
+    }
+  }
+
+  async function markCapsizeCrewSafe() {
+    stopCapsizeAlarmLoop();
+    suppressCapsizeAlarmUntilMs = Date.now() + 60_000;
+    const ids = capsizedDevices().map((d) => d.deviceId);
+    latchedCapsizeById.clear();
+    try {
+      const ackedBy = managerAckName();
+      markCapsizeLogSafe(ids, ackedBy, 'manager');
+      const result = (await clearCapsizeAlert(settings, undefined, {
+        ackedBy,
+        ackSource: 'manager',
+        ackKind: 'safe',
+        notifyHelp: false,
+      })) as { cleared?: string[] };
+      const n = Array.isArray(result?.cleared) ? result.cleared.length : ids.length;
+      setStatus(n > 0 ? crewSafeLine(ackedBy) : 'No active capsize alerts');
       await pollLive();
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e), true);
@@ -546,7 +652,8 @@ export function mountApp(root: HTMLElement): void {
 
   function syncCapsizeAlarm() {
     updateCapsizeBanner();
-    if (capsizeCount() > 0 && Date.now() >= suppressCapsizeAlarmUntilMs) {
+    const unacked = capsizedDevices().some((d) => capsizePhaseOf(d) === 'active');
+    if (unacked && Date.now() >= suppressCapsizeAlarmUntilMs) {
       startCapsizeAlarmLoop();
     } else {
       stopCapsizeAlarmLoop();
@@ -617,10 +724,18 @@ export function mountApp(root: HTMLElement): void {
       recordLiveSpeedSamples(pos);
       syncCapsizeDayLog(dev, pos, { skipRemoteClear: usedServerLog });
       // Stamp map markers from latch so offline tips stay visible after stale drop.
-      if (Date.now() >= suppressCapsizeAlarmUntilMs && latchedCapsizeById.size) {
-        pos = pos.map((p) =>
-          latchedCapsizeById.has(p.deviceId) ? { ...p, capsize: true } : p,
-        );
+      if (latchedCapsizeById.size) {
+        pos = pos.map((p) => {
+          const latched = latchedCapsizeById.get(p.deviceId);
+          if (!latched) return p;
+          return {
+            ...p,
+            capsize: true,
+            capsizePhase: p.capsizePhase || latched.rowing?.capsizePhase,
+            capsizeResponding: p.capsizeResponding || latched.rowing?.capsizeResponding,
+            capsizeRespondingBy: p.capsizeRespondingBy || latched.rowing?.capsizeRespondingBy,
+          };
+        });
       }
       devices = mergeLatchedCapsizeDevices(dev);
       positions = pos;
@@ -679,6 +794,9 @@ export function mountApp(root: HTMLElement): void {
       const p = mapById.get(d.deviceId);
       const rowing = { ...(d.rowing || {}) };
       if (p?.capsize) rowing.capsize = true;
+      if (p?.capsizePhase) rowing.capsizePhase = p.capsizePhase;
+      if (p?.capsizeResponding) rowing.capsizeResponding = true;
+      if (p?.capsizeRespondingBy) rowing.capsizeRespondingBy = p.capsizeRespondingBy;
       byId.set(d.deviceId, {
         ...d,
         rowing,
@@ -699,6 +817,9 @@ export function mountApp(root: HTMLElement): void {
           gpsAgeSec: displayGpsAgeSec(p.fixAgeSec, p.lastSeenAgoSec) ?? p.fixAgeSec,
           rowing: {
             capsize: p.capsize,
+            capsizePhase: p.capsizePhase,
+            capsizeResponding: p.capsizeResponding,
+            capsizeRespondingBy: p.capsizeRespondingBy,
             strokeRate: p.strokeRate ?? null,
             strokeRateValid: p.strokeRate != null,
           },
@@ -797,15 +918,26 @@ export function mountApp(root: HTMLElement): void {
     const receiveAgo = device?.lastSeenAgoSec ?? p.lastSeenAgoSec ?? null;
     const stale = p.telemetryStale === true || isTelemetryStale(receiveAgo);
     const cap = Boolean(p.capsize);
+    const responding = cap && capsizePhaseOf(device, p) === 'responding';
     const state = gpsFixState(gpsAge);
     const coach = isCoachDevice(p) || (device != null && isCoachDevice(device));
     const accent = coach ? '#f59e0b' : liveDeviceColor(p.deviceId);
     const opacity = state === 'lost' ? 0.45 : state === 'amber' ? 0.75 : 1;
-    const capRing = cap ? 'box-shadow:0 0 0 2px #ef4444;' : '';
+    const capRing = cap
+      ? responding
+        ? 'box-shadow:0 0 0 2px #d97706;'
+        : 'box-shadow:0 0 0 2px #ef4444;'
+      : '';
     const shape = coach
       ? 'width:12px;height:12px;transform:rotate(45deg);border-radius:2px;'
       : 'width:14px;height:14px;border-radius:50%;';
-    const className = cap ? 'coach-marker capsize' : coach ? 'coach-marker coach-marker--launch' : 'coach-marker';
+    const className = cap
+      ? responding
+        ? 'coach-marker capsize capsize--responding'
+        : 'coach-marker capsize'
+      : coach
+        ? 'coach-marker coach-marker--launch'
+        : 'coach-marker';
     const staleFlag = stale
       ? `<span class="coach-marker-stale">Stale</span>`
       : '';
@@ -1126,6 +1258,7 @@ export function mountApp(root: HTMLElement): void {
 
   function crewTicketHtml(d: CrewTicketRow): string {
     const cap = Boolean(d.rowing?.capsize);
+    const responding = cap && capsizePhaseOf(d, d.mapPosition) === 'responding';
     const accent = liveDeviceColor(d.deviceId);
     const coach = isCoachDevice(d);
     const split = !coach && d.onWater ? formatSplit500(d.speedMps) : '—';
@@ -1138,17 +1271,27 @@ export function mountApp(root: HTMLElement): void {
           })()
         : null;
     const statusClass = cap
-      ? 'crew-ticket__badge--capsize'
+      ? responding
+        ? 'crew-ticket__badge--responding'
+        : 'crew-ticket__badge--capsize'
       : coach
         ? 'crew-ticket__badge--coach'
         : d.onWater
           ? 'crew-ticket__badge--water'
           : 'crew-ticket__badge--ashore';
-    const statusLabel = cap ? 'Capsize' : coach ? 'Coach' : d.onWater ? 'On water' : 'Ashore';
+    const statusLabel = cap
+      ? responding
+        ? 'On the way'
+        : 'Capsize'
+      : coach
+        ? 'Coach'
+        : d.onWater
+          ? 'On water'
+          : 'Ashore';
     const ticketClass = [
       'crew-ticket',
       coach ? 'crew-ticket--coach' : d.onWater ? 'crew-ticket--water' : 'crew-ticket--ashore',
-      cap ? 'crew-ticket--capsize' : '',
+      cap ? (responding ? 'crew-ticket--responding' : 'crew-ticket--capsize') : '',
       d.deviceId === followDeviceId ? 'crew-ticket--follow' : '',
     ]
       .filter(Boolean)
@@ -1280,7 +1423,12 @@ export function mountApp(root: HTMLElement): void {
             p && Number.isFinite(p.latitude) && Number.isFinite(p.longitude)
               ? `${p.latitude.toFixed(5)}, ${p.longitude.toFixed(5)}`
               : 'No GPS';
-          return `${deviceDisplayName(d)} · ${when} · ${loc} · not acknowledged`;
+          const phase = capsizePhaseOf(d, p);
+          const state =
+            phase === 'responding'
+              ? onTheWayLine(capsizeRespondingName(d, p))
+              : 'not acknowledged';
+          return `${deviceDisplayName(d)} · ${when} · ${loc} · ${state}`;
         });
         detail.textContent = lines.join('\n');
       }
@@ -1642,7 +1790,10 @@ export function mountApp(root: HTMLElement): void {
           >${QUIET_HOURS_MESSAGE}</div>
           <div class="capsize-banner" data-capsize-banner role="alert" ${caps > 0 ? '' : 'hidden'}>
             <span data-capsize-text>${caps > 0 ? capsizeBannerText() : ''}</span>
-            <button type="button" class="capsize-banner__clear" data-capsize-clear>Acknowledge — notify crew</button>
+            <div class="capsize-banner__actions">
+              <button type="button" class="capsize-banner__clear" data-capsize-clear>Acknowledge — on the way</button>
+              <button type="button" class="capsize-banner__safe" data-capsize-safe>Crew is safe</button>
+            </div>
           </div>
         </div>
         <section class="coach-panel coach-panel--dashboard" data-panel="dashboard" ${tab === 'dashboard' ? '' : 'hidden'}>
@@ -1813,6 +1964,7 @@ export function mountApp(root: HTMLElement): void {
     root.querySelector('[data-start-monitor]')?.addEventListener('click', () => void onStartMonitoring());
     root.querySelector('[data-stop-monitor]')?.addEventListener('click', () => void onStopMonitoring());
     root.querySelector('[data-capsize-clear]')?.addEventListener('click', () => void acknowledgeCapsizeAlerts());
+    root.querySelector('[data-capsize-safe]')?.addEventListener('click', () => void markCapsizeCrewSafe());
     root.querySelectorAll('[data-tab]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const next = (btn as HTMLElement).dataset.tab as Tab;
@@ -1955,10 +2107,13 @@ export function mountApp(root: HTMLElement): void {
           lat: -37.9391,
           lon: 175.5544,
           startedAt: now - 52 * 60_000,
-          status: 'acknowledged',
+          status: 'responding',
           ackedAt: now - 47 * 60_000,
           ackedBy: 'Coach Tom',
           ackSource: 'manager',
+          respondingAt: now - 47 * 60_000,
+          respondingBy: 'Coach Tom',
+          respondingSource: 'manager',
         },
         {
           id: 'demo-ls-remote',

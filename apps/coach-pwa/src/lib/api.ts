@@ -42,6 +42,9 @@ export type FleetDevice = {
     strokeRate?: number | null;
     strokeRateValid?: boolean;
     capsize?: boolean;
+    capsizePhase?: 'active' | 'responding';
+    capsizeResponding?: boolean;
+    capsizeRespondingBy?: string | null;
   };
   displayStrokeRate?: number | null;
   strokeRateMedian?: number | null;
@@ -58,6 +61,10 @@ export type MapPosition = {
   strokeRate?: number | null;
   strokeRateValid?: boolean;
   capsize?: boolean;
+  capsizePhase?: 'active' | 'responding';
+  capsizeResponding?: boolean;
+  capsizeRespondingBy?: string | null;
+  capsizeRespondingSource?: string | null;
   fixAgeSec?: number;
   fixMs?: number;
   lastSeenAgoSec?: number;
@@ -208,7 +215,7 @@ export async function fetchTimingLines(settings: CoachSettings): Promise<TimingL
   return (await res.json()) as TimingLinesPayload;
 }
 
-export type CapsizeAckSource = 'manager' | 'rowsafe' | 'remote';
+export type CapsizeAckSource = 'manager' | 'rowsafe' | 'remote' | 'athlete';
 
 export type CapsizeDayLogEntry = {
   id: string;
@@ -217,10 +224,13 @@ export type CapsizeDayLogEntry = {
   lat: number | null;
   lon: number | null;
   startedAt: number;
-  status: 'active' | 'acknowledged' | 'cleared';
+  status: 'active' | 'responding' | 'acknowledged' | 'cleared';
   ackedAt?: number;
   ackedBy?: string;
   ackSource?: CapsizeAckSource;
+  respondingAt?: number;
+  respondingBy?: string;
+  respondingSource?: CapsizeAckSource;
 };
 
 export async function fetchCapsizeDayLog(
@@ -237,9 +247,22 @@ export async function fetchCapsizeDayLog(
 export async function clearCapsizeAlert(
   settings: CoachSettings,
   deviceId?: string,
-  meta?: { ackedBy?: string; ackSource?: CapsizeAckSource },
+  meta?: {
+    ackedBy?: string;
+    ackSource?: CapsizeAckSource;
+    ackKind?: 'responding' | 'safe';
+    notifyHelp?: boolean;
+  },
 ) {
-  if (isDemoMode()) return { ok: true, helpNotified: [], cleared: deviceId ? [deviceId] : [] };
+  if (isDemoMode()) {
+    return {
+      ok: true,
+      helpNotified: meta?.ackKind === 'safe' ? [] : deviceId ? [deviceId] : [],
+      cleared: meta?.ackKind === 'safe' && deviceId ? [deviceId] : [],
+      responded: meta?.ackKind === 'safe' ? [] : deviceId ? [deviceId] : [],
+      ackKind: meta?.ackKind || 'responding',
+    };
+  }
   const url = `${apiBase(settings)}/api/capsize-clear`;
   const res = await fetch(url, {
     method: 'POST',
@@ -248,6 +271,8 @@ export async function clearCapsizeAlert(
       ...(deviceId ? { deviceId } : {}),
       ackedBy: meta?.ackedBy,
       ackSource: meta?.ackSource || 'manager',
+      ackKind: meta?.ackKind || 'responding',
+      ...(meta?.notifyHelp != null ? { notifyHelp: meta.notifyHelp } : {}),
     }),
   });
   if (!res.ok) throw new Error(`Clear capsize ${res.status}`);

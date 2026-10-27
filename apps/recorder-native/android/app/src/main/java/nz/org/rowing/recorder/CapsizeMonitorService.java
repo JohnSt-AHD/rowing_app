@@ -214,6 +214,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private float uprightZ = 1f;
     private boolean calibrated;
     private boolean capsizeActive;
+    /** After athlete recall, do not re-raise until the boat is upright again. */
+    private boolean capsizeRecalledHold;
     private long capsizeSinceMs;
     private long lastCapsizeUploadMs;
     private long lastCapsizeAlertSoundMs;
@@ -386,6 +388,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         loadSessionFlagsFromPrefs();
         loadStandbyFlagsFromPrefs();
         loadUprightFromPrefs();
+        loadCapsizeRecallHoldFromPrefs();
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         boolean hasSession = hasActiveSessionPrefs(prefs) || hasStandbyPrefs(prefs);
@@ -1316,6 +1319,24 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         int tiltDeg = (int) Math.round(Math.acos(clamp(dot, -1f, 1f)) * (180.0 / Math.PI));
 
         boolean tipped = dot < CAPSIZE_TIP_DOT;
+        if (capsizeRecalledHold) {
+            if (dot > 0.55f) {
+                capsizeRecalledHold = false;
+                persistCapsizeRecallHold(false);
+                capsizeSinceMs = 0;
+                if (capsizeActive) {
+                    capsizeActive = false;
+                    persistCapsizeActive(false);
+                    cancelAlertNotification();
+                }
+                final long clearT = t;
+                final float ax = lastAx;
+                final float ay = lastAy;
+                final float az = lastAz;
+                uploadExecutor.execute(() -> enqueueCapsizeClearedSample(clearT, ax, ay, az));
+            }
+            return;
+        }
         if (tipped) {
             if (capsizeSinceMs == 0) capsizeSinceMs = t;
             if (!capsizeActive && t - capsizeSinceMs >= CAPSIZE_HOLD_MS) {
@@ -1346,6 +1367,46 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .edit()
                 .putBoolean("capsizeActive", active)
                 .apply();
+    }
+
+    private void persistCapsizeRecallHold(boolean hold) {
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putBoolean("capsizeRecalledHold", hold)
+                .apply();
+    }
+
+    private void loadCapsizeRecallHoldFromPrefs() {
+        capsizeRecalledHold =
+                getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("capsizeRecalledHold", false);
+    }
+
+    public static void recallCapsize(Context ctx) {
+        ctx.getSharedPreferences(PREFS, MODE_PRIVATE)
+                .edit()
+                .putBoolean("capsizeRecalledHold", true)
+                .putBoolean("capsizeActive", false)
+                .apply();
+        CapsizeMonitorService inst = runningInstance != null ? runningInstance.get() : null;
+        if (inst != null) {
+            inst.mainHandler.post(inst::applyAthleteRecall);
+        }
+    }
+
+    private void applyAthleteRecall() {
+        boolean stillTipped = capsizeActive;
+        capsizeRecalledHold = true;
+        persistCapsizeRecallHold(true);
+        capsizeSinceMs = 0;
+        capsizeActive = false;
+        persistCapsizeActive(false);
+        cancelAlertNotification();
+        final long t = System.currentTimeMillis();
+        final float ax = lastAx;
+        final float ay = lastAy;
+        final float az = lastAz;
+        uploadExecutor.execute(() -> enqueueCapsizeRecalledSample(t, ax, ay, az, stillTipped));
+        Log.i(TAG, "Athlete recalled capsize alarm");
     }
 
     private void onCapsizeTriggered(long t, float ax, float ay, float az, int tiltDeg) {
@@ -1384,7 +1445,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         JSONObject derived = sample.optJSONObject("derived");
         if (derived == null) return false;
         // Capsize tip OR upright-clear must reach Manager even in suppress zones.
-        return derived.optBoolean("capsize", false) || derived.optBoolean("capsizeCleared", false);
+        return derived.optBoolean("capsize", false)
+                || derived.optBoolean("capsizeCleared", false)
+                || derived.optBoolean("capsizeRecalled", false);
     }
 
     private void maybeAutoFlushIngest(boolean force) {
@@ -1652,6 +1715,30 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         } catch (Exception e) {
             recordUploadResult(-1, 1, false);
             Log.e(TAG, "Capsize ingest failed", e);
+        }
+    }
+
+    /** Athlete I'm OK / false alarm — clears Manager/RowSafe sticky. */
+    private void enqueueCapsizeRecalledSample(
+            long t, float ax, float ay, float az, boolean stillTipped) {
+        try {
+            JSONObject derived = new JSONObject();
+            derived.put("capsizeRecalled", true);
+            derived.put("capsize", false);
+            if (!stillTipped) derived.put("capsizeCleared", true);
+            appendEconomyDerived(derived);
+            JSONObject motion = new JSONObject();
+            motion.put("ax", Math.round(ax * 100) / 100.0);
+            motion.put("ay", Math.round(ay * 100) / 100.0);
+            motion.put("az", Math.round(az * 100) / 100.0);
+            JSONObject sample = new JSONObject();
+            sample.put("t", t);
+            sample.put("motion", motion);
+            sample.put("derived", derived);
+            offerIngestSample(sample, true);
+            Log.i(TAG, "Capsize recall ingest queued");
+        } catch (Exception e) {
+            Log.e(TAG, "Capsize recall ingest failed", e);
         }
     }
 
@@ -2068,6 +2155,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             .putBoolean("economyActive", false)
             // Must clear with economy — leftover suppress drops all GPS uploads after stop/update.
             .putBoolean("suppressRecordingActive", false)
+            .putBoolean("capsizeRecalledHold", false)
+            .putBoolean("capsizeActive", false)
             .putInt(BOOT_RETRY_COUNT_KEY, 0)
             .apply();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -2124,6 +2213,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 .putLong("economyGpsIntervalMs", src.getLong("economyGpsIntervalMs", 3000L))
                 .putLong("economyUploadIntervalMs", src.getLong("economyUploadIntervalMs", 6000L))
                 .putBoolean("enableCapsizeDetection", src.getBoolean("enableCapsizeDetection", true))
+                .putBoolean("capsizeRecalledHold", src.getBoolean("capsizeRecalledHold", false))
                 .putBoolean("hasUpright", src.getBoolean("hasUpright", false))
                 .putFloat("uprightX", src.getFloat("uprightX", 0f))
                 .putFloat("uprightY", src.getFloat("uprightY", 0f))

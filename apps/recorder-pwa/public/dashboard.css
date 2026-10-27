@@ -663,6 +663,13 @@
   display: none !important;
 }
 
+.capsize-alert-bar--responding {
+  background: rgba(120, 53, 15, 0.96);
+  color: #ffedd5;
+  border-bottom-color: rgba(251, 191, 36, 0.45);
+  animation: none;
+}
+
 .capsize-alert-bar {
   position: sticky;
   top: 0;
@@ -699,6 +706,12 @@
   flex-wrap: wrap;
   gap: 0.5rem;
   margin: 0.65rem 0 0;
+}
+
+.device-card__on-way {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #fde68a;
 }
 
 .device-card__ack-btn {
@@ -745,6 +758,10 @@
 
 .map-popup-capsize {
   color: #dc2626;
+}
+
+.map-popup-capsize--responding {
+  color: #d97706;
 }
 
 @keyframes capsize-panel-pulse {
@@ -2222,7 +2239,12 @@ body.course-view-open {
   background: rgba(127, 29, 29, 0.28);
 }
 
-.dash-capsize-log__item--acknowledged {
+.dash-capsize-log__item--acknowledged,
+.dash-capsize-log__item--responding {
+  border-color: rgba(251, 191, 36, 0.5);
+}
+
+.dash-capsize-log__item--cleared {
   border-color: rgba(52, 211, 153, 0.4);
 }
 

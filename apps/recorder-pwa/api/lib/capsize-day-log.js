@@ -26,8 +26,12 @@ function orgKey(orgId) {
 
 function normalizeSource(source) {
   const s = String(source || '').trim().toLowerCase();
-  if (s === 'manager' || s === 'rowsafe' || s === 'remote') return s;
+  if (s === 'manager' || s === 'rowsafe' || s === 'remote' || s === 'athlete') return s;
   return 'remote';
+}
+
+function isOpenStatus(status) {
+  return status === 'active' || status === 'responding' || status === 'acknowledged';
 }
 
 function trimAckedBy(value, fallback) {
@@ -70,12 +74,12 @@ function memoryUpsertActive(orgId, input) {
   const recentAck = store.events.find(
     (e) =>
       e.deviceId === deviceId &&
-      e.status !== 'active' &&
+      e.status === 'cleared' &&
       e.ackedAt != null &&
       now - e.ackedAt < ACK_REARM_MS,
   );
   if (recentAck) return cloneEvent(recentAck);
-  const existing = store.events.find((e) => e.deviceId === deviceId && e.status === 'active');
+  const existing = store.events.find((e) => e.deviceId === deviceId && isOpenStatus(e.status));
   if (existing) {
     if (input.name) existing.name = String(input.name);
     if (input.lat != null && Number.isFinite(Number(input.lat))) existing.lat = Number(input.lat);
@@ -105,14 +109,20 @@ function memorySetStatus(orgId, deviceIds, status, ackedBy, ackSource) {
   const store = loadMemory(orgId);
   const now = Date.now();
   const ids = deviceIds ? new Set(deviceIds.map((id) => String(id))) : null;
+  const nextStatus = status === 'acknowledged' ? 'responding' : status;
   let changed = 0;
   for (const e of store.events) {
-    if (e.status !== 'active') continue;
+    if (!isOpenStatus(e.status)) continue;
     if (ids && !ids.has(e.deviceId)) continue;
-    e.status = status;
+    e.status = nextStatus;
     e.ackedAt = now;
     e.ackedBy = ackedBy;
     e.ackSource = ackSource;
+    if (nextStatus === 'responding') {
+      if (e.respondingAt == null) e.respondingAt = now;
+      e.respondingBy = ackedBy;
+      e.respondingSource = ackSource;
+    }
     changed += 1;
   }
   if (changed) saveMemory(orgId, store);
@@ -149,22 +159,28 @@ async function upsertActive(orgId, input) {
 }
 
 async function acknowledge(orgId, deviceIds, ackedBy, ackSource) {
-  const who = trimAckedBy(ackedBy, ackSource === 'rowsafe' ? 'RowSafe' : 'CrewSight Manager');
+  const who = trimAckedBy(
+    ackedBy,
+    ackSource === 'rowsafe' ? 'RowSafe' : ackSource === 'athlete' ? 'Athlete' : 'CrewSight Manager',
+  );
   const source = normalizeSource(ackSource || 'manager');
   if (db.hasDb()) {
     try {
       await db.acknowledgeCapsizeDayLog(orgId, deviceIds, who, source);
     } catch (err) {
       console.error('[capsize-day-log] ack DB failed, using memory:', err);
-      memorySetStatus(orgId, deviceIds, 'acknowledged', who, source);
+      memorySetStatus(orgId, deviceIds, 'responding', who, source);
     }
     return;
   }
-  memorySetStatus(orgId, deviceIds, 'acknowledged', who, source);
+  memorySetStatus(orgId, deviceIds, 'responding', who, source);
 }
 
 async function markCleared(orgId, deviceIds, ackedBy, ackSource) {
-  const who = trimAckedBy(ackedBy, 'RowSafe or another Manager');
+  const who = trimAckedBy(
+    ackedBy,
+    ackSource === 'athlete' ? 'Athlete' : 'RowSafe or another Manager',
+  );
   const source = normalizeSource(ackSource || 'remote');
   if (db.hasDb()) {
     try {

@@ -201,6 +201,13 @@ public class CapsizeMonitorPlugin extends Plugin {
         }
     }
 
+    /** Athlete recall: stop native siren and hold re-arm until upright. */
+    @PluginMethod
+    public void recallCapsize(PluginCall call) {
+        CapsizeMonitorService.recallCapsize(getContext());
+        call.resolve();
+    }
+
     /** Clear sticky crew/help notification after in-app Dismiss (server DELETE is done by WebView). */
     @PluginMethod
     public void dismissCrewMessage(PluginCall call) {

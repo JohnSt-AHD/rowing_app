@@ -173,9 +173,20 @@ globalThis.__rnzIngestSessions = sessions;
 const capsizeClearAt = globalThis.__rnzCapsizeClearAt ?? new Map();
 globalThis.__rnzCapsizeClearAt = capsizeClearAt;
 /** Sticky monitor capsize alerts for non-DB / same-instance operation. */
-/** @type {Map<string, { active: true, atMs: number }>} */
+/** @type {Map<string, {
+ *   active: true,
+ *   atMs: number,
+ *   phase?: 'active' | 'responding',
+ *   respondingBy?: string | null,
+ *   respondingSource?: string | null,
+ *   respondingAt?: number | null,
+ * }>} */
 const stickyCapsizeByDevice = globalThis.__rnzStickyCapsizeByDevice ?? new Map();
 globalThis.__rnzStickyCapsizeByDevice = stickyCapsizeByDevice;
+/** After athlete recall, ignore tip samples until an upright (capsizeCleared) sample. */
+/** @type {Map<string, boolean>} */
+const capsizeHoldUntilUpright = globalThis.__rnzCapsizeHoldUntilUpright ?? new Map();
+globalThis.__rnzCapsizeHoldUntilUpright = capsizeHoldUntilUpright;
 /** @type {Map<string, GpsSmoothState>} */
 const gpsTracks = globalThis.__rnzGpsTracks ?? new Map();
 globalThis.__rnzGpsTracks = gpsTracks;
@@ -249,12 +260,82 @@ function raiseStickyCapsizeAlert(orgId, deviceId, eventMs) {
   const wasActive = Boolean(prev?.active);
   const t = Number.isFinite(Number(eventMs)) ? Number(eventMs) : Date.now();
   const prevAt = prev?.active && Number.isFinite(prev.atMs) ? prev.atMs : null;
-  // Bump atMs on each new capsize sample so RowSafe can re-alert after acknowledge.
+  const keepResponding = wasActive && prev?.phase === 'responding';
+  // Bump atMs on each new tip so RowSafe can re-alert after crew-safe, but keep
+  // an in-flight "on the way" claim (do not collapse back to unacked).
   stickyCapsizeByDevice.set(key, {
     active: true,
     atMs: prevAt != null ? Math.max(prevAt, t) : t,
+    phase: keepResponding ? 'responding' : 'active',
+    respondingBy: keepResponding ? prev.respondingBy || null : null,
+    respondingSource: keepResponding ? prev.respondingSource || null : null,
+    respondingAt: keepResponding ? prev.respondingAt || null : null,
   });
   return !wasActive;
+}
+
+function markStickyCapsizeResponding(orgId, deviceId, meta = {}) {
+  const now = Date.now();
+  const by = String(meta.ackedBy || meta.respondingBy || '').trim() || null;
+  const source = String(meta.ackSource || meta.respondingSource || '').trim() || null;
+  const apply = (key) => {
+    const prev = stickyCapsizeByDevice.get(key);
+    stickyCapsizeByDevice.set(key, {
+      active: true,
+      atMs: prev?.atMs != null && Number.isFinite(prev.atMs) ? prev.atMs : now,
+      phase: 'responding',
+      respondingBy: by,
+      respondingSource: source,
+      respondingAt: now,
+    });
+  };
+  if (deviceId) {
+    apply(orgDeviceKey(orgId, deviceId));
+    return;
+  }
+  const prefix = `${orgId}:`;
+  for (const key of [...stickyCapsizeByDevice.keys()]) {
+    if (key.startsWith(prefix) && stickyCapsizeByDevice.get(key)?.active) apply(key);
+  }
+}
+
+function capsizeAlertPhase(alert) {
+  if (!alert) return 'active';
+  if (alert.phase === 'responding' || alert.responding === true) return 'responding';
+  return 'active';
+}
+
+function stampCapsizeAlertOnPosition(position, alert) {
+  if (!position || !alert) return position;
+  const phase = capsizeAlertPhase(alert);
+  const by = String(alert.respondingBy || '').trim() || null;
+  position.capsize = true;
+  position.capsizePhase = phase;
+  position.capsizeResponding = phase === 'responding';
+  position.capsizeRespondingBy = by;
+  position.capsizeRespondingSource = String(alert.respondingSource || '').trim() || null;
+  position.capsizeRespondingAt =
+    alert.respondingAt != null && Number.isFinite(Number(alert.respondingAt))
+      ? Number(alert.respondingAt)
+      : null;
+  return position;
+}
+
+function normalizeAckKind(options = {}) {
+  const raw = String(options.ackKind || options.kind || '').trim().toLowerCase();
+  if (raw === 'safe' || raw === 'cleared' || raw === 'crew-safe' || raw === 'crewsafe') {
+    return 'safe';
+  }
+  if (
+    raw === 'responding' ||
+    raw === 'on-the-way' ||
+    raw === 'ontheway' ||
+    raw === 'acknowledged'
+  ) {
+    return 'responding';
+  }
+  if (String(options.ackSource || '').trim().toLowerCase() === 'athlete') return 'safe';
+  return 'responding';
 }
 
 function clearStickyCapsizeAlert(orgId, deviceId) {
@@ -494,6 +575,48 @@ function sampleHasCapsize(sample) {
 function sampleHasCapsizeCleared(sample) {
   const d = sample?.derived || {};
   return d.capsizeCleared === true;
+}
+
+function sampleHasCapsizeRecalled(sample) {
+  const d = sample?.derived || {};
+  return d.capsizeRecalled === true;
+}
+
+function getCapsizeHoldUntilUprightMem(orgId, deviceId) {
+  return Boolean(capsizeHoldUntilUpright.get(orgDeviceKey(orgId, deviceId)));
+}
+
+function setCapsizeHoldUntilUprightMem(orgId, deviceId, hold) {
+  const key = orgDeviceKey(orgId, deviceId);
+  if (hold) capsizeHoldUntilUpright.set(key, true);
+  else capsizeHoldUntilUpright.delete(key);
+}
+
+async function syncCapsizeHoldUntilUpright(orgId, deviceId, hold) {
+  setCapsizeHoldUntilUprightMem(orgId, deviceId, hold);
+  if (db.hasDb() && typeof db.setCapsizeHoldUntilUpright === 'function') {
+    try {
+      await db.setCapsizeHoldUntilUpright(orgId, deviceId, hold);
+    } catch (err) {
+      console.error('[ingest-store] capsize hold persist failed:', err);
+    }
+  }
+}
+
+async function isCapsizeHoldUntilUpright(orgId, deviceId) {
+  if (getCapsizeHoldUntilUprightMem(orgId, deviceId)) return true;
+  if (db.hasDb() && typeof db.getCapsizeHoldUntilUpright === 'function') {
+    try {
+      const hold = await db.getCapsizeHoldUntilUpright(orgId, deviceId);
+      if (hold) {
+        setCapsizeHoldUntilUprightMem(orgId, deviceId, true);
+        return true;
+      }
+    } catch (err) {
+      console.error('[ingest-store] capsize hold read failed:', err);
+    }
+  }
+  return false;
 }
 
 /**
@@ -1721,8 +1844,16 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
     };
   }
   // Phone may send capsizeCleared when upright (local notification UX only).
-  // Sticky Manager/dashboard alert stays until Acknowledge (or 12h max-age).
+  // Sticky Manager/RowSafe alert stays until crew-safe (or 12h max-age).
+  // Coach "on the way" keeps sticky visible. Athlete recall is crew-safe.
   let maxCapsizeT = null;
+  const athleteRecalled =
+    !skipSuppress && clean.samples.some((s) => sampleHasCapsizeRecalled(s));
+  const uprightClearSample = clean.samples.some((s) => sampleHasCapsizeCleared(s));
+  if (athleteRecalled) {
+    await syncCapsizeHoldUntilUpright(orgId, deviceId, true);
+  }
+  const holdUntilUpright = athleteRecalled || (await isCapsizeHoldUntilUpright(orgId, deviceId));
   const clearAt = getCapsizeClearAt(scopedDevice);
   const orgClearAt = getCapsizeClearAt(orgDeviceKey(orgId, '*'));
   let dbClearAt = 0;
@@ -1737,6 +1868,7 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   const latestClear = Math.max(clearAt || 0, orgClearAt || 0, dbClearAt || 0);
   for (const sample of clean.samples) {
     if (!sampleHasCapsize(sample)) continue;
+    if (athleteRecalled || holdUntilUpright) continue;
     const t = Number(sample.t);
     if (latestClear) {
       // Ignore tips at or before Acknowledge, and wall-clock cooldown after ack.
@@ -1851,6 +1983,25 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
     console.error('[ingest-store] DB persist failed:', err);
     metrics.persistFailures++;
     metrics.lastPersistError = String(persistError).slice(0, 300);
+  }
+
+  if (athleteRecalled) {
+    try {
+      await clearCapsizeAlert(orgId, String(deviceId), {
+        notifyHelp: false,
+        ackedBy: 'Crew OK — false alarm',
+        ackSource: 'athlete',
+        ackKind: 'safe',
+      });
+    } catch (err) {
+      console.error('[ingest-store] athlete capsize recall failed:', err);
+    }
+    // Recalled while already upright — re-arm immediately so a later tip can fire.
+    if (uprightClearSample) {
+      await syncCapsizeHoldUntilUpright(orgId, deviceId, false);
+    }
+  } else if (uprightClearSample && holdUntilUpright) {
+    await syncCapsizeHoldUntilUpright(orgId, deviceId, false);
   }
 
   if (persisted && db.hasDb()) {
@@ -2063,7 +2214,11 @@ async function filterSamplesInsideSuppressZones(orgId, scopedDevice, samples) {
       Number.isFinite(lon) &&
       findSuppressRecordingAt(lat, lon, suppressZones)
     ) {
-      if (!sampleHasCapsize(sample) && !sampleHasCapsizeCleared(sample)) {
+      if (
+        !sampleHasCapsize(sample) &&
+        !sampleHasCapsizeCleared(sample) &&
+        !sampleHasCapsizeRecalled(sample)
+      ) {
         dropped++;
         continue;
       }
@@ -2249,9 +2404,13 @@ function forceCapsizeAlertsOnDevices(byDevice, alerts, orgId, windowMs, onlineMs
       );
       byDevice.set(id, dev);
     }
+    const phase = capsizeAlertPhase(alert);
     dev.rowing = {
       ...(dev.rowing || {}),
       capsize: true,
+      capsizePhase: phase,
+      capsizeResponding: phase === 'responding',
+      capsizeRespondingBy: String(alert?.respondingBy || '').trim() || null,
     };
     dev.capsizeAlertAtMs = alert?.atMs ?? null;
   }
@@ -3055,14 +3214,15 @@ function forceCapsizeAlertsOnPositions(positions, alerts, opts = {}) {
   const list = Array.isArray(positions) ? positions : [];
   const byId = new Map(list.map((p) => [String(p.deviceId), p]));
   for (const p of list) {
-    if (alerts.has(p.deviceId) || alerts.has(String(p.deviceId))) p.capsize = true;
+    const alert = alerts.get(p.deviceId) || alerts.get(String(p.deviceId));
+    if (alert) stampCapsizeAlertOnPosition(p, alert);
   }
   for (const [deviceId, alert] of alerts) {
     const id = String(deviceId);
     if (alert?.atMs != null && now - alert.atMs > CAPSIZE_ALERT_MAX_AGE_MS) continue;
     const existing = byId.get(id);
     if (existing) {
-      existing.capsize = true;
+      stampCapsizeAlertOnPosition(existing, alert);
       continue;
     }
     const gps =
@@ -3083,6 +3243,14 @@ function forceCapsizeAlertsOnPositions(positions, alerts, opts = {}) {
       lastSeenAgoSec: Math.max(0, Math.round((now - lastSeenMs) / 1000)),
       online: now - lastSeenMs <= onlineMs,
       capsize: true,
+      capsizePhase: capsizeAlertPhase(alert),
+      capsizeResponding: capsizeAlertPhase(alert) === 'responding',
+      capsizeRespondingBy: String(alert?.respondingBy || '').trim() || null,
+      capsizeRespondingSource: String(alert?.respondingSource || '').trim() || null,
+      capsizeRespondingAt:
+        alert?.respondingAt != null && Number.isFinite(Number(alert.respondingAt))
+          ? Number(alert.respondingAt)
+          : null,
       strokeRate: null,
       strokeRateValid: false,
       tiltDeg: null,
@@ -3161,13 +3329,16 @@ async function listCapsizeAlertDeviceIds(orgId, deviceId) {
 }
 
 /**
- * Dismiss capsize alert on the monitor (per device or all currently alerting).
- * By default notifies each cleared device with the help-on-the-way crew message first.
+ * Coach / RowSafe / athlete ack for a sticky capsize.
+ * - responding: help is on the way. Sticky stays visible (downgraded).
+ * - safe: crew is OK / false alarm. Clears sticky.
  * @param {string} [deviceId]
- * @param {{ notifyHelp?: boolean, ackedBy?: string, ackSource?: string }} [options]
+ * @param {{ notifyHelp?: boolean, ackedBy?: string, ackSource?: string, ackKind?: string }} [options]
  */
 async function clearCapsizeAlert(orgId, deviceId, options = {}) {
-  const notifyHelp = options?.notifyHelp !== false;
+  const ackKind = normalizeAckKind(options);
+  const ackSource = options?.ackSource || 'manager';
+  const notifyHelp = options?.notifyHelp != null ? options.notifyHelp !== false : ackKind !== 'safe';
   const now = Date.now();
   const toClear = await listCapsizeAlertDeviceIds(orgId, deviceId);
   /** @type {string[]} */
@@ -3186,14 +3357,47 @@ async function clearCapsizeAlert(orgId, deviceId, options = {}) {
 
   const ackIds = deviceId ? [String(deviceId)] : toClear;
   try {
-    await capsizeDayLog.acknowledge(
-      orgId,
-      ackIds.length ? ackIds : null,
-      options?.ackedBy,
-      options?.ackSource || 'manager',
-    );
+    if (ackKind === 'safe') {
+      await capsizeDayLog.markCleared(
+        orgId,
+        ackIds.length ? ackIds : null,
+        options?.ackedBy,
+        ackSource,
+      );
+    } else {
+      await capsizeDayLog.acknowledge(
+        orgId,
+        ackIds.length ? ackIds : null,
+        options?.ackedBy,
+        ackSource,
+      );
+    }
   } catch (err) {
     console.error('[ingest-store] capsize day-log ack failed:', err);
+  }
+
+  if (ackKind === 'safe' && ackSource === 'athlete') {
+    for (const id of ackIds) {
+      await syncCapsizeHoldUntilUpright(orgId, id, true);
+    }
+  }
+
+  if (ackKind === 'responding') {
+    if (deviceId) {
+      const id = String(deviceId);
+      markStickyCapsizeResponding(orgId, id, { ackedBy: options?.ackedBy, ackSource });
+      if (db.hasDb() && typeof db.markCapsizeRespondingDb === 'function') {
+        await db.markCapsizeRespondingDb(orgId, id, options?.ackedBy, ackSource);
+      }
+      return { responded: [id], cleared: [], clearedAt: null, helpNotified, ackKind };
+    }
+    for (const id of toClear) {
+      markStickyCapsizeResponding(orgId, id, { ackedBy: options?.ackedBy, ackSource });
+    }
+    if (db.hasDb() && typeof db.markCapsizeRespondingDb === 'function') {
+      await db.markCapsizeRespondingDb(orgId, undefined, options?.ackedBy, ackSource);
+    }
+    return { responded: toClear, cleared: [], clearedAt: null, helpNotified, ackKind };
   }
 
   if (deviceId) {
@@ -3201,7 +3405,7 @@ async function clearCapsizeAlert(orgId, deviceId, options = {}) {
     setCapsizeClear(orgDeviceKey(orgId, id));
     clearStickyCapsizeAlert(orgId, id);
     if (db.hasDb()) await db.clearCapsizeAlertDb(orgId, id);
-    return { cleared: [id], clearedAt: now, helpNotified };
+    return { responded: [], cleared: [id], clearedAt: now, helpNotified, ackKind };
   }
 
   // Fast path: do not call listDevices here (can 504 and leave alerts uncleared).
@@ -3210,7 +3414,7 @@ async function clearCapsizeAlert(orgId, deviceId, options = {}) {
   setCapsizeClear(orgDeviceKey(orgId, '*'));
   clearStickyCapsizeAlert(orgId);
   if (db.hasDb()) await db.clearCapsizeAlertDb(orgId);
-  return { cleared: toClear, clearedAt: now, helpNotified };
+  return { responded: [], cleared: toClear, clearedAt: now, helpNotified, ackKind };
 }
 
 /** Recent motion samples per device (in-memory ingest). */
@@ -3491,12 +3695,26 @@ async function enrichTraccarSnapshotCapsize(orgId, snapshot, _onlineMs) {
     const alert = capsizeAlerts.get(uid);
     if (!alert) continue;
     if (alert.atMs != null && now - alert.atMs > CAPSIZE_ALERT_MAX_AGE_MS) continue;
+    const phase = capsizeAlertPhase(alert);
+    const by = String(alert.respondingBy || '').trim() || null;
     p.attributes = {
       ...(p.attributes || {}),
       capsize: true,
       alarm: 'capsize',
       capsizeAlertAt: alert.atMs ?? null,
+      capsizePhase: phase,
+      capsizeResponding: phase === 'responding',
+      capsizeRespondingBy: by,
+      capsizeRespondingSource: String(alert.respondingSource || '').trim() || null,
+      capsizeRespondingAt:
+        alert.respondingAt != null && Number.isFinite(Number(alert.respondingAt))
+          ? Number(alert.respondingAt)
+          : null,
     };
+    p.capsize = true;
+    p.capsizePhase = phase;
+    p.capsizeResponding = phase === 'responding';
+    p.capsizeRespondingBy = by;
   }
   return snapshot;
 }

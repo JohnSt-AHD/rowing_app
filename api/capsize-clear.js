@@ -29,14 +29,18 @@ module.exports = async function handler(req, res) {
       ? String(body?.deviceId || req.query?.deviceId)
       : undefined;
 
-  // Default on: send help-on-the-way crew message before clearing sticky alert.
-  // Escape hatch: { notifyHelp: false }.
-  const notifyHelp = body?.notifyHelp !== false;
+  // Responding acks send help-on-the-way by default; crew-safe does not.
+  // Escape hatch: { notifyHelp: false } or { notifyHelp: true }.
+  const notifyHelp =
+    body && Object.prototype.hasOwnProperty.call(body, 'notifyHelp')
+      ? body.notifyHelp !== false
+      : undefined;
 
   const result = await store.clearCapsizeAlert(org.id, deviceId, {
-    notifyHelp,
+    ...(notifyHelp != null ? { notifyHelp } : {}),
     ackedBy: body?.ackedBy,
     ackSource: body?.ackSource,
+    ackKind: body?.ackKind || body?.kind,
   });
   return res.status(200).json({ ok: true, ...result });
 };

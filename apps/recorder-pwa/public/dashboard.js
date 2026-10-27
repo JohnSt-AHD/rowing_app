@@ -964,18 +964,33 @@ function stopCapsizeAlarmLoop() {
   stopCapsizeAlarmSound();
 }
 
+function deviceCapsizePhase(d) {
+  if (d?.rowing?.capsizePhase === 'responding' || d?.rowing?.capsizeResponding) return 'responding';
+  if (d?.rowing?.capsize) return 'active';
+  return 'none';
+}
+
+function onTheWayLabel(name) {
+  const who = String(name || '').trim();
+  return who ? `${who} is on the way` : 'A coach is on the way';
+}
+
 function updateCapsizeBanner(devices) {
   const bar = $('#capsizeAlertBar');
   const text = $('#capsizeAlertText');
+  const hint = bar?.querySelector('.capsize-alert-bar__hint');
   const clearBtn = $('#clearCapsizeBtn');
   const helpBtn = $('#capsizeHelpBtn');
   if (!bar || !text) return;
   const capsized = (devices || []).filter((d) => d.rowing?.capsize);
   lastCapsizedDeviceIds = capsized.map((d) => d.deviceId).filter(Boolean);
+  const active = capsized.filter((d) => deviceCapsizePhase(d) !== 'responding');
+  const responding = capsized.filter((d) => deviceCapsizePhase(d) === 'responding');
   if (!capsized.length) {
     stopCapsizeAlarmLoop();
     bar.hidden = true;
     bar.setAttribute('aria-hidden', 'true');
+    bar.classList.remove('capsize-alert-bar--responding');
     text.textContent = '';
     if (clearBtn) clearBtn.disabled = false;
     if (helpBtn) helpBtn.disabled = true;
@@ -983,40 +998,72 @@ function updateCapsizeBanner(devices) {
   }
   bar.hidden = false;
   bar.setAttribute('aria-hidden', 'false');
+  bar.classList.toggle('capsize-alert-bar--responding', active.length === 0);
+  const named = responding.map((d) => d.rowing?.capsizeRespondingBy).find(Boolean);
   text.textContent = capsized
     .map((d) => {
       const tilt = d.rowing?.tiltDeg != null ? ` (${d.rowing.tiltDeg}° tilt)` : '';
-      return `${d.deviceId}${tilt}`;
+      const phase = deviceCapsizePhase(d) === 'responding' ? ` · ${onTheWayLabel(d.rowing?.capsizeRespondingBy)}` : '';
+      return `${d.deviceId}${tilt}${phase}`;
     })
     .join(', ');
+  if (hint) {
+    hint.textContent =
+      active.length === 0
+        ? `${onTheWayLabel(named)}. Tap Crew safe when the crew is OK.`
+        : 'Tap On the way when help is coming. Tap Crew safe when the crew is OK.';
+  }
   if (clearBtn) clearBtn.disabled = false;
-  if (helpBtn) helpBtn.disabled = false;
-  if (Date.now() >= suppressCapsizeAlarmUntilMs) startCapsizeAlarmLoop();
+  if (helpBtn) helpBtn.disabled = active.length === 0;
+  if (active.length && Date.now() >= suppressCapsizeAlarmUntilMs) startCapsizeAlarmLoop();
   else stopCapsizeAlarmLoop();
 }
 
-async function sendHelpOnWay() {
+async function postCapsizeAck({ deviceId, ackKind }) {
+  const body = {
+    ...(deviceId ? { deviceId } : {}),
+    ackedBy: 'CrewSight Manager',
+    ackSource: 'manager',
+    ackKind,
+    ...(ackKind === 'safe' ? { notifyHelp: false } : {}),
+  };
+  const res = await fetch(`${apiBase()}/api/capsize-clear`, {
+    method: 'POST',
+    headers: { ...headers(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    if (res.status === 401) {
+      throw new Error('Unauthorized — ingest token must match INGEST_TOKEN.');
+    }
+    throw new Error(`${res.status} ${text.slice(0, 120)}`);
+  }
+  return res.json();
+}
+
+async function sendHelpOnWay(deviceId) {
+  stopCapsizeAlarmLoop();
   const btn = $('#capsizeHelpBtn');
   if (btn) btn.disabled = true;
   const status = $('#pollStatus');
-  const send =
-    typeof window.dashboardSendHelpOnWay === 'function' ? window.dashboardSendHelpOnWay : null;
   try {
-    if (!send) {
-      throw new Error('Messaging not loaded — refresh the page.');
-    }
-    if (!lastCapsizedDeviceIds.length) {
+    if (!deviceId && !lastCapsizedDeviceIds.length) {
       throw new Error('No active capsize alert.');
     }
-    const { count, deviceIds } = await send(lastCapsizedDeviceIds);
+    const data = await postCapsizeAck({ deviceId, ackKind: 'responding' });
+    const helped = Array.isArray(data.helpNotified) ? data.helpNotified.length : 0;
     if (status) {
-      const names = deviceIds.join(', ');
-      status.textContent = `Help message sent to ${names} (${count}). Appears on device HUD within ~15s.`;
+      status.textContent =
+        helped > 0
+          ? `${onTheWayLabel('CrewSight Manager')} — help message sent to ${helped} crew device(s).`
+          : onTheWayLabel('CrewSight Manager');
       status.classList.remove('err');
     }
+    await poll();
   } catch (e) {
     if (status) {
-      status.textContent = `Help message failed: ${e instanceof Error ? e.message : String(e)}`;
+      status.textContent = `On-the-way failed: ${e instanceof Error ? e.message : String(e)}`;
       status.classList.add('err');
     }
   } finally {
@@ -1031,41 +1078,17 @@ async function clearCapsizeAlert(deviceId) {
   if (btn) btn.disabled = true;
   const status = $('#pollStatus');
   try {
-    const body = {
-      ...(deviceId ? { deviceId } : {}),
-      ackedBy: 'Device monitor',
-      ackSource: 'manager',
-    };
-    const res = await fetch(`${apiBase()}/api/capsize-clear`, {
-      method: 'POST',
-      headers: { ...headers(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      if (res.status === 401) {
-        throw new Error('Unauthorized — ingest token must match INGEST_TOKEN.');
-      }
-      throw new Error(`${res.status} ${text.slice(0, 120)}`);
-    }
-    const data = await res.json();
+    const data = await postCapsizeAck({ deviceId, ackKind: 'safe' });
     const n = data.cleared?.length ?? 0;
-    const helped = Array.isArray(data.helpNotified) ? data.helpNotified.length : 0;
     if (status) {
-      if (n > 0) {
-        status.textContent =
-          helped > 0
-            ? `Acknowledged for ${n} device(s) — help message sent to ${helped}.`
-            : `Acknowledged for ${n} device(s) — help message sent.`;
-      } else {
-        status.textContent = 'No active capsize alerts to clear.';
-      }
+      status.textContent =
+        n > 0 ? `Crew safe for ${n} device(s).` : 'No active capsize alerts to clear.';
       status.classList.remove('err');
     }
     await poll();
   } catch (e) {
     if (status) {
-      status.textContent = `Clear capsize failed: ${e instanceof Error ? e.message : String(e)}`;
+      status.textContent = `Crew safe failed: ${e instanceof Error ? e.message : String(e)}`;
       status.classList.add('err');
     }
   } finally {
@@ -1098,6 +1121,7 @@ function updateRowingSummary(devices) {
   }
 
   const capsized = list.filter((d) => d.rowing?.capsize);
+  const unacked = capsized.filter((d) => deviceCapsizePhase(d) !== 'responding');
   if (!capsized.length) {
     setStatValue(capsizeEl, 'Clear');
     capsizeEl.classList.remove('hub-stats-item--danger', 'hub-stat--capsize-active');
@@ -1108,11 +1132,11 @@ function updateRowingSummary(devices) {
     const label = capsizeEl.querySelector('.hub-stat-label');
     if (label) label.textContent = 'Capsize';
   } else {
-    setStatValue(capsizeEl, 'Acknowledge');
+    setStatValue(capsizeEl, unacked.length ? 'CAPSIZE' : 'On the way');
     capsizeEl.classList.add('hub-stats-item--danger', 'hub-stat--capsize-active');
     if (capsizeEl instanceof HTMLButtonElement) {
       capsizeEl.disabled = false;
-      capsizeEl.title = `Acknowledge ${capsized.length} capsize alert(s) and notify crew`;
+      capsizeEl.title = 'Mark crew safe for active capsize alerts';
     }
     const label = capsizeEl.querySelector('.hub-stat-label');
     if (label) {
@@ -1350,8 +1374,10 @@ function popupHtml(p) {
       ? `<br>Stroke rate: <strong>${Math.round(spmVal)} spm</strong>`
       : '';
   const tilt = p.tiltDeg != null ? `<br>Tilt: ${p.tiltDeg}°` : '';
-  const cap = p.capsize
-    ? `<br><strong class="map-popup-capsize">⚠ CAPSIZE — boat tipped</strong>`
+    const cap = p.capsize
+      ? p.capsizePhase === 'responding' || p.capsizeResponding
+        ? `<br><strong class="map-popup-capsize map-popup-capsize--responding">⚠ CAPSIZE — ${esc(onTheWayLabel(p.capsizeRespondingBy))}</strong>`
+        : `<br><strong class="map-popup-capsize">⚠ CAPSIZE — boat tipped</strong>`
     : '';
   const hb =
     p.heartbeatAgeSec != null
@@ -1498,6 +1524,9 @@ function mergeMapWithDeviceGps(devices, positions) {
       strokeRate: prev?.strokeRate ?? d.rowing?.strokeRate ?? null,
       strokeRateValid: prev?.strokeRateValid ?? d.rowing?.strokeRateValid ?? false,
       capsize: prev?.capsize ?? d.rowing?.capsize ?? false,
+      capsizePhase: prev?.capsizePhase ?? d.rowing?.capsizePhase,
+      capsizeResponding: prev?.capsizeResponding ?? d.rowing?.capsizeResponding,
+      capsizeRespondingBy: prev?.capsizeRespondingBy ?? d.rowing?.capsizeRespondingBy,
       tiltDeg: prev?.tiltDeg ?? d.rowing?.tiltDeg ?? null,
       heartbeatRateHz: prev?.heartbeatRateHz ?? d.heartbeat?.rateHz ?? 0,
       heartbeatAgeSec: prev?.heartbeatAgeSec ?? d.heartbeat?.ageSec ?? null,
@@ -1568,6 +1597,9 @@ function enrichDeviceWithMapPosition(d, p) {
   }
   const rowing = { ...(d.rowing || {}) };
   if (p.capsize) rowing.capsize = true;
+  if (p.capsizePhase) rowing.capsizePhase = p.capsizePhase;
+  if (p.capsizeResponding) rowing.capsizeResponding = true;
+  if (p.capsizeRespondingBy) rowing.capsizeRespondingBy = p.capsizeRespondingBy;
   if (p.strokeRateValid && p.strokeRate != null) {
     rowing.strokeRate = p.strokeRate;
     rowing.strokeRateValid = true;
@@ -1621,6 +1653,9 @@ function mapPositionToDeviceCard(p, windowSec) {
       strokeRate: p.strokeRate ?? null,
       strokeRateValid: Boolean(p.strokeRateValid),
       capsize: Boolean(p.capsize),
+      capsizePhase: p.capsizePhase,
+      capsizeResponding: p.capsizeResponding,
+      capsizeRespondingBy: p.capsizeRespondingBy,
       tiltDeg: p.tiltDeg ?? null,
       calibrated: false,
     },
@@ -1839,8 +1874,15 @@ function renderDevice(d) {
       ${
         rowing.capsize
           ? `<div class="device-card__capsize-actions">
+              ${
+                deviceCapsizePhase(d) === 'responding'
+                  ? `<span class="device-card__on-way">${esc(onTheWayLabel(rowing.capsizeRespondingBy))}</span>`
+                  : `<button type="button" class="hub-btn device-card__ack-btn" data-respond-capsize="${esc(d.deviceId)}">
+                On the way
+              </button>`
+              }
               <button type="button" class="hub-btn device-card__ack-btn" data-ack-capsize="${esc(d.deviceId)}">
-                Acknowledge — notify crew
+                Crew is safe
               </button>
             </div>`
           : ''
@@ -2120,9 +2162,18 @@ function init() {
   });
   $('#capsizeHelpBtn')?.addEventListener('click', () => void sendHelpOnWay());
   $('#devicesGrid')?.addEventListener('click', (e) => {
-    const btn = e.target instanceof Element ? e.target.closest('[data-ack-capsize]') : null;
-    if (!btn) return;
-    const deviceId = btn.getAttribute('data-ack-capsize');
+    const target = e.target instanceof Element ? e.target : null;
+    const safeBtn = target?.closest('[data-ack-capsize]');
+    const respondBtn = target?.closest('[data-respond-capsize]');
+    if (respondBtn) {
+      const deviceId = respondBtn.getAttribute('data-respond-capsize');
+      if (deviceId) {
+        void sendHelpOnWay(deviceId);
+      }
+      return;
+    }
+    if (!safeBtn) return;
+    const deviceId = safeBtn.getAttribute('data-ack-capsize');
     if (deviceId) void clearCapsizeAlert(deviceId);
   });
   $('#applyBtn')?.addEventListener('click', () => {
