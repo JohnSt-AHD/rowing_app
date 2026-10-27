@@ -599,7 +599,7 @@ function deviceSummaryLine(d) {
     parts.push('No GPS');
   }
   if (d.battery?.pct != null) parts.push(`${fmtBatteryPct(d.battery.pct)} bat`);
-  if (!isDeviceDataStale(d) && window.RowingSpeed) {
+  if (!isCoachMapItem(d) && !isDeviceDataStale(d) && window.RowingSpeed) {
     const paceMps = d.displaySpeedMps ?? d.pathSpeedMps ?? null;
     if (paceMps != null && paceMps >= 0.25) {
       parts.push(
@@ -613,7 +613,7 @@ function deviceSummaryLine(d) {
     }
   }
   if (d.rowing?.capsize) parts.push('CAPSIZE');
-  else {
+  else if (!isCoachMapItem(d)) {
     const spm = strokeRateForDevice(d);
     if (spm != null) parts.push(fmtSpm(spm));
   }
@@ -903,7 +903,7 @@ function updateRowingSummary(devices) {
 
   const list = devices || [];
   const spms = list
-    .filter((d) => !isDeviceDataStale(d))
+    .filter((d) => !isCoachMapItem(d) && !isDeviceDataStale(d))
     .map((d) => strokeRateForDevice(d))
     .filter((v) => v != null && v > 0);
 
@@ -1160,7 +1160,7 @@ function popupHtml(p) {
   const coachNote = isCoachMapItem(p)
     ? '<br><span class="map-popup-coach">Coach / Manager tablet</span>'
     : '';
-  const hr = p.hr != null ? `<br>HR: ${p.hr} bpm` : '';
+  const hr = !isCoachMapItem(p) && p.hr != null ? `<br>HR: ${p.hr} bpm` : '';
   const spmVal = strokeRateForPosition(p);
   const spm =
     spmVal != null
@@ -1561,7 +1561,9 @@ function renderDevice(d) {
     typeof window.dashboardGetRegattaMessage === 'function'
       ? window.dashboardGetRegattaMessage(d.deviceId)
       : null;
-  const displaySpm = strokeRateForDevice(d);
+  const coach = isCoachMapItem(d);
+  const displaySpm = coach ? null : strokeRateForDevice(d);
+  const hrShow = coach ? { present: false, rateHz: 0, count: 0, last: null, ageSec: null } : hr;
 
   card.innerHTML = `
     <div class="device-head">
@@ -1592,15 +1594,15 @@ function renderDevice(d) {
           <div class="rate">${fmtBatteryPct(battery.pct)}</div>
           <div class="detail">${battery.ageSec != null ? `Reported ${fmtAgoSec(battery.ageSec)}` : 'Not reported'}</div>
         </div>
-        <div class="sensor ${displaySpm != null ? 'present' : motion.present ? 'present' : 'absent'}">
+        <div class="sensor ${displaySpm != null ? 'present' : !coach && motion.present ? 'present' : 'absent'}">
           <div class="name">Stroke rate</div>
           <div class="rate">${displaySpm != null ? fmtSpm(displaySpm) : '—'}</div>
-          <div class="detail">${strokeDetail(d)}</div>
+          <div class="detail">${coach ? 'Coach location only' : strokeDetail(d)}</div>
         </div>
-        <div class="sensor ${hr.present ? 'present' : 'absent'}">
+        <div class="sensor ${hrShow.present ? 'present' : 'absent'}">
           <div class="name">Heart rate</div>
-          <div class="rate">${hr.present ? fmtHz(hr.rateHz) : '—'}</div>
-          <div class="detail">${hr.last ? `${hr.last.bpm} bpm · ${fmtAgoSec(hr.ageSec)}` : 'Not present'}</div>
+          <div class="rate">${hrShow.present ? fmtHz(hrShow.rateHz) : '—'}</div>
+          <div class="detail">${hrShow.last ? `${hrShow.last.bpm} bpm · ${fmtAgoSec(hrShow.ageSec)}` : coach ? 'Coach location only' : 'Not present'}</div>
         </div>
         <div class="sensor ${motion.present ? 'present' : 'absent'} ${rowing.capsize ? 'sensor--capsize' : ''}">
           <div class="name">${rowing.capsize ? 'Capsize' : 'Tilt'}</div>

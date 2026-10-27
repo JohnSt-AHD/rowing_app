@@ -338,7 +338,6 @@ public class CoachMonitorService extends Service {
         gps.put("lat", loc.getLatitude());
         gps.put("lon", loc.getLongitude());
         if (loc.hasAccuracy()) gps.put("acc", loc.getAccuracy());
-        if (loc.hasSpeed() && loc.getSpeed() >= 0) gps.put("spd", loc.getSpeed());
         if (loc.hasBearing()) gps.put("hdg", loc.getBearing());
         gps.put("fixMs", loc.getTime() > 0 ? loc.getTime() : now);
         gps.put("sampleSource", "manager_watch");

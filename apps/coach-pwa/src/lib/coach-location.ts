@@ -122,10 +122,6 @@ async function uploadFix(s: CoachSettings): Promise<void> {
           lat: coords.latitude,
           lon: coords.longitude,
           acc: Number.isFinite(coords.accuracy) ? coords.accuracy : undefined,
-          spd:
-            coords.speed != null && Number.isFinite(coords.speed) && coords.speed >= 0
-              ? coords.speed
-              : undefined,
           hdg:
             coords.heading != null && Number.isFinite(coords.heading)
               ? coords.heading

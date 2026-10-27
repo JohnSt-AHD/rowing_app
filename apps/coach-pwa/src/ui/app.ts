@@ -1132,16 +1132,16 @@ export function mountApp(root: HTMLElement): void {
   function crewTicketHtml(d: CrewTicketRow): string {
     const cap = Boolean(d.rowing?.capsize);
     const accent = liveDeviceColor(d.deviceId);
-    const split = d.onWater ? formatSplit500(d.speedMps) : '—';
-    const speed = d.onWater && split !== '—' ? `${split} /500m` : null;
+    const coach = isCoachDevice(d);
+    const split = !coach && d.onWater ? formatSplit500(d.speedMps) : '—';
+    const speed = !coach && d.onWater && split !== '—' ? `${split} /500m` : null;
     const spm =
-      d.onWater && d.mapPosition
+      !coach && d.onWater && d.mapPosition
         ? (() => {
             const v = resolveStrokeRate(d.mapPosition!);
             return v != null && v > 0 ? `${Math.round(v)} spm` : null;
           })()
         : null;
-    const coach = isCoachDevice(d);
     const statusClass = cap
       ? 'crew-ticket__badge--capsize'
       : coach
@@ -1172,7 +1172,7 @@ export function mountApp(root: HTMLElement): void {
     const showDeviceId = d.displayName !== d.deviceId;
     // Show speed when known even without coach/boat outing fields.
     const speedMpsFallback =
-      d.onWater && !d.noGps && d.speedMps == null && d.mapPosition
+      !coach && d.onWater && !d.noGps && d.speedMps == null && d.mapPosition
         ? resolveSpeedMps(d.mapPosition)
         : null;
     const fallbackSplit = formatSplit500(speedMpsFallback);

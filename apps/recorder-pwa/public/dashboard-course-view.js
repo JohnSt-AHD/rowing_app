@@ -665,6 +665,14 @@
     return formatSplit500(mps);
   }
 
+  function isCoachMapItem(p) {
+    const src = String(p?.source || p?.attributes?.source || '').toLowerCase();
+    if (src === 'manager' || src === 'coach') return true;
+    if (String(p?.role || p?.attributes?.role || '').toLowerCase() === 'coach') return true;
+    if (String(p?.boatClass || p?.attributes?.boatClass || '').toLowerCase() === 'coach') return true;
+    return /^coach\s/i.test(String(p?.deviceId || p?.uniqueId || '').trim());
+  }
+
   /** Ticket pace from API (recent-ground EMA); falls back to 30s path. */
   function coachFacingSpeedMps(p, deviceId) {
     const now = Date.now();
@@ -1246,6 +1254,7 @@
     for (const p of positions) {
       const deviceId = p.deviceId || p.uniqueId;
       if (!deviceId) continue;
+      if (isCoachMapItem(p)) continue;
       const cur = posFromRecord(p);
       if (!cur) continue;
 

@@ -981,6 +981,10 @@ function resolveDisplayPathSpeedMps(orgId, deviceId, rawPath, live = true) {
 /** @param {object[]} positions @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice @param {number} orgId */
 function attachPathPaceToMapPositions(positions, fixesByDevice, orgId) {
   for (const p of positions) {
+    if (isManagerDevice(p)) {
+      stripCoachPerformanceFields(p);
+      continue;
+    }
     const fixes = fixesByDevice.get(p.deviceId);
     const pathSpeed = pathSpeedMpsFromFixes(fixes);
     const recentSpeed = recentSegmentSpeedMpsFromFixes(fixes);
@@ -1014,6 +1018,10 @@ function attachPathPaceToMapPositions(positions, fixesByDevice, orgId) {
 /** @param {object[]} devices @param {Map<string, { t:number, lat:number, lon:number }[]>} fixesByDevice @param {number} orgId */
 function attachPathPaceToDevices(devices, fixesByDevice, orgId) {
   for (const dev of devices) {
+    if (isManagerDevice(dev)) {
+      stripCoachPerformanceFields(dev);
+      continue;
+    }
     const fixes = fixesByDevice.get(dev.deviceId);
     const pathSpeed = pathSpeedMpsFromFixes(fixes);
     const recentSpeed = recentSegmentSpeedMpsFromFixes(fixes);
@@ -1122,6 +1130,13 @@ async function loadStrokeRateReadingsByDevice(orgId, windowMs, telemetryByDevice
 /** @param {object[]} positions @param {Map<string, { t:number, strokeRate:number }[]>} readingsByDevice */
 function attachStrokeMedianToMapPositions(positions, readingsByDevice) {
   for (const p of positions) {
+    if (isManagerDevice(p)) {
+      p.strokeRateMedian = null;
+      p.displayStrokeRate = null;
+      p.strokeRate = null;
+      p.strokeRateValid = false;
+      continue;
+    }
     const readings = readingsByDevice.get(p.deviceId);
     const median = medianStrokeRateFromReadings(readings);
     p.strokeRateMedian = median;
@@ -1142,6 +1157,11 @@ function attachStrokeMedianToMapPositions(positions, readingsByDevice) {
 /** @param {object[]} devices @param {Map<string, { t:number, strokeRate:number }[]>} readingsByDevice */
 function attachStrokeMedianToDevices(devices, readingsByDevice) {
   for (const dev of devices) {
+    if (isManagerDevice(dev)) {
+      dev.strokeRateMedian = null;
+      dev.displayStrokeRate = null;
+      continue;
+    }
     const readings = readingsByDevice.get(dev.deviceId);
     const median = medianStrokeRateFromReadings(readings);
     dev.strokeRateMedian = median;
@@ -1605,6 +1625,9 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
     boatClass: boatMeta?.boatClass,
     deviceId,
   });
+  if (skipSuppress) {
+    clean.samples = stripManagerSamplePerformance(clean.samples);
+  }
   const geofenceFilter = skipSuppress
     ? { samples: clean.samples, dropped: 0 }
     : await filterSamplesInsideSuppressZones(
@@ -1842,6 +1865,65 @@ function isManagerDevice(entry) {
   return /^coach\s/i.test(String(entry?.deviceId || '').trim());
 }
 
+/** Manager tablets share location only — never pace / SPM / HR / prognostic. */
+function stripCoachPerformanceFields(target) {
+  if (!target || typeof target !== 'object') return target;
+  target.speed = null;
+  target.pathSpeedMps = null;
+  target.recentPathSpeedMps = null;
+  target.displaySpeedMps = null;
+  target.strokeRate = null;
+  target.strokeRateValid = false;
+  target.strokeRateMedian = null;
+  target.displayStrokeRate = null;
+  target.heartRate = null;
+  if (target.rowing && typeof target.rowing === 'object') {
+    target.rowing.strokeRate = null;
+    target.rowing.strokeRateValid = false;
+  }
+  if (target.hr && typeof target.hr === 'object' && !Array.isArray(target.hr)) {
+    target.hr = { present: false, rateHz: 0, count: 0, last: null, ageSec: null };
+  } else {
+    target.hr = null;
+  }
+  return target;
+}
+
+function applyManagerDeviceIdentity(dev) {
+  if (!isManagerDevice(dev)) return false;
+  dev.source = dev.source || 'manager';
+  dev.role = 'coach';
+  if (!dev.boatClass) dev.boatClass = 'Coach';
+  stripCoachPerformanceFields(dev);
+  return true;
+}
+
+/** Drop performance payloads from Manager location uploads (keep lat/lon/hdg/acc + heartbeat). */
+function stripManagerSamplePerformance(samples) {
+  if (!Array.isArray(samples)) return samples;
+  return samples.map((sample) => {
+    if (!sample || typeof sample !== 'object') return sample;
+    const next = { ...sample };
+    if (next.gps && typeof next.gps === 'object') {
+      const gps = { ...next.gps };
+      delete gps.spd;
+      delete gps.speed;
+      next.gps = gps;
+    }
+    if ('hr' in next) delete next.hr;
+    if ('motion' in next) delete next.motion;
+    if (next.derived && typeof next.derived === 'object') {
+      const keep = {};
+      if (next.derived.heartbeat === true) keep.heartbeat = true;
+      if (next.derived.batteryPct != null && Number.isFinite(Number(next.derived.batteryPct))) {
+        keep.batteryPct = next.derived.batteryPct;
+      }
+      next.derived = keep;
+    }
+    return next;
+  });
+}
+
 function resolveDeviceSource(entry) {
   const src = String(entry?.source || '').trim();
   if (src) return src;
@@ -1864,6 +1946,7 @@ function attachCoachRoleToMapPositions(positions, sessionByDevice) {
     p.source = source || 'manager';
     p.role = 'coach';
     if (!p.boatClass) p.boatClass = 'Coach';
+    stripCoachPerformanceFields(p);
   }
   return positions;
 }
@@ -2285,11 +2368,7 @@ async function listDevices(orgId, opts = {}) {
           const inferred = db.inferBoatClassFromDeviceId(dev.deviceId);
           if (inferred) dev.boatClass = inferred;
         }
-        if (isManagerDevice(dev)) {
-          dev.source = dev.source || 'manager';
-          dev.role = 'coach';
-          if (!dev.boatClass) dev.boatClass = 'Coach';
-        }
+        applyManagerDeviceIdentity(dev);
         mergeListDeviceDbTelemetry(
           dev,
           rowingTel.get(dev.deviceId),
@@ -2311,11 +2390,7 @@ async function listDevices(orgId, opts = {}) {
   // (in-memory sticky on other Vercel instances can survive Acknowledge and re-alarm).
   for (const dev of byDevice.values()) {
     if (dev.rowing) dev.rowing.capsize = false;
-    if (isManagerDevice(dev)) {
-      dev.source = dev.source || 'manager';
-      dev.role = 'coach';
-      if (!dev.boatClass) dev.boatClass = 'Coach';
-    }
+    applyManagerDeviceIdentity(dev);
   }
   if (hasPostgres && dbCapsizeAlerts) {
     forceCapsizeAlertsOnDevices(
@@ -3325,6 +3400,14 @@ async function enrichTraccarSnapshotSpeed(orgId, snapshot, onlineMs) {
     if (pp.displaySpeedMps != null && Number.isFinite(pp.displaySpeedMps)) {
       attrs.displaySpeedMps = pp.displaySpeedMps;
     }
+    if (isManagerDevice({ deviceId: pp.deviceId, boatClass: p.attributes?.boatClass, source: p.attributes?.source })) {
+      p.speed = null;
+      if (p.attributes) {
+        delete p.attributes.pathSpeedMps;
+        delete p.attributes.displaySpeedMps;
+      }
+      continue;
+    }
     const coachSpeed = pp.displaySpeedMps ?? pp.pathSpeedMps;
     if (coachSpeed != null && Number.isFinite(coachSpeed) && coachSpeed >= 0.25) {
       p.speed = coachSpeed;
@@ -3477,6 +3560,14 @@ async function enrichTraccarSnapshotCoach(orgId, snapshot) {
       source: sess?.source || target.attributes?.source || 'manager',
       boatClass: sess?.boatClass || target.attributes?.boatClass || 'Coach',
     };
+    if (target.speed != null) target.speed = null;
+    if (target.attributes) {
+      delete target.attributes.pathSpeedMps;
+      delete target.attributes.displaySpeedMps;
+      delete target.attributes.strokeRate;
+      delete target.attributes.hr;
+      delete target.attributes.heartRate;
+    }
   };
   for (const d of snapshot.devices || []) {
     mark(d.uniqueId || d.name, d);

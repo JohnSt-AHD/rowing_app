@@ -1,4 +1,5 @@
 import type { MapPosition } from './api';
+import { isCoachDevice } from './coach-identity';
 import { resolveSpeedMps } from './map-smooth';
 import { densifyTimeSeries } from './chart-smooth';
 import { smoothSpeedByStrokePeriod } from './stroke-speed-smooth';
@@ -46,6 +47,7 @@ export function recordLiveSpeedSamples(positions: MapPosition[]): void {
 
   for (const p of positions) {
     if (!p.deviceId || !Number.isFinite(p.latitude) || !Number.isFinite(p.longitude)) continue;
+    if (isCoachDevice(p)) continue;
     seen.add(p.deviceId);
     const speed = resolveSpeedMps(p);
     if (speed == null) continue;

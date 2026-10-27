@@ -223,9 +223,13 @@ export function demoDevices(): FleetDevice[] {
         : { ageSec: c.lastSeenAgoSec, present: false, displayAgeSec: c.lastSeenAgoSec },
       gpsAgeSec: live ? 2 : c.lastSeenAgoSec,
       rowing: live
-        ? { strokeRate: c.spm, strokeRateValid: true, capsize: Boolean(c.capsize) }
+        ? {
+            strokeRate: c.source === 'manager' ? null : c.spm,
+            strokeRateValid: c.source !== 'manager',
+            capsize: Boolean(c.capsize),
+          }
         : { strokeRate: null, strokeRateValid: false, capsize: false },
-      displayStrokeRate: live ? c.spm : null,
+      displayStrokeRate: live && c.source !== 'manager' ? c.spm : null,
     };
   });
 }
@@ -243,10 +247,10 @@ export function demoMapPositions(nowMs = Date.now()): MapPosition[] {
       longitude: pos.lon,
       smoothLatitude: pos.lat,
       smoothLongitude: pos.lon,
-      speed,
+      speed: c.source === 'manager' ? null : speed,
       course: COURSE_BEARING,
-      strokeRate: spm,
-      strokeRateValid: true,
+      strokeRate: c.source === 'manager' ? null : spm,
+      strokeRateValid: c.source !== 'manager',
       capsize: Boolean(c.capsize),
       fixAgeSec: 2,
       fixMs: nowMs,
@@ -258,11 +262,11 @@ export function demoMapPositions(nowMs = Date.now()): MapPosition[] {
       role: c.source === 'manager' ? 'coach' : null,
       boatClass: c.boatClass,
       accuracy: 4,
-      displaySpeedMps: speed,
-      displayStrokeRate: spm,
-      strokeRateMedian: c.spm,
-      pathSpeedMps: speed,
-      recentPathSpeedMps: speed,
+      displaySpeedMps: c.source === 'manager' ? null : speed,
+      displayStrokeRate: c.source === 'manager' ? null : spm,
+      strokeRateMedian: c.source === 'manager' ? null : c.spm,
+      pathSpeedMps: c.source === 'manager' ? null : speed,
+      recentPathSpeedMps: c.source === 'manager' ? null : speed,
     };
   });
 }

@@ -52,6 +52,7 @@ import {
   parseCourse,
 } from '../lib/course-geo';
 import { colorForDevice as courseColorForDevice, CourseRaceEngine } from '../lib/course-race-engine';
+import { isCoachDevice } from '../lib/coach-identity';
 import { resolveSpeedMps } from '../lib/map-smooth';
 import type { CoachSettings } from '../lib/settings';
 import { liveDeviceColor, registerLiveDevice } from '../lib/live-speed-buffer';
@@ -321,10 +322,11 @@ export class LiveDataPanel {
   }
 
   processPositions(positions: MapPosition[], nowMs = Date.now()) {
-    this.lastPositions = positions;
-    this.syncDeviceSelect(positions);
+    const athletePositions = positions.filter((p) => !isCoachDevice(p));
+    this.lastPositions = athletePositions;
+    this.syncDeviceSelect(athletePositions);
 
-    for (const p of positions) {
+    for (const p of athletePositions) {
       const pt = positionToHistoryPoint(p, nowMs);
       if (!pt || !p.deviceId) continue;
       const arr = this.livePoints.get(p.deviceId) ?? [];
@@ -340,7 +342,7 @@ export class LiveDataPanel {
 
     if (this.linesLoaded && this.engine.selectedCourse) {
       this.engine.processPoll(
-        positions.map((p) => ({
+        athletePositions.map((p) => ({
           deviceId: p.deviceId,
           latitude: p.latitude,
           longitude: p.longitude,
