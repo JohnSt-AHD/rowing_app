@@ -115,6 +115,33 @@
   color: var(--ahd-accent);
 }
 
+.map-legend-item--raw-gps {
+  color: var(--ahd-safety);
+}
+
+.map-legend-item--ema {
+  color: #2563eb;
+}
+
+.map-marker--ema {
+  width: 12px;
+  height: 12px;
+  background: #2563eb;
+  border: 2px solid #fff;
+  box-shadow:
+    0 0 0 1px rgba(37, 99, 235, 0.75),
+    0 0 8px rgba(37, 99, 235, 0.4);
+}
+
+.map-marker-wrap--ema {
+  z-index: 930 !important;
+}
+
+.hub-panel--compare-gps .fleet-map {
+  outline: 1px solid color-mix(in srgb, #2563eb 40%, transparent);
+  outline-offset: -1px;
+}
+
 .map-status--smooth-live {
   color: var(--ahd-accent);
 }

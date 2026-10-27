@@ -8,6 +8,8 @@
   let historyMap = null;
   let historyLayer = null;
   let historyMarkers = null;
+  /** @type {{ track: object[], capsizeEvents: object[] } | null} */
+  let lastHistoryRender = null;
   /** @type {Map<string, string>} deviceId → last ISO upload time */
   const deviceLastSeen = new Map();
   /** @type {Map<string, { firstSampleMs: number, lastSampleMs: number, sampleCount: number }>} */
@@ -239,7 +241,74 @@
     results.classList.remove('history-results--visible');
   }
 
+  function isHistoryCompare() {
+    return typeof window.dashboardIsMapCompare === 'function'
+      ? window.dashboardIsMapCompare()
+      : document.getElementById('mapPositionMode')?.value === 'compare';
+  }
+
+  function emaAlphaForAccuracy(acc) {
+    if (acc != null && Number.isFinite(acc) && acc <= 3) return 0.48;
+    if (acc != null && Number.isFinite(acc) && acc <= 8) return 0.38;
+    return 0.28;
+  }
+
+  function applyEmaToHistoryTrack(track) {
+    let smoothLat = null;
+    let smoothLon = null;
+    let prevT = null;
+    for (const p of track) {
+      if (p.lat == null || p.lon == null) continue;
+      if (
+        p.smoothLat != null &&
+        p.smoothLon != null &&
+        Number.isFinite(Number(p.smoothLat)) &&
+        Number.isFinite(Number(p.smoothLon))
+      ) {
+        smoothLat = Number(p.smoothLat);
+        smoothLon = Number(p.smoothLon);
+        prevT = p.t;
+        continue;
+      }
+      const t = Number(p.t);
+      const dtSec =
+        prevT != null && Number.isFinite(t) && Number.isFinite(prevT)
+          ? (t - prevT) / 1000
+          : null;
+      if (smoothLat == null || dtSec == null || dtSec < 0 || dtSec > 30) {
+        smoothLat = p.lat;
+        smoothLon = p.lon;
+      } else {
+        const alpha = emaAlphaForAccuracy(p.acc);
+        smoothLat = alpha * p.lat + (1 - alpha) * smoothLat;
+        smoothLon = alpha * p.lon + (1 - alpha) * smoothLon;
+        const dLatM = (smoothLat - p.lat) * 111320;
+        const midLat = (p.lat + smoothLat) / 2;
+        const dLonM =
+          (smoothLon - p.lon) *
+          Math.max(1, 111320 * Math.cos((midLat * Math.PI) / 180));
+        const offset = Math.hypot(dLatM, dLonM);
+        if (offset > 10) {
+          const scale = 10 / offset;
+          smoothLat = p.lat + (smoothLat - p.lat) * scale;
+          smoothLon = p.lon + (smoothLon - p.lon) * scale;
+        }
+      }
+      p.smoothLat = smoothLat;
+      p.smoothLon = smoothLon;
+      prevT = t;
+    }
+    return track;
+  }
+
   function renderHistoryMap(track, capsizeEvents) {
+    lastHistoryRender = { track, capsizeEvents };
+    const compare = isHistoryCompare();
+    const legendRaw = document.getElementById('historyLegendRaw');
+    const legendEma = document.getElementById('historyLegendEma');
+    if (legendRaw) legendRaw.hidden = !compare;
+    if (legendEma) legendEma.hidden = !compare;
+
     const mapEl = document.getElementById('historyMap');
     if (!mapEl || typeof L === 'undefined') return;
     if (!historyMap || mapEl.offsetHeight < 10) {
@@ -250,18 +319,43 @@
     historyLayer.clearLayers();
     historyMarkers.clearLayers();
 
+    if (compare) applyEmaToHistoryTrack(track);
+
     const latlngs = track
       .filter((p) => p.lat != null && p.lon != null)
       .map((p) => [p.lat, p.lon]);
+    const smoothLatlngs = compare
+      ? track
+          .filter((p) => p.smoothLat != null && p.smoothLon != null)
+          .map((p) => [p.smoothLat, p.smoothLon])
+      : [];
 
+    const fitLayers = [];
     if (latlngs.length >= 2) {
       const line = L.polyline(latlngs, {
-        color: '#22d3ee',
+        color: compare ? '#4ade80' : '#22d3ee',
         weight: 4,
         opacity: 0.85,
       });
       historyLayer.addLayer(line);
-      historyMap.fitBounds(line.getBounds(), { padding: [32, 32], maxZoom: 16 });
+      fitLayers.push(line);
+    }
+    if (smoothLatlngs.length >= 2) {
+      const smoothLine = L.polyline(smoothLatlngs, {
+        color: '#2563eb',
+        weight: 4,
+        opacity: 0.85,
+        dashArray: '7 7',
+      });
+      historyLayer.addLayer(smoothLine);
+      fitLayers.push(smoothLine);
+    }
+    if (fitLayers.length) {
+      let bounds = fitLayers[0].getBounds();
+      for (let i = 1; i < fitLayers.length; i++) {
+        bounds = bounds.extend(fitLayers[i].getBounds());
+      }
+      historyMap.fitBounds(bounds, { padding: [32, 32], maxZoom: 16 });
     } else if (latlngs.length === 1) {
       historyMap.setView(latlngs[0], 15);
     }
@@ -300,14 +394,28 @@
 
     setTimeout(() => {
       historyMap?.invalidateSize(true);
-      if (latlngs.length >= 2) {
-        const line = historyLayer?.getLayers()?.[0];
-        if (line?.getBounds) {
-          historyMap.fitBounds(line.getBounds(), { padding: [32, 32], maxZoom: 16 });
+      const layers = (historyLayer?.getLayers() || []).filter((l) => l?.getBounds);
+      if (layers.length) {
+        let bounds = layers[0].getBounds();
+        for (let i = 1; i < layers.length; i++) {
+          bounds = bounds.extend(layers[i].getBounds());
         }
+        historyMap.fitBounds(bounds, { padding: [32, 32], maxZoom: 16 });
       }
     }, 120);
   }
+
+  window.redrawDashboardHistoryMap = function redrawDashboardHistoryMap() {
+    if (!lastHistoryRender?.track?.length) {
+      const legendRaw = document.getElementById('historyLegendRaw');
+      const legendEma = document.getElementById('historyLegendEma');
+      const compare = isHistoryCompare();
+      if (legendRaw) legendRaw.hidden = !compare;
+      if (legendEma) legendEma.hidden = !compare;
+      return;
+    }
+    renderHistoryMap(lastHistoryRender.track, lastHistoryRender.capsizeEvents || []);
+  };
 
   function renderCharts(track) {
     const hrCanvas = document.getElementById('historyChartHr');

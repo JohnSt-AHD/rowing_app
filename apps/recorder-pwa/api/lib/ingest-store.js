@@ -1250,6 +1250,8 @@ function attachSmoothMapCoords(rawPositions, predictMode = 'rowing', orgId = nul
         ...p,
         smoothLatitude: rawLat,
         smoothLongitude: rawLon,
+        emaLatitude: rawLat,
+        emaLongitude: rawLon,
         smoothFixAgeSec: p.fixAgeSec,
         smoothed: false,
       };
@@ -1320,6 +1322,25 @@ function attachSmoothMapCoords(rawPositions, predictMode = 'rowing', orgId = nul
       limits.maxOffsetM,
     );
 
+    let emaLat = rawLat;
+    let emaLon = rawLon;
+    if (
+      track?.smoothLat != null &&
+      track?.smoothLon != null &&
+      Number.isFinite(track.smoothLat) &&
+      Number.isFinite(track.smoothLon)
+    ) {
+      emaLat = track.smoothLat;
+      emaLon = track.smoothLon;
+    }
+    const emaClamped = clampOffsetFromRaw(
+      rawLat,
+      rawLon,
+      emaLat,
+      emaLon,
+      limits.maxOffsetM,
+    );
+
     const smoothAgeSec =
       fixAgeSec != null && Number.isFinite(fixAgeSec)
         ? Math.round(fixAgeSec)
@@ -1335,6 +1356,8 @@ function attachSmoothMapCoords(rawPositions, predictMode = 'rowing', orgId = nul
           : null),
       smoothLatitude: clamped.lat,
       smoothLongitude: clamped.lon,
+      emaLatitude: emaClamped.lat,
+      emaLongitude: emaClamped.lon,
       smoothFixAgeSec: smoothAgeSec,
       smoothed: clamped.offsetM > 1.5,
     };
@@ -2463,6 +2486,7 @@ async function listDevices(orgId, opts = {}) {
   const devices = [...byDevice.values()].sort(
     (a, b) => b.lastSeenMs - a.lastSeenMs,
   );
+  attachEmaCoordsToDevices(orgId, devices);
   // Path pace + stroke median live on /api/map-positions (dashboard/coach merge map data).
   const onlineDevices = devices.filter((d) => d.online);
   const gpsAges = onlineDevices
@@ -2833,6 +2857,88 @@ function mergeListDeviceDbTelemetry(dev, tel, batteryTel, strokeTel, motionSampl
       ageSec: Math.round((now - batteryTel.t) / 1000),
     };
   }
+}
+
+function attachEmaCoordsToDevices(orgId, devices) {
+  if (!orgId || !devices?.length) return;
+  for (const dev of devices) {
+    const track = gpsTracks.get(orgDeviceKey(orgId, dev.deviceId));
+    if (!track || !dev.gps?.last) continue;
+    if (
+      track.smoothLat == null ||
+      track.smoothLon == null ||
+      !Number.isFinite(track.smoothLat) ||
+      !Number.isFinite(track.smoothLon)
+    ) {
+      continue;
+    }
+    const rawLat = dev.gps.last.lat;
+    const rawLon = dev.gps.last.lon;
+    if (rawLat == null || rawLon == null) continue;
+    const clamped = clampOffsetFromRaw(
+      rawLat,
+      rawLon,
+      track.smoothLat,
+      track.smoothLon,
+      MAX_SMOOTH_OFFSET_M,
+    );
+    dev.gps.emaLatitude = clamped.lat;
+    dev.gps.emaLongitude = clamped.lon;
+    dev.gps.last.smoothLat = clamped.lat;
+    dev.gps.last.smoothLon = clamped.lon;
+  }
+}
+
+/**
+ * Replay ingest EMA onto a history track (α 0.28–0.48, 10 m clamp, reset after 30 s).
+ * Existing smoothLat/smoothLon values are kept.
+ * @param {{ track?: object[] } | null} payload
+ */
+function attachEmaToDashboardHistory(payload) {
+  if (!payload?.track?.length) return payload;
+  let smoothLat = null;
+  let smoothLon = null;
+  let prevT = null;
+  for (const p of payload.track) {
+    if (p.lat == null || p.lon == null) continue;
+    if (
+      p.smoothLat != null &&
+      p.smoothLon != null &&
+      Number.isFinite(Number(p.smoothLat)) &&
+      Number.isFinite(Number(p.smoothLon))
+    ) {
+      smoothLat = Number(p.smoothLat);
+      smoothLon = Number(p.smoothLon);
+      prevT = p.t;
+      continue;
+    }
+    const t = Number(p.t);
+    const dtSec =
+      prevT != null && Number.isFinite(t) && Number.isFinite(prevT)
+        ? (t - prevT) / 1000
+        : null;
+    if (smoothLat == null || dtSec == null || dtSec < 0 || dtSec > 30) {
+      smoothLat = p.lat;
+      smoothLon = p.lon;
+    } else {
+      const alpha = emaAlphaForAccuracy(p.acc);
+      smoothLat = alpha * p.lat + (1 - alpha) * smoothLat;
+      smoothLon = alpha * p.lon + (1 - alpha) * smoothLon;
+      const clamped = clampOffsetFromRaw(
+        p.lat,
+        p.lon,
+        smoothLat,
+        smoothLon,
+        MAX_SMOOTH_OFFSET_M,
+      );
+      smoothLat = clamped.lat;
+      smoothLon = clamped.lon;
+    }
+    p.smoothLat = smoothLat;
+    p.smoothLon = smoothLon;
+    prevT = t;
+  }
+  return payload;
 }
 
 function applyRegistryGpsToDevice(device, registryFix, now) {
@@ -3707,7 +3813,9 @@ async function listHistoryDevices(orgId) {
 async function getDashboardHistory(orgId, uniqueId, fromIso, toIso) {
   if (!db.hasDb()) return null;
   try {
-    return await db.getDashboardHistory(orgId, uniqueId, fromIso, toIso);
+    return attachEmaToDashboardHistory(
+      await db.getDashboardHistory(orgId, uniqueId, fromIso, toIso),
+    );
   } catch (err) {
     console.error('[ingest-store] getDashboardHistory failed:', err);
     return null;
@@ -3717,7 +3825,9 @@ async function getDashboardHistory(orgId, uniqueId, fromIso, toIso) {
 async function getDashboardHistoryBySession(orgId, sessionId) {
   if (!db.hasDb()) return null;
   try {
-    return await db.getDashboardHistoryBySession(orgId, sessionId);
+    return attachEmaToDashboardHistory(
+      await db.getDashboardHistoryBySession(orgId, sessionId),
+    );
   } catch (err) {
     console.error('[ingest-store] getDashboardHistoryBySession failed:', err);
     return null;

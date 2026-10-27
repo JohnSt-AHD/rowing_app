@@ -24,6 +24,10 @@ const MAP_INTERPOLATE_TICK_MS = 100;
 const EARTH_RADIUS_M = 6371000;
 /** Extra map dot — glides between poll snapshots over each refresh interval. */
 const MAP_COMPARE_DEVICE_ID = 'H6';
+const COMPARE_TRAIL_MAX = 90;
+const COMPARE_TRAIL_MIN_M = 0.8;
+const COMPARE_EMA_COLOR = '#2563eb';
+const COMPARE_RAW_COLOR = '#4ade80';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -45,6 +49,12 @@ let h6CompareInterp = null;
 let h6CompareTickTimer = null;
 /** @type {object[]} */
 let latestMapPositions = [];
+/** @type {L.LayerGroup | null} */
+let compareLayer = null;
+/** @type {Map<string, L.Marker>} */
+const deviceEmaMarkers = new Map();
+/** @type {Map<string, { raw: number[][], smooth: number[][], rawLine: L.Polyline|null, smoothLine: L.Polyline|null, connector: L.Polyline|null }>} */
+const compareTrails = new Map();
 /** @type {string[]} device IDs from latest capsize banner update */
 let lastCapsizedDeviceIds = [];
 
@@ -69,7 +79,7 @@ function savePrefs() {
   localStorage.setItem(LS_POLL, String($('#pollMs')?.value || 2000));
   localStorage.setItem(LS_STALE, String($('#staleSec')?.value || 3600));
   const mapMode = $('#mapPositionMode')?.value;
-  if (mapMode === 'raw' || mapMode === 'smoothed') {
+  if (mapMode === 'raw' || mapMode === 'smoothed' || mapMode === 'compare') {
     localStorage.setItem(LS_MAP_POSITION, mapMode);
   }
   const predictMode = $('#predictMode')?.value;
@@ -81,11 +91,16 @@ function currentMapPositionMode() {
     $('#mapPositionMode')?.value ||
     localStorage.getItem(LS_MAP_POSITION) ||
     (localStorage.getItem(LS_LIVE_MAP) === '1' ? 'smoothed' : 'raw');
-  return v === 'smoothed' ? 'smoothed' : 'raw';
+  if (v === 'smoothed' || v === 'compare') return v;
+  return 'raw';
 }
 
 function isMapSmoothed() {
   return currentMapPositionMode() === 'smoothed';
+}
+
+function isMapCompare() {
+  return currentMapPositionMode() === 'compare';
 }
 
 function currentPredictMode() {
@@ -101,6 +116,15 @@ function updatePredictModeField() {
   const field = $('#predictModeField');
   const smoothed = isMapSmoothed();
   if (field) field.classList.toggle('ahd-field--muted', !smoothed);
+}
+
+function serverEmaLatLon(p) {
+  const lat = p?.emaLatitude ?? p?.smoothLatitude;
+  const lon = p?.emaLongitude ?? p?.smoothLongitude;
+  if (lat == null || lon == null || !Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) {
+    return null;
+  }
+  return { lat: Number(lat), lon: Number(lon) };
 }
 
 function currentPollMs() {
@@ -121,16 +145,24 @@ function formatRefreshRateLabel() {
     sec >= 1
       ? `${Number.isInteger(sec) ? sec : sec.toFixed(1)} s`
       : `${ms} ms`;
-  const smooth = isMapSmoothed() ? 'smoothed' : 'raw GPS';
+  const mode = currentMapPositionMode();
+  const smooth =
+    mode === 'compare' ? 'raw + EMA' : mode === 'smoothed' ? 'smoothed' : 'raw GPS';
   return `${interval} · ${smooth}`;
 }
 
 function applyMapPositionMode() {
   const smoothed = isMapSmoothed();
+  const compare = isMapCompare();
   const pollEl = $('#pollMs');
   const legendEl = $('#mapLegendInterpolate');
+  const legendRaw = $('#mapLegendRawGps');
+  const legendEma = $('#mapLegendEma');
   document.querySelector('.hub-panel--map')?.classList.toggle('hub-panel--smooth-live', smoothed);
+  document.querySelector('.hub-panel--map')?.classList.toggle('hub-panel--compare-gps', compare);
   if (legendEl) legendEl.hidden = !smoothed;
+  if (legendRaw) legendRaw.hidden = !compare;
+  if (legendEma) legendEma.hidden = !compare;
   updatePredictModeField();
 
   if (smoothed) {
@@ -140,6 +172,7 @@ function applyMapPositionMode() {
     }
     if (pollEl) pollEl.disabled = true;
     startMapInterpolation();
+    clearCompareOverlays();
   } else {
     if (pollEl) {
       const wasLocked = pollEl.disabled;
@@ -153,7 +186,11 @@ function applyMapPositionMode() {
     stopMapInterpolation();
     deviceTrackState.clear();
     resetH6CompareTrack();
+    if (!compare) clearCompareOverlays();
     if (latestMapPositions.length) updateMap(latestMapPositions);
+  }
+  if (typeof window.redrawDashboardHistoryMap === 'function') {
+    window.redrawDashboardHistoryMap();
   }
   savePrefs();
   updateRefreshRateLabel();
@@ -513,6 +550,112 @@ function stopH6CompareTick() {
 
 function resetH6CompareTrack() {
   removeH6CompareMarker();
+}
+
+function ensureCompareLayer() {
+  if (!map || compareLayer) return compareLayer;
+  compareLayer = L.layerGroup().addTo(map);
+  return compareLayer;
+}
+
+function emaMarkerIcon() {
+  return L.divIcon({
+    className: 'map-marker-wrap map-marker-wrap--ema',
+    html: '<span class="map-marker map-marker--ema" aria-hidden="true"></span>',
+    iconSize: [12, 12],
+    iconAnchor: [6, 6],
+  });
+}
+
+function appendCompareTrailPoint(list, lat, lon) {
+  const prev = list[list.length - 1];
+  if (prev && haversineM(prev[0], prev[1], lat, lon) < COMPARE_TRAIL_MIN_M) return;
+  list.push([lat, lon]);
+  if (list.length > COMPARE_TRAIL_MAX) list.shift();
+}
+
+function removeCompareTrail(deviceId) {
+  const trail = compareTrails.get(deviceId);
+  if (trail && compareLayer) {
+    if (trail.rawLine) compareLayer.removeLayer(trail.rawLine);
+    if (trail.smoothLine) compareLayer.removeLayer(trail.smoothLine);
+    if (trail.connector) compareLayer.removeLayer(trail.connector);
+  }
+  compareTrails.delete(deviceId);
+  const emaMarker = deviceEmaMarkers.get(deviceId);
+  if (emaMarker && markersLayer) markersLayer.removeLayer(emaMarker);
+  deviceEmaMarkers.delete(deviceId);
+}
+
+function clearCompareOverlays() {
+  for (const id of [...compareTrails.keys()]) removeCompareTrail(id);
+  for (const id of [...deviceEmaMarkers.keys()]) {
+    const marker = deviceEmaMarkers.get(id);
+    if (marker && markersLayer) markersLayer.removeLayer(marker);
+    deviceEmaMarkers.delete(id);
+  }
+}
+
+function updateCompareOverlay(p, raw, ema) {
+  if (!ensureCompareLayer()) return;
+  let trail = compareTrails.get(p.deviceId);
+  if (!trail) {
+    trail = { raw: [], smooth: [], rawLine: null, smoothLine: null, connector: null };
+    compareTrails.set(p.deviceId, trail);
+  }
+  appendCompareTrailPoint(trail.raw, raw.lat, raw.lon);
+  if (ema) appendCompareTrailPoint(trail.smooth, ema.lat, ema.lon);
+
+  if (trail.raw.length >= 2) {
+    if (trail.rawLine) trail.rawLine.setLatLngs(trail.raw);
+    else {
+      trail.rawLine = L.polyline(trail.raw, {
+        color: COMPARE_RAW_COLOR,
+        weight: 3,
+        opacity: 0.75,
+      });
+      compareLayer.addLayer(trail.rawLine);
+    }
+  }
+  if (trail.smooth.length >= 2) {
+    if (trail.smoothLine) trail.smoothLine.setLatLngs(trail.smooth);
+    else {
+      trail.smoothLine = L.polyline(trail.smooth, {
+        color: COMPARE_EMA_COLOR,
+        weight: 3,
+        opacity: 0.85,
+        dashArray: '6 6',
+      });
+      compareLayer.addLayer(trail.smoothLine);
+    }
+  }
+
+  if (ema) {
+    let marker = deviceEmaMarkers.get(p.deviceId);
+    const latlng = L.latLng(ema.lat, ema.lon);
+    const popup = `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br><span class="map-popup-note">Server EMA (display only)</span></div>`;
+    if (marker) {
+      marker.setLatLng(latlng);
+      marker.setPopupContent(popup);
+    } else {
+      marker = L.marker(latlng, { icon: emaMarkerIcon(), zIndexOffset: 400 }).bindPopup(popup);
+      markersLayer.addLayer(marker);
+      deviceEmaMarkers.set(p.deviceId, marker);
+    }
+    const connectorPts = [
+      [raw.lat, raw.lon],
+      [ema.lat, ema.lon],
+    ];
+    if (trail.connector) trail.connector.setLatLngs(connectorPts);
+    else {
+      trail.connector = L.polyline(connectorPts, {
+        color: '#64748b',
+        weight: 1.5,
+        opacity: 0.7,
+      });
+      compareLayer.addLayer(trail.connector);
+    }
+  }
 }
 
 function staleSec() {
@@ -977,6 +1120,10 @@ function activeMapLatLngsFromPositions(positions) {
     if (ago > ONLINE_SEC) continue;
     const { lat, lon } = displayLatLonForPosition(p);
     latlngs.push(L.latLng(lat, lon));
+    if (isMapCompare()) {
+      const ema = serverEmaLatLon(p);
+      if (ema) latlngs.push(L.latLng(ema.lat, ema.lon));
+    }
   }
   return latlngs;
 }
@@ -1153,8 +1300,10 @@ function popupHtml(p) {
     : '';
   const smoothNote = isMapSmoothed()
     ? '<br><span class="map-popup-note">Smoothed position (display only)</span>'
-    : '';
-  const compareNote = isCompareDevice(p.deviceId)
+    : isMapCompare()
+      ? '<br><span class="map-popup-note">Green = raw GPS · blue = server EMA</span>'
+      : '';
+  const compareNote = !isMapCompare() && isCompareDevice(p.deviceId)
     ? '<br><span class="map-popup-compare">Purple dot = H6 lerp test</span>'
     : '';
   const coachNote = isCoachMapItem(p)
@@ -1196,6 +1345,8 @@ function updateMap(positions) {
   const seen = new Set();
   let h6Seen = false;
   const latlngs = [];
+  const compareOn = isMapCompare();
+  if (!compareOn) clearCompareOverlays();
 
   for (const p of positions) {
     if (p.latitude == null || p.longitude == null) continue;
@@ -1217,8 +1368,13 @@ function updateMap(positions) {
       markersLayer.addLayer(marker);
       deviceMarkers.set(p.deviceId, marker);
     }
+    marker.setZIndexOffset(compareOn ? 600 : 0);
 
-    if (isCompareDevice(p.deviceId)) {
+    if (compareOn) {
+      const ema = serverEmaLatLon(p);
+      updateCompareOverlay(p, { lat: p.latitude, lon: p.longitude }, ema);
+      if (ema) latlngs.push([ema.lat, ema.lon]);
+    } else if (isCompareDevice(p.deviceId)) {
       h6Seen = true;
       startH6CompareTarget(p);
       const comparePos = currentCompareInterpLatLon();
@@ -1232,6 +1388,7 @@ function updateMap(positions) {
     if (!seen.has(id)) {
       markersLayer.removeLayer(marker);
       deviceMarkers.delete(id);
+      removeCompareTrail(id);
     }
   }
 
@@ -1250,13 +1407,17 @@ function updateMap(positions) {
   }
   if (statusEl) {
     const capPart = capsizeN ? ` · ${capsizeN} CAPSIZE` : '';
-    const smoothPart = isMapSmoothed() ? ' · smoothed' : ' · raw GPS';
+    const smoothPart = isMapCompare()
+      ? ' · raw + EMA'
+      : isMapSmoothed()
+        ? ' · smoothed'
+        : ' · raw GPS';
     statusEl.textContent =
       positions.length === 0
         ? 'No GPS positions in the selected time window.'
         : `${liveN} live · ${amberN} delayed · ${lostN} last known${smoothPart}${capPart}`;
     statusEl.classList.toggle('map-status--capsize', capsizeN > 0);
-    statusEl.classList.toggle('map-status--smooth-live', isMapSmoothed());
+    statusEl.classList.toggle('map-status--smooth-live', isMapSmoothed() || isMapCompare());
   }
 
   setCapsizeUiActive(capsizeN > 0);
@@ -1286,6 +1447,14 @@ function mergeMapWithDeviceGps(devices, positions) {
       athleteId: d.athleteId ?? prev?.athleteId ?? null,
       latitude: gps.lat,
       longitude: gps.lon,
+      emaLatitude:
+        prev?.emaLatitude ?? d.gps?.emaLatitude ?? gps.smoothLat ?? null,
+      emaLongitude:
+        prev?.emaLongitude ?? d.gps?.emaLongitude ?? gps.smoothLon ?? null,
+      smoothLatitude:
+        prev?.smoothLatitude ?? d.gps?.emaLatitude ?? gps.smoothLat ?? null,
+      smoothLongitude:
+        prev?.smoothLongitude ?? d.gps?.emaLongitude ?? gps.smoothLon ?? null,
       fixAgeSec: devAge,
       fixMs: Date.now() - devAge * 1000,
       accuracy: gps.acc ?? prev?.accuracy ?? null,
@@ -1964,5 +2133,7 @@ function init() {
 
 window.dashboardRefreshNow = poll;
 window.dashboardGetLatestPositions = () => latestMapPositions;
+window.dashboardIsMapCompare = isMapCompare;
+window.dashboardMapPositionMode = currentMapPositionMode;
 
 init();

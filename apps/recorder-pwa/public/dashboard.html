@@ -128,6 +128,8 @@
               <span class="map-legend-item map-legend-item--capsize">● Capsize</span>
               <span class="map-legend-item map-legend-item--coach">◆ Coach / Manager</span>
               <span class="map-legend-item map-legend-item--interpolate" id="mapLegendInterpolate" hidden>↝ Smoothed display</span>
+              <span class="map-legend-item map-legend-item--raw-gps" id="mapLegendRawGps" hidden>● Raw GPS</span>
+              <span class="map-legend-item map-legend-item--ema" id="mapLegendEma" hidden>● Server EMA</span>
               <span class="map-legend-item map-legend-item--compare" hidden>◆ H6 lerp test</span>
             </p>
             <div id="fleetMap" class="fleet-map" role="application" aria-label="Device locations map"></div>
@@ -668,6 +670,8 @@
               <span class="map-legend-item map-legend-item--live">● Start</span>
               <span class="map-legend-item" style="color:#3b82f6">● End</span>
               <span class="map-legend-item map-legend-item--capsize">● Capsize</span>
+              <span class="map-legend-item map-legend-item--raw-gps" id="historyLegendRaw" hidden>● Raw GPS</span>
+              <span class="map-legend-item map-legend-item--ema" id="historyLegendEma" hidden>● Server EMA</span>
             </p>
             <div id="historyMap" class="history-map" role="application" aria-label="Historical GPS trace"></div>
             <div class="history-charts">
@@ -699,7 +703,7 @@
           </div>
         </div>
         <div class="info-tip-panel" id="info-tip-settings" hidden>
-          <p>Ingest token must match <code>INGEST_TOKEN</code> on Vercel. Map position is display-only: Raw shows the last GPS fix; Smoothed predicts to now using motion between fixes.</p>
+          <p>Ingest token must match <code>INGEST_TOKEN</code> on Vercel. Map position is display-only: Raw shows the last GPS fix; Smoothed predicts to now using motion between fixes; Show both overlays raw and the server EMA filter (not the 1 s glide).</p>
           <p>Predict speed cap limits that offset (rowing vs car testing). Refresh is how often this page polls. Hide offline after drops stale boats from the map.</p>
           <p>Rower client settings are organisation-wide and load on phones via fleet-config (no Manager app required).</p>
           <p><strong>Club admin (RNZ)</strong> uses a separate <code>ADMIN_TOKEN</code> on Vercel — not the club ingest token. You can generate a random token or set the club password coaches and phones type.</p>
@@ -815,6 +819,7 @@
               <select id="mapPositionMode">
                 <option value="raw" selected>Raw GPS fix</option>
                 <option value="smoothed">Smoothed (predict-to-now)</option>
+                <option value="compare">Show both (compare)</option>
               </select>
             </label>
             <label class="ahd-field" id="predictModeField">
