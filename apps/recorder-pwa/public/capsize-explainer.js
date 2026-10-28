@@ -48,7 +48,7 @@
     {
       id: 'right-no-ack',
       label: '2. Tip then right, no ack',
-      hint: 'Phone banner/siren clear when the boat is upright. Fleet CAPSIZE stays sticky until On the way, Crew safe, or 12h.',
+      hint: 'Phone siren stops when upright. HUD stays “Coaches still have a CAPSIZE alert” and fleet CAPSIZE stays sticky until On the way, Crew safe, I’m OK, or 12h.',
       boats: ['alex'],
       run(sim) {
         sim.tip('alex', 'Boat tipped past horizontal (2.5s)');
@@ -229,7 +229,7 @@
       pushLog(`${b.name}: tip ignored — hold until upright after I’m OK`);
       return;
     }
-    if (b.lastClearAt && Date.now() < b.lastClearAt + REARM_MS && !b.inverted) {
+    if (b.lastClearAt && Date.now() < b.lastClearAt + REARM_MS) {
       pushLog(`${b.name}: tip ignored — 60s re-arm cooldown`);
       return;
     }
@@ -326,8 +326,10 @@
     const falseAlarm = source === 'athlete';
     b.fleetPhase = null;
     b.helpMessage = falseAlarm ? null : b.helpMessage;
-    if (falseAlarm) b.helpMessage = null;
-    b.phoneLocal = false;
+    if (falseAlarm) {
+      b.helpMessage = null;
+      b.phoneLocal = false;
+    }
     b.respondingBy = null;
     b.respondingSource = null;
     b.holdUntilUpright = falseAlarm && b.inverted;
