@@ -49,6 +49,11 @@ let h6CompareInterp = null;
 let h6CompareTickTimer = null;
 /** @type {object[]} */
 let latestMapPositions = [];
+/** Last non-empty merge — keep the rower visible across a single failed poll. */
+/** @type {object[]} */
+let lastGoodMapPositions = [];
+let lastGoodMapAt = 0;
+const HOLD_EMPTY_MAP_MS = 20000;
 /** @type {L.LayerGroup | null} */
 let compareLayer = null;
 /** @type {Map<string, L.Marker>} */
@@ -1810,7 +1815,7 @@ function renderDevice(d) {
       </button>
       <div class="device-head__main">
         <h2>${esc(d.deviceId)}</h2>
-        <div class="sub">${d.athleteId ? esc(d.athleteId) : 'No athlete ID'} · session ${esc(d.sessionId.slice(0, 8))}…</div>
+        <div class="sub">${d.athleteId ? esc(d.athleteId) : 'No athlete ID'} · session ${esc(String(d.sessionId || '').slice(0, 8) || '—')}…</div>
         <p class="device-summary">${esc(deviceSummaryLine(d))}</p>
       </div>
       <span class="badge-pill ${badgeClass}">${badgeLabel}</span>
@@ -1956,10 +1961,20 @@ async function poll() {
       }
     }
 
-    const mapPositions = mergeMapWithDeviceGps(
+    let mapPositions = mergeMapWithDeviceGps(
       data.devices,
       mapResult.status === 'fulfilled' ? mapResult.value.positions : [],
     );
+    if (
+      mapPositions.length === 0 &&
+      lastGoodMapPositions.length &&
+      Date.now() - lastGoodMapAt < HOLD_EMPTY_MAP_MS
+    ) {
+      mapPositions = lastGoodMapPositions;
+    } else if (mapPositions.length) {
+      lastGoodMapPositions = mapPositions;
+      lastGoodMapAt = Date.now();
+    }
     updateMap(mapPositions);
     if (typeof window.dashboardOnMapPositions === 'function') {
       window.dashboardOnMapPositions(mapPositions, data.polledAt || Date.now());

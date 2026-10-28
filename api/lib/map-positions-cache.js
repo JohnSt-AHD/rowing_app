@@ -150,7 +150,11 @@ async function getCachedMapPositionsResponse(opts) {
   const body = await computeMapPositionsResponse(opts);
   const entry = { cachedAt: Date.now(), body };
   try {
-    await redis.set(key, entry, { ex: ttlSec });
+    // Do not cache an empty compute — a DB/schema miss would make the live
+    // fleet vanish for every tab sharing this key.
+    if (Array.isArray(body.positions) && body.positions.length > 0) {
+      await redis.set(key, entry, { ex: ttlSec });
+    }
   } catch (err) {
     console.error('[map-positions-cache] write failed:', err);
   } finally {
@@ -231,7 +235,9 @@ function warmMapPositionsCacheAfterIngest(org, samples) {
       for (const preset of WARM_PRESETS) {
         const key = cacheKey(org.id, preset.onlineSec, preset.staleSec, preset.predictMode);
         const body = await computeMapPositionsResponse({ org, ...preset });
-        await redis.set(key, { cachedAt: Date.now(), body }, { ex: cacheTtlSec() });
+        if (Array.isArray(body.positions) && body.positions.length > 0) {
+          await redis.set(key, { cachedAt: Date.now(), body }, { ex: cacheTtlSec() });
+        }
       }
     } catch (err) {
       console.error('[map-positions-cache] warm failed:', err);

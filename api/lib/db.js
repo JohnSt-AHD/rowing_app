@@ -109,6 +109,7 @@ async function initSchema() {
         ON CONFLICT (id) DO NOTHING
       `.catch(() => {});
       schemaReady = true;
+      // New columns belong in ensure* helpers — this return skips the DDL below.
       return;
     }
   } catch {
@@ -531,11 +532,39 @@ async function ensureOrgsBootstrapped() {
   await ensureWorkoutLibraryTable();
   await ensureWorkoutAssignmentTable();
   await ensureFleetConfigTables();
-  // Production DBs skip full initSchema DDL; keep walk-up / hazard columns applied.
+  // Production DBs skip full initSchema DDL; keep incremental columns applied.
   await ensureWalkupSessionColumns();
   await ensureHazardRegisterSchema();
+  await ensureCapsizeDeviceColumns();
 
   orgBootstrapDone = true;
+}
+
+/**
+ * Sticky capsize columns on rnz_devices.
+ * initSchema early-returns on existing production DBs, so these must be
+ * applied here or /api/devices and /api/map-positions fail and the live
+ * fleet blinks on/off.
+ */
+async function ensureCapsizeDeviceColumns() {
+  if (!hasDb()) return;
+  const sql = await getSql();
+  if (!sql) return;
+  try {
+    await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_active BOOLEAN NOT NULL DEFAULT false`;
+    await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_alert_at TIMESTAMPTZ`;
+    await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_cleared_at TIMESTAMPTZ`;
+    await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_hold_until_upright BOOLEAN NOT NULL DEFAULT false`;
+    await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_responding BOOLEAN NOT NULL DEFAULT false`;
+    await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_responding_by TEXT`;
+    await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_responding_at TIMESTAMPTZ`;
+    await sql`ALTER TABLE rnz_devices ADD COLUMN IF NOT EXISTS capsize_responding_source TEXT`;
+  } catch (err) {
+    console.warn(
+      '[db] capsize device columns skipped:',
+      err && err.message ? err.message : err,
+    );
+  }
 }
 
 /** Walk-up logbook columns — must run even when initSchema early-returns. */

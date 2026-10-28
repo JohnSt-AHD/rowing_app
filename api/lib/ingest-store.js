@@ -378,9 +378,15 @@ function applyCapsizeAlertClears(orgId, clearedIds) {
 }
 
 async function loadDbCapsizeAlerts(orgId) {
-  const expired = await db.expireStaleCapsizeAlertsDb(orgId);
-  applyCapsizeAlertClears(orgId, expired);
-  return db.getCapsizeAlerts(orgId);
+  try {
+    const expired = await db.expireStaleCapsizeAlertsDb(orgId);
+    applyCapsizeAlertClears(orgId, expired);
+    return db.getCapsizeAlerts(orgId);
+  } catch (err) {
+    // Missing capsize_* columns (or a transient DB error) must not empty the fleet.
+    console.error('[ingest-store] loadDbCapsizeAlerts failed:', err);
+    return new Map();
+  }
 }
 
 function nearestGpsFixForSample(sampleT, fixes, maxAgeMs) {
