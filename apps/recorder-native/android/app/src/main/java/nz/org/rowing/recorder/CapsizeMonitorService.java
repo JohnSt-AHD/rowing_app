@@ -141,6 +141,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long RAW_GPS_STILL_MS = 8_000L;
     /** Below this, a GNSS lock is stationary even if getTime() keeps updating. */
     private static final float RAW_GPS_MOVING_SPEED_MS = 0.75f;
+    /** Office last-known wander; a slow walk exceeds this within RAW_GPS_STILL_MS. */
+    private static final float SITTING_LOCK_M = 5f;
     /** Only average window points this close in time/space to the newest fix. */
     private static final long GPS_WINDOW_BLEND_MS = 2_000L;
     private static final float GPS_WINDOW_BLEND_M = 20f;
@@ -248,6 +250,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private double rawGpsStillLon = Double.NaN;
     /** True only after raw GPS shows real motion — restamped locks stay false. */
     private boolean rawGpsTracking;
+    /** Any-provider sitting lock (office last-known with a fresh clock). */
+    private long sittingLockSinceMs;
+    private double sittingLockLat = Double.NaN;
+    private double sittingLockLon = Double.NaN;
+    /** Stop() sets this immediately so START_STICKY cannot keep ingesting. */
+    private volatile boolean recordingHalted;
     private final ArrayList<GpsWindowFix> gpsWindowBuffer = new ArrayList<>();
     private long lastWindowCollectWallMs;
     private int nativeGpsCount;
@@ -392,7 +400,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         boolean hasSession = hasActiveSessionPrefs(prefs) || hasStandbyPrefs(prefs);
-        if (!hasSession) {
+        if (recordingHalted || !hasSession) {
             Log.w(TAG, "Service started with no active session — stopping");
             stopSelf();
             return START_NOT_STICKY;
@@ -403,6 +411,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return startStandbyCommand(bootResume || standbyResume);
         }
 
+        recordingHalted = false;
+        clearSittingLock();
         ingestBuffer = new JSONArray();
         lastIngestFlushMs = 0L;
         lastSuccessfulUploadMs = 0L;
@@ -684,6 +694,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             }
         }
         followFusedOverSittingGps(location);
+        noteSittingLock(location);
         latestGpsLocation = location;
         latestGpsCachedWallMs = System.currentTimeMillis();
         String provider = location.getProvider();
@@ -791,6 +802,57 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         rawGpsStillLat = Double.NaN;
         rawGpsStillLon = Double.NaN;
         rawGpsTracking = false;
+    }
+
+    private void noteSittingLock(Location location) {
+        if (location == null || !isGpsFixUsable(location)) return;
+        long now = System.currentTimeMillis();
+        boolean movingSpeed =
+                location.hasSpeed() && location.getSpeed() > RAW_GPS_MOVING_SPEED_MS;
+        float movedM = 0f;
+        if (Double.isFinite(sittingLockLat)) {
+            movedM =
+                    distanceMeters(
+                            sittingLockLat,
+                            sittingLockLon,
+                            location.getLatitude(),
+                            location.getLongitude());
+        }
+        if (!Double.isFinite(sittingLockLat) || movedM > SITTING_LOCK_M || movingSpeed) {
+            sittingLockLat = location.getLatitude();
+            sittingLockLon = location.getLongitude();
+            sittingLockSinceMs = now;
+            return;
+        }
+        if (sittingLockSinceMs <= 0L) sittingLockSinceMs = now;
+    }
+
+    private void clearSittingLock() {
+        sittingLockSinceMs = 0L;
+        sittingLockLat = Double.NaN;
+        sittingLockLon = Double.NaN;
+    }
+
+    /**
+     * Sitting last-known: same/near coords, speed ~0, old elapsedRealtime/age,
+     * or a restamped lock whose clock advanced while the pin did not.
+     * Keep 1.0.58/1.0.59 sitting-lock vs fused rules — this only gates upload t.
+     */
+    private boolean isSittingLastKnownFix(Location location) {
+        if (location == null) return false;
+        if (location.hasSpeed() && location.getSpeed() > RAW_GPS_MOVING_SPEED_MS) {
+            return false;
+        }
+        long age = rawFixAgeMs(location);
+        if (age > LIVE_FIX_MAX_AGE_MS) return true;
+        long fixTime = location.getTime();
+        long now = System.currentTimeMillis();
+        if (fixTime > 0L && fixTime <= now + 5_000L && now - fixTime > 20_000L) {
+            return true;
+        }
+        if (isRawGpsSittingStill()) return true;
+        return sittingLockSinceMs > 0L
+                && now - sittingLockSinceMs >= RAW_GPS_STILL_MS;
     }
 
     private String lastNativeGeofenceSignature = "";
@@ -1010,6 +1072,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void uploadWindowAverageGps(boolean scheduledTick, String forcedSampleSource) {
+        if (recordingHalted) return;
         if (!enableGps || uploadExecutor == null || uploadExecutor.isShutdown()) return;
         long interval = Math.max(GPS_COLLECT_INTERVAL_MS, effectiveGpsIntervalMs());
         long ingestT = System.currentTimeMillis();
@@ -1153,7 +1216,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /** Timer-driven upload from the live fused stream. Poll only if callbacks stall. */
     private void tickScheduledGpsUpload() {
-        if (!enableGps) return;
+        if (recordingHalted || !enableGps) return;
         uploadWindowAverageGps(true);
         long now = System.currentTimeMillis();
         if (lastFusedDeliveryWallMs > 0L && now - lastFusedDeliveryWallMs <= LIVE_FIX_MAX_AGE_MS) {
@@ -1434,6 +1497,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void offerIngestSample(JSONObject sample, boolean flushNow) {
         loadEconomyFromPrefs();
+        if (recordingHalted && !sampleHasCapsize(sample)) return;
         // Boat-park suppress pauses normal telemetry, but capsize must still reach Manager.
         if (suppressRecordingActive && !sampleHasCapsize(sample)) return;
         ingestBuffer.put(sample);
@@ -1485,6 +1549,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void enqueueGpsSample(Location location, long t) {
         enqueueGpsSample(location, t, false, "direct");
+    }
+
+    private static boolean isLiveGpsSampleSource(String sampleSource) {
+        if (sampleSource == null || sampleSource.isEmpty()) return true;
+        return "direct".equals(sampleSource) || "window_avg".equals(sampleSource);
     }
 
     private String resolveGpsProvider(Location location) {
@@ -1588,16 +1657,37 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void enqueueGpsSample(Location location, long t, boolean flushNow, String sampleSource) {
         loadEconomyFromPrefs();
+        if (recordingHalted || !enableGps) return;
         if (suppressRecordingActive) {
             // Keep location cache for geofence checks; do not upload while in suppress zone.
             return;
         }
+        boolean sitting = isSittingLastKnownFix(location);
+        String source = sampleSource;
+        if (sitting && isLiveGpsSampleSource(sampleSource)) {
+            long age = rawFixAgeMs(location);
+            long fixTime = location.getTime();
+            long nowWall = System.currentTimeMillis();
+            boolean staleClock =
+                    age > LIVE_FIX_MAX_AGE_MS
+                            || (fixTime > 0L
+                                    && fixTime <= nowWall + 5_000L
+                                    && nowWall - fixTime > 20_000L);
+            if (staleClock) {
+                // Drop stale last-known — Manager should age to last-known, not stay live.
+                return;
+            }
+            source = "last_known";
+        }
         try {
             JSONObject sample = new JSONObject();
             long now = System.currentTimeMillis();
-            long sampleT = pickEffectiveSampleTimeMs(t, latestGpsRawFixClockMs, now);
+            long offeredT =
+                    sitting && latestGpsRawFixClockMs > 0L ? latestGpsRawFixClockMs : t;
+            long sampleT =
+                    pickEffectiveSampleTimeMs(offeredT, latestGpsRawFixClockMs, now, sitting);
             sample.put("t", sampleT);
-            sample.put("gps", buildGpsJson(location, sampleSource));
+            sample.put("gps", buildGpsJson(location, source));
             if (enableMotion && (lastAx != 0f || lastAy != 0f || lastAz != 0f)) {
                 JSONObject motion = new JSONObject();
                 motion.put("ax", Math.round(lastAx * 100) / 100.0);
@@ -2146,6 +2236,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     public static void clearRecordingSession(Context ctx) {
+        // commit() so START_STICKY / onDestroy boot-resume cannot see a still-active session.
         ctx.getSharedPreferences(PREFS, MODE_PRIVATE)
             .edit()
             .putBoolean("recordingActive", false)
@@ -2157,12 +2248,74 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             .putBoolean("suppressRecordingActive", false)
             .putBoolean("capsizeRecalledHold", false)
             .putBoolean("capsizeActive", false)
+            .putString("sessionId", "")
             .putInt(BOOT_RETRY_COUNT_KEY, 0)
-            .apply();
+            .commit();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            deviceProtectedPrefs(ctx).edit().clear().apply();
+            deviceProtectedPrefs(ctx).edit().clear().commit();
         }
         clearBootResumeNotification(ctx);
+    }
+
+    /** Stop means stop: halt GPS now, write ended_at, do not START_STICKY back in. */
+    public static void stopRecordingSession(Context ctx) {
+        CapsizeMonitorService inst = runningInstance != null ? runningInstance.get() : null;
+        SharedPreferences p = ctx.getSharedPreferences(PREFS, MODE_PRIVATE);
+        final String sessionId = p.getString("sessionId", "");
+        final String deviceId = p.getString("deviceId", "");
+        final long endedAt = System.currentTimeMillis();
+        if (inst != null) {
+            inst.recordingHalted = true;
+            inst.enableGps = false;
+            inst.mainHandler.post(inst::haltGpsUploads);
+            if (inst.uploadExecutor != null
+                    && !inst.uploadExecutor.isShutdown()
+                    && sessionId != null
+                    && !sessionId.isEmpty()
+                    && deviceId != null
+                    && !deviceId.isEmpty()) {
+                inst.uploadExecutor.execute(
+                        () -> inst.postSessionEnd(p, sessionId, deviceId, endedAt));
+            }
+        }
+        clearRecordingSession(ctx);
+        if (inst != null) {
+            inst.mainHandler.post(inst::stopSelf);
+        } else {
+            ctx.stopService(new Intent(ctx, CapsizeMonitorService.class));
+        }
+    }
+
+    private void haltGpsUploads() {
+        recordingHalted = true;
+        enableGps = false;
+        mainHandler.removeCallbacks(gpsFlushRunnable);
+        mainHandler.removeCallbacks(heartbeatRunnable);
+        mainHandler.removeCallbacks(ingestFlushRunnable);
+        unregisterLocation();
+        gpsWindowBuffer.clear();
+        stripGpsFromIngestBuffer();
+        Log.i(TAG, "GPS uploads halted — session stopping");
+    }
+
+    private void stripGpsFromIngestBuffer() {
+        if (ingestBuffer == null || ingestBuffer.length() == 0) return;
+        JSONArray kept = new JSONArray();
+        for (int i = 0; i < ingestBuffer.length(); i++) {
+            JSONObject sample = ingestBuffer.optJSONObject(i);
+            if (sample == null) continue;
+            if (sampleHasCapsize(sample)) {
+                kept.put(sample);
+                continue;
+            }
+            sample.remove("gps");
+            if (sample.optJSONObject("motion") != null
+                    || sample.optJSONObject("hr") != null
+                    || sample.optJSONObject("derived") != null) {
+                kept.put(sample);
+            }
+        }
+        ingestBuffer = kept;
     }
 
     private static SharedPreferences deviceProtectedPrefs(Context ctx) {
@@ -2944,9 +3097,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * Prefer wall clock or GPS fix clock — whichever is closer to now.
-     * If both are 20s+ behind, use now so live map timestamps stay current.
+     * If both are 20s+ behind on a *moving* fix, use now so live map timestamps
+     * stay current. Do not rewrite t for a sitting last-known.
      */
-    private static long pickEffectiveSampleTimeMs(long sampleT, long gpsFixMs, long now) {
+    private static long pickEffectiveSampleTimeMs(
+            long sampleT, long gpsFixMs, long now, boolean sittingLastKnown) {
         boolean tOk = sampleT > 0L && sampleT <= now + 5_000L;
         boolean fixOk = gpsFixMs > 0L && gpsFixMs <= now + 5_000L;
         long chosen;
@@ -2960,18 +3115,23 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         } else {
             chosen = sampleT > 0L ? sampleT : now;
         }
-        if (now - chosen > 20_000L) return now;
+        if (now - chosen > 20_000L) {
+            if (sittingLastKnown) return chosen;
+            return now;
+        }
         return chosen;
     }
 
     /**
-     * Sample ingest timestamp — prefer fix time; use wall clock when fix clock stalls (KRI model).
+     * Sample ingest timestamp — prefer fix time; use wall clock when a moving
+     * fix clock stalls (KRI model). Sitting last-known keeps the true fix clock.
      */
-    private static long ingestTimeMs(Location location) {
+    private long ingestTimeMs(Location location) {
         long now = System.currentTimeMillis();
         if (location == null) return now;
         long fixTime = location.getTime();
         if (fixTime <= 0L || fixTime > now + 5_000L) return now;
+        if (isSittingLastKnownFix(location)) return fixTime;
         long fixAge = now - fixTime;
         if (fixAge > GPS_STALE_FIX_CLOCK_MS) return now;
         return fixTime;
@@ -3293,6 +3453,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         standbyAutoStartTriggered = false;
         mainHandler.removeCallbacks(standbyDwellRunnable);
         loadSessionFlagsFromPrefs();
+        recordingHalted = false;
+        clearSittingLock();
         ingestBuffer = new JSONArray();
         lastIngestFlushMs = 0L;
         lastSuccessfulUploadMs = 0L;

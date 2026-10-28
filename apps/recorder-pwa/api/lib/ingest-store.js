@@ -29,6 +29,9 @@ globalThis.__rnzLastAcceptedGpsFix = lastAcceptedGpsFix;
 const orgGpsOutlierModeCache = globalThis.__rnzOrgGpsOutlierMode ?? new Map();
 globalThis.__rnzOrgGpsOutlierMode = orgGpsOutlierModeCache;
 const ORG_GPS_OUTLIER_MODE_TTL_MS = 8000;
+/** Sessions that already have ended_at — ignore further GPS for that id. */
+const endedSessionIds = globalThis.__rnzEndedSessionIds ?? new Set();
+globalThis.__rnzEndedSessionIds = endedSessionIds;
 
 function orgSessionKey(orgId, sessionId) {
   return `${orgId}:${sessionId}`;
@@ -36,6 +39,49 @@ function orgSessionKey(orgId, sessionId) {
 
 function orgDeviceKey(orgId, deviceId) {
   return `${orgId}:${deviceId}`;
+}
+
+function markSessionEnded(orgId, sessionId) {
+  endedSessionIds.add(orgSessionKey(orgId, sessionId));
+}
+
+async function sessionIsEnded(orgId, sessionId) {
+  const key = orgSessionKey(orgId, sessionId);
+  if (endedSessionIds.has(key)) return true;
+  const row = sessions.get(key);
+  if (row?.endedAt) {
+    endedSessionIds.add(key);
+    return true;
+  }
+  if (db.hasDb()) {
+    try {
+      const endedAt = await db.getSessionEndedAtMs(orgId, sessionId);
+      if (endedAt) {
+        endedSessionIds.add(key);
+        return true;
+      }
+    } catch (err) {
+      console.error('[ingest-store] session ended check failed:', err);
+    }
+  }
+  return false;
+}
+
+function stripGpsFromEndedSessionSamples(samples) {
+  const out = [];
+  let gpsDropped = 0;
+  for (const s of samples) {
+    if (!s?.gps) {
+      out.push(s);
+      continue;
+    }
+    gpsDropped++;
+    const { gps, ...rest } = s;
+    if (rest.motion != null || rest.hr != null || rest.derived != null) {
+      out.push(rest);
+    }
+  }
+  return { samples: out, gpsDropped };
 }
 
 const MAX_SAMPLES_PER_REQUEST = 500;
@@ -558,6 +604,7 @@ const GPS_SAMPLE_SOURCES = new Set([
   'scheduled_cache',
   'heartbeat_cache',
   'stale_piggyback',
+  'last_known',
   'web',
 ]);
 
@@ -840,7 +887,18 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
 
   const dtSec = (fix.t - prev.t) / 1000;
   if (!Number.isFinite(dtSec) || dtSec < 0) return false;
+  const prevFix = {
+    t: prev.t,
+    lat: prev.lat,
+    lon: prev.lon,
+    acc: null,
+  };
   if (dtSec > 30) {
+    // Same speed cap as ingest — a 30s hole must not accept a 4.6 km hop.
+    if (isGpsFixOutlier(prevFix, fix, outlierOpts)) {
+      metrics.gpsOutliersRejected++;
+      return false;
+    }
     gpsTracks.set(key, resetGpsSmoothState(fix));
     return true;
   }
@@ -859,12 +917,6 @@ function updateGpsTrack(deviceId, fix, opts = {}) {
     return true;
   }
 
-  const prevFix = {
-    t: prev.t,
-    lat: prev.lat,
-    lon: prev.lon,
-    acc: null,
-  };
   if (isGpsFixOutlier(prevFix, fix, outlierOpts)) {
     metrics.gpsOutliersRejected++;
     return false;
@@ -1815,12 +1867,32 @@ async function recordBatch(orgId, sessionId, deviceId, athleteId, samples, idemp
   }
   if (!samples.length) return { received: 0 };
   const scopedDevice = orgDeviceKey(orgId, deviceId);
+  let incoming = samples;
+  let endedGpsDropped = 0;
+  if (await sessionIsEnded(orgId, sessionId)) {
+    const stripped = stripGpsFromEndedSessionSamples(incoming);
+    incoming = stripped.samples;
+    endedGpsDropped = stripped.gpsDropped;
+    if (!incoming.length) {
+      metrics.droppedSamples += endedGpsDropped;
+      return {
+        received: 0,
+        dropped: endedGpsDropped,
+        ignoredEndedSession: true,
+      };
+    }
+  }
   const outlierMode = await getOrgGpsOutlierMode(orgId);
-  const clean = sanitizeAndTrackSamples(scopedDevice, samples, outlierMode);
+  const clean = sanitizeAndTrackSamples(scopedDevice, incoming, outlierMode);
   reconcileSampleTimes(clean.samples, now);
+  clean.dropped = (clean.dropped || 0) + endedGpsDropped;
   if (!clean.samples.length) {
     metrics.droppedSamples += clean.dropped || 0;
-    return { received: 0, dropped: clean.dropped };
+    return {
+      received: 0,
+      dropped: clean.dropped,
+      ...(endedGpsDropped ? { ignoredEndedSession: true } : {}),
+    };
   }
   metrics.droppedSamples += clean.dropped || 0;
 
@@ -2086,6 +2158,7 @@ async function endSession(orgId, sessionId, deviceId, endedAtMs, athleteId) {
     row.endedAt = endedAt;
     row.updatedAt = endedAt;
   }
+  markSessionEnded(orgId, sessionId);
   return { ended: true, persisted, endedAt };
 }
 
@@ -2249,12 +2322,62 @@ async function getSession(orgId, sessionId) {
   return { sessionId, ...row };
 }
 
-/** Card/monitor age when fix timestamp lags behind upload (batch or clock skew). */
-function displayGpsAgeSec(fixAgeSec, ingestAgoSec) {
-  if (fixAgeSec == null) return null;
-  if (ingestAgoSec == null) return fixAgeSec;
-  if (fixAgeSec - ingestAgoSec > 20) return ingestAgoSec;
-  return fixAgeSec;
+/**
+ * Card/monitor GPS age.
+ * Live moving + clock skew: prefer ingest so the pin stays live.
+ * Last-known / restamped office lock: clocks diverge a lot — use the fix,
+ * not 1–3s from HTTP, so Manager shows delayed / last-known.
+ *
+ * @param {number|null|undefined} fixAgeSec
+ * @param {number|null|undefined} ingestAgoSec
+ * @param {{ gpsFixAgeSec?: number|null, uploadLagSec?: number|null, spd?: number|null }} [extra]
+ */
+function displayGpsAgeSec(fixAgeSec, ingestAgoSec, extra = {}) {
+  const gpsFixAgeSec = extra.gpsFixAgeSec;
+  const uploadLagSec = extra.uploadLagSec;
+  const trueFixAge =
+    gpsFixAgeSec != null && Number.isFinite(Number(gpsFixAgeSec))
+      ? Number(gpsFixAgeSec)
+      : fixAgeSec;
+  if (trueFixAge == null || !Number.isFinite(Number(trueFixAge))) return null;
+  const ingest = ingestAgoSec != null && Number.isFinite(Number(ingestAgoSec))
+    ? Number(ingestAgoSec)
+    : null;
+  const lag =
+    uploadLagSec != null && Number.isFinite(Number(uploadLagSec))
+      ? Number(uploadLagSec)
+      : ingest != null
+        ? Number(trueFixAge) - ingest
+        : 0;
+  const clockGap = ingest != null ? Number(trueFixAge) - ingest : 0;
+  const effectiveLag = Math.max(lag, clockGap);
+  const spd = extra.spd;
+  const sitting = spd == null || !Number.isFinite(Number(spd)) || Number(spd) <= 0.75;
+  if (ingest != null && effectiveLag > 20 && (sitting || effectiveLag > 60)) {
+    return Number(trueFixAge);
+  }
+  // GPS hole: last *sample* clock is old (not restamped) while HTTP/heartbeat
+  // still flows — age the badge from the fix, do not stay "GPS live".
+  if (
+    ingest != null &&
+    fixAgeSec != null &&
+    Number.isFinite(Number(fixAgeSec)) &&
+    Number(fixAgeSec) > 30 &&
+    Number(fixAgeSec) - ingest > 20
+  ) {
+    return Number(fixAgeSec);
+  }
+  if (
+    fixAgeSec != null &&
+    Number.isFinite(Number(fixAgeSec)) &&
+    ingest != null &&
+    Number(fixAgeSec) - ingest > 20
+  ) {
+    return ingest;
+  }
+  return fixAgeSec != null && Number.isFinite(Number(fixAgeSec))
+    ? Number(fixAgeSec)
+    : Number(trueFixAge);
 }
 
 /** Age for delayed-GPS health — prefers upload time when fix clock lags. */
@@ -2271,7 +2394,11 @@ function enrichMapPositionDisplayAge(p, now, registryRow) {
     registryRow?.lastGpsIngestMs != null
       ? Math.max(0, Math.round((now - registryRow.lastGpsIngestMs) / 1000))
       : p.lastSeenAgoSec ?? null;
-  const displayFixAgeSec = displayGpsAgeSec(p.fixAgeSec, ingestAgoSec);
+  const displayFixAgeSec = displayGpsAgeSec(p.fixAgeSec, ingestAgoSec, {
+    gpsFixAgeSec: p.gpsFixAgeSec,
+    uploadLagSec: p.uploadLagSec,
+    spd: p.speed ?? p.gpsSpeed ?? p.spd,
+  });
   const receiveAgoSec =
     p.lastSeenAgoSec != null && Number.isFinite(p.lastSeenAgoSec)
       ? p.lastSeenAgoSec
@@ -2324,11 +2451,15 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
   const gpsIngestAgoSec = registryTimes?.lastGpsIngestMs
     ? Math.max(0, Math.round((now - registryTimes.lastGpsIngestMs) / 1000))
     : null;
-  const gpsDisplayAgeSec = displayGpsAgeSec(fixAgeSec, gpsIngestAgoSec);
-  const fixClockLagSec =
-    fixAgeSec != null && gpsIngestAgoSec != null ? fixAgeSec - gpsIngestAgoSec : null;
   const gpsFixAgeSec = stats.gps?.gpsFixAgeSec ?? null;
   const uploadLagSec = stats.gps?.uploadLagSec ?? null;
+  const gpsDisplayAgeSec = displayGpsAgeSec(fixAgeSec, gpsIngestAgoSec, {
+    gpsFixAgeSec,
+    uploadLagSec,
+    spd: stats.gps?.last?.spd,
+  });
+  const fixClockLagSec =
+    fixAgeSec != null && gpsIngestAgoSec != null ? fixAgeSec - gpsIngestAgoSec : null;
   // Ingest `athleteId` historically stores the coach name (recorder Settings → Coach).
   // Expose that as `coach`. `athleteId` on the wire is the rower only (walk-up / rowerName).
   const coach =
@@ -3629,7 +3760,8 @@ async function getMapPositions(orgId, onlineMs, staleMs, opts = {}) {
       ...p,
       strokeRate: rowing.strokeRate ?? null,
       strokeRateValid: Boolean(rowing.strokeRateValid),
-      capsize: Boolean(rowing.capsize),
+      // Monitor/map capsize is sticky-only (same as the Postgres path).
+      capsize: false,
       tiltDeg: rowing.tiltDeg ?? null,
     };
   });

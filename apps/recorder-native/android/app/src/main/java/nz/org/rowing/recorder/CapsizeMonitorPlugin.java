@@ -43,9 +43,7 @@ public class CapsizeMonitorPlugin extends Plugin {
 
     @PluginMethod
     public void stop(PluginCall call) {
-        CapsizeMonitorService.clearRecordingSession(getContext());
-        Intent intent = new Intent(getContext(), CapsizeMonitorService.class);
-        getContext().stopService(intent);
+        CapsizeMonitorService.stopRecordingSession(getContext());
         call.resolve();
     }
 

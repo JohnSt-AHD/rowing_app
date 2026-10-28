@@ -20,10 +20,13 @@ const GPS_CACHE_SAMPLE_SOURCES = new Set([
   'scheduled_cache',
   'heartbeat_cache',
   'stale_piggyback',
+  'last_known',
 ]);
 /** Prefer the other clock when this far from server receive time. */
 const SAMPLE_CLOCK_SKEW_MS = 20_000;
 const SAMPLE_CLOCK_FUTURE_SLACK_MS = 5_000;
+/** Sitting / last-known lock — same threshold as native RAW_GPS_MOVING_SPEED_MS. */
+const LAST_KNOWN_MAX_SPEED_MPS = 0.75;
 
 /** @param {string|null|undefined} sampleSource */
 function isGpsFixForMapPosition(sampleSource) {
@@ -62,26 +65,44 @@ function pickCloserClockMs(sampleT, gpsFixMs, now = Date.now()) {
 }
 
 /**
+ * Sitting last-known: speed ~0 (or tagged). Missing speed + a stale clock is
+ * also treated as last-known so we do not restamp an office lock to "now".
+ *
+ * @param {{ spd?: number|null, lastKnown?: boolean, sampleSource?: string|null }} [opts]
+ */
+function isSittingLastKnownFix(opts = {}) {
+  if (opts?.lastKnown === true) return true;
+  const src = opts?.sampleSource != null ? String(opts.sampleSource).trim() : '';
+  if (src === 'last_known' || GPS_CACHE_SAMPLE_SOURCES.has(src)) return true;
+  const speed = Number(opts?.spd);
+  if (Number.isFinite(speed)) return speed <= LAST_KNOWN_MAX_SPEED_MPS;
+  return true;
+}
+
+/**
  * Ingest-time clock: closer of sample t vs GPS fixMs, or server receive time
- * when a live fix is 20s+ behind (so the map pin can still move).
+ * when a *moving* live fix is 20s+ behind (so the map pin can still move).
+ * Do not restamp a non-moving last-known — Manager would stay "GPS live".
  *
  * @param {number|null|undefined} sampleT
  * @param {number|null|undefined} gpsFixMs
  * @param {number} [now]
  * @param {string|null|undefined} [sampleSource]
+ * @param {{ spd?: number|null, lastKnown?: boolean }} [opts]
  */
-function pickEffectiveSampleTimeMs(sampleT, gpsFixMs, now = Date.now(), sampleSource) {
+function pickEffectiveSampleTimeMs(sampleT, gpsFixMs, now = Date.now(), sampleSource, opts = {}) {
   const nowMs = Number(now);
   const receiveMs = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
   const chosen = pickCloserClockMs(sampleT, gpsFixMs, receiveMs);
   if (chosen == null) return receiveMs;
   if (isGpsFixForMapPosition(sampleSource) && receiveMs - chosen > SAMPLE_CLOCK_SKEW_MS) {
+    if (isSittingLastKnownFix({ ...opts, sampleSource })) return chosen;
     return receiveMs;
   }
   return chosen;
 }
 
-/** @param {{ t?: number, gps?: { fixMs?: number, sampleSource?: string } }} sample */
+/** @param {{ t?: number, gps?: { fixMs?: number, sampleSource?: string, spd?: number } }} sample */
 function reconcileSampleTime(sample, now = Date.now()) {
   if (!sample || typeof sample !== 'object') return sample;
   const next = pickEffectiveSampleTimeMs(
@@ -89,6 +110,7 @@ function reconcileSampleTime(sample, now = Date.now()) {
     sample.gps?.fixMs,
     now,
     sample.gps?.sampleSource,
+    { spd: sample.gps?.spd, lastKnown: sample.gps?.lastKnown },
   );
   if (Number.isFinite(next) && next !== Number(sample.t)) {
     sample.t = next;
@@ -171,7 +193,6 @@ function isGpsFixOutlier(prev, fix, opts = {}) {
 
   const dtSec = (fix.t - prev.t) / 1000;
   if (!Number.isFinite(dtSec) || dtSec <= 0) return false;
-  if (dtSec > 120) return false;
 
   const jumpM = distanceMeters(prev.lat, prev.lon, fix.lat, fix.lon);
   if (jumpM < 0.5) return false;
@@ -192,6 +213,10 @@ function isGpsFixOutlier(prev, fix, opts = {}) {
     if (jumpM / dtSec > maxMps * 1.4) return true;
   }
 
+  // A 30s+ hole must not bypass the speed cap. Highway / batched dumps
+  // (e.g. 4.6 km in 30s) used to return false here and leap the pin.
+  // Always reject implied speed above maxMps × dt (rowing 7.5, car 38).
+  if (jumpM / dtSec > maxMps) return true;
   return false;
 }
 
@@ -221,11 +246,13 @@ module.exports = {
   GPS_OUTLIER_BAD_ACC_M,
   GPS_CACHE_SAMPLE_SOURCES,
   SAMPLE_CLOCK_SKEW_MS,
+  LAST_KNOWN_MAX_SPEED_MPS,
   parseGpsOutlierMode,
   gpsOutlierLimitsForMode,
   distanceMeters,
   isGpsFixOutlier,
   isGpsFixForMapPosition,
+  isSittingLastKnownFix,
   pickCloserClockMs,
   pickEffectiveSampleTimeMs,
   reconcileSampleTime,

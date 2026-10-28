@@ -1,0 +1,661 @@
+#!/usr/bin/env node
+/**
+ * Failure/regain (GPS + network) and capsize live-reporting scenarios.
+ *
+ * Hits in-memory ingest-store + gps-outlier + capsize-clear. Does not call
+ * production, rnz tokens, or Postgres. Native NetworkCallback / siren / radio
+ * are source-checked only.
+ *
+ * Usage:
+ *   node scripts/test-gps-capsize-scenarios.mjs
+ *   node scripts/test-gps-capsize-scenarios.mjs --quick   # skip 32s / 61s waits
+ */
+import { createRequire } from 'node:module';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Never persist fake capsizes / GPS to a real DB.
+delete process.env.POSTGRES_URL;
+delete process.env.POSTGRES_URL_NON_POOLING;
+delete process.env.DATABASE_URL;
+delete process.env.RESEND_API_KEY;
+
+const require = createRequire(import.meta.url);
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(HERE, '..');
+const QUICK = process.argv.includes('--quick');
+
+const store = require('../apps/recorder-pwa/api/lib/ingest-store.js');
+const db = require('../apps/recorder-pwa/api/lib/db.js');
+const dayLog = require('../apps/recorder-pwa/api/lib/capsize-day-log.js');
+const gps = require('../apps/recorder-pwa/api/lib/gps-outlier.js');
+
+const {
+  isGpsFixOutlier,
+  filterOutlierGpsFixes,
+  distanceMeters,
+  isGpsFixForMapPosition,
+  isSittingLastKnownFix,
+  pickEffectiveSampleTimeMs,
+} = gps;
+
+const GPS_LIVE_SEC = 30;
+const GPS_STALE_SEC = 300;
+const ORIGIN = { lat: -37.9305, lon: 175.5485 };
+const ORG = 91001;
+const ONLINE_MS = 180_000;
+const STALE_MS = 300_000;
+const HOLE_MS = QUICK ? 50 : 32_000;
+const REARM_MS = QUICK ? 50 : 61_000;
+
+if (store.hasDb()) {
+  console.error('ABORT: Postgres still visible after unsetting DB env. Refusing fake capsizes.');
+  process.exit(2);
+}
+
+const results = [];
+const drift = [];
+const apkOnly = [];
+
+function offset(metersNorth, metersEast = 0, from = ORIGIN) {
+  const lat = from.lat + metersNorth / 111320;
+  const lon = from.lon + metersEast / (111320 * Math.cos((from.lat * Math.PI) / 180));
+  return { lat, lon };
+}
+
+function gpsState(p) {
+  const age = Number(p?.displayFixAgeSec ?? p?.fixAgeSec);
+  if (!Number.isFinite(age)) return 'lost';
+  if (age <= GPS_LIVE_SEC) return 'live';
+  if (age <= GPS_STALE_SEC) return 'amber';
+  return 'lost';
+}
+
+function deviceState(d) {
+  const age = Number(d?.gps?.displayAgeSec ?? d?.gps?.ageSec);
+  if (!Number.isFinite(age)) return 'lost';
+  if (age <= GPS_LIVE_SEC) return 'live';
+  if (age <= GPS_STALE_SEC) return 'amber';
+  return 'lost';
+}
+
+function lastSeenLive(row) {
+  const age = Number(row?.lastSeenAgoSec);
+  return Number.isFinite(age) && age <= GPS_LIVE_SEC;
+}
+
+function check(name, pass, extra = {}) {
+  const row = { name, pass: Boolean(pass), ...extra };
+  results.push(row);
+  const mark = pass ? 'PASS' : 'FAIL';
+  const detail = extra.detail ? ` — ${extra.detail}` : '';
+  console.log(`  [${mark}] ${name}${detail}`);
+  return pass;
+}
+
+function checkWait(name, pass, extra = {}) {
+  if (QUICK) {
+    results.push({ name, pass: true, skipped: true, detail: 'skipped in --quick (needs wall-clock)' });
+    console.log(`  [SKIP] ${name} (needs wall-clock)`);
+    return true;
+  }
+  return check(name, pass, extra);
+}
+
+function sleep(ms) {
+  if (ms <= 0) return Promise.resolve();
+  process.stdout.write(`  … waiting ${Math.round(ms / 1000)}s\n`);
+  return new Promise((resolveWait) => setTimeout(resolveWait, ms));
+}
+
+function gpsSample(t, lat, lon, extra = {}) {
+  const { spd = 4.5, acc = 6, sampleSource, lastKnown, fixMs, hdg } = extra;
+  const gpsBody = {
+    lat,
+    lon,
+    acc,
+    spd,
+    ...(fixMs != null ? { fixMs } : { fixMs: t }),
+    ...(sampleSource ? { sampleSource } : {}),
+    ...(lastKnown != null ? { lastKnown } : {}),
+    ...(hdg != null ? { hdg } : {}),
+  };
+  return { t, gps: gpsBody };
+}
+
+function motionOnly(t) {
+  return { t, motion: { ax: 0.1, ay: 0.2, az: 9.7 }, derived: { heartbeat: true } };
+}
+
+function tipSample(t, lat, lon) {
+  return {
+    t,
+    gps: { lat, lon, acc: 6, spd: 0.2, fixMs: t },
+    derived: { capsize: true, tiltDeg: 110 },
+  };
+}
+
+function uprightSample(t, lat, lon) {
+  return {
+    t,
+    gps: { lat, lon, acc: 6, spd: 0.2, fixMs: t },
+    derived: { capsizeCleared: true, tiltDeg: 8 },
+  };
+}
+
+function recallSample(t, lat, lon) {
+  return {
+    t,
+    gps: { lat, lon, acc: 6, spd: 0.2, fixMs: t },
+    derived: { capsizeRecalled: true, tiltDeg: 110 },
+  };
+}
+
+async function ingest(deviceId, samples, sessionId = `s-${deviceId}`) {
+  return store.recordBatch(ORG, sessionId, deviceId, deviceId, samples, undefined, {
+    boatName: deviceId,
+  });
+}
+
+async function mapPin(deviceId) {
+  try {
+    const positions = await store.getMapPositions(ORG, ONLINE_MS, STALE_MS, {
+      predictMode: 'rowing',
+    });
+    return (positions || []).find((p) => p.deviceId === deviceId) || null;
+  } catch (err) {
+    console.error('  getMapPositions failed:', err?.message || err);
+    return null;
+  }
+}
+
+async function deviceCard(deviceId) {
+  try {
+    const listed = await store.listDevices(ORG, { windowMs: 180_000, onlineMs: ONLINE_MS });
+    const devices = listed?.devices || listed || [];
+    const arr = Array.isArray(devices) ? devices : [];
+    return arr.find((d) => d.deviceId === deviceId) || null;
+  } catch (err) {
+    console.error('  listDevices failed:', err?.message || err);
+    return null;
+  }
+}
+
+async function capsizeOf(deviceId) {
+  const pin = await mapPin(deviceId);
+  return {
+    pin,
+    capsize: Boolean(pin?.capsize),
+    phase: pin?.capsizePhase || null,
+    responding: Boolean(pin?.capsizeResponding),
+    respondingBy: pin?.capsizeRespondingBy || null,
+    respondingSource: pin?.capsizeRespondingSource || null,
+  };
+}
+
+store.setOrgGpsOutlierModeCache(ORG, 'rowing');
+
+// ---------------------------------------------------------------------------
+// Native / explainer source checks
+// ---------------------------------------------------------------------------
+console.log('\n== Source checks (native outbox + explainer) ==');
+const nativeSrc = readFileSync(
+  join(ROOT, 'apps/recorder-native/android/app/src/main/java/nz/org/rowing/recorder/CapsizeMonitorService.java'),
+  'utf8',
+);
+const explainerSrc = readFileSync(join(ROOT, 'apps/recorder-pwa/public/capsize-explainer.js'), 'utf8');
+const explainerHtml = readFileSync(join(ROOT, 'apps/recorder-pwa/public/capsize-explainer.html'), 'utf8');
+
+check('native NetworkCallback onAvailable/onValidated kicks flush', /kickNetworkResume\("available"\)/.test(nativeSrc) && /kickNetworkResume\("validated"\)/.test(nativeSrc) && /onLost/.test(nativeSrc) && /Network lost — buffering ingest locally/.test(nativeSrc));
+check('native pending outbox PENDING_BATCHES_KEY + flushPendingIngest', /PENDING_BATCHES_KEY = "pendingIngestBatches"/.test(nativeSrc) && /flushPendingIngest\(p, MAX_PENDING_FLUSH_PER_CYCLE\)/.test(nativeSrc) && /flushIngestBufferNow\(\)/.test(nativeSrc));
+check('native drops stale sitting last-known so Manager can age', /Drop stale last-known/.test(nativeSrc) && /source = "last_known"/.test(nativeSrc));
+check('native queues capsize ingest while offline', /Capsize ingest queued/.test(nativeSrc));
+check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
+check('explainer has no GPS-regain scenario', !/gps-regain|last-known|GPS live/.test(explainerSrc) && !/GPS regain/.test(explainerHtml));
+
+apkOnly.push('Airplane-mode / cellular PDP cut on a real phone (NetworkCallback + SharedPreferences outbox)');
+apkOnly.push('Underwater radio die (native screen/siren off; fleet sticky already covered in-memory)');
+apkOnly.push('Native 5s shout / siren stop on upright, on-the-way, or I\'m OK');
+apkOnly.push('Help-on-the-way athlete HUD (regatta message needs Postgres)');
+apkOnly.push('Real GNSS indoor → outdoor lock time and fused-provider last-known');
+
+if (!/gps-regain|last-known|GPS live/.test(explainerSrc)) {
+  drift.push('Explainer is capsize-only: no GPS last-known → live-again demo (not added; different surface).');
+}
+
+// ---------------------------------------------------------------------------
+// GPS / network
+// ---------------------------------------------------------------------------
+console.log('\n== GPS / network regain ==');
+
+{
+  const id = 'gps-indoor';
+  const sitT = Date.now() - 180_000;
+  const sit = offset(0, 0);
+  const r1 = await ingest(id, [gpsSample(sitT, sit.lat, sit.lon, { spd: 0.05, sampleSource: 'direct', fixMs: sitT })]);
+  const pin1 = await mapPin(id);
+  const card1 = await deviceCard(id);
+  check('indoor sitting last-known: ingest kept', r1.received >= 1 && !r1.ignoredEndedSession);
+  check('indoor sitting last-known: map badge amber (fix ~180s, not HTTP-live)', gpsState(pin1) === 'amber' && (pin1.displayFixAgeSec ?? pin1.fixAgeSec) >= 150, {
+    detail: `map=${gpsState(pin1)} age=${pin1?.displayFixAgeSec ?? pin1?.fixAgeSec} card=${card1 ? deviceState(card1) : 'n/a'}`,
+  });
+  check('indoor sitting last-known: listDevices card also amber/lost (not live)', !card1 || deviceState(card1) !== 'live', {
+    detail: card1 ? `card=${deviceState(card1)} displayAge=${card1.gps?.displayAgeSec}` : 'listDevices missing',
+  });
+
+  const lkT = Date.now();
+  await ingest(id, [
+    gpsSample(lkT, sit.lat, sit.lon, {
+      spd: 0,
+      sampleSource: 'last_known',
+      lastKnown: true,
+      fixMs: sitT,
+    }),
+  ]);
+  const pinLk = await mapPin(id);
+  check('last_known sample is not a live map fix', isGpsFixForMapPosition('last_known') === false && isSittingLastKnownFix({ lastKnown: true }) === true);
+  check('last_known does not leap the pin', pinLk && distanceMeters(pinLk.latitude, pinLk.longitude, sit.lat, sit.lon) < 15, {
+    detail: pinLk ? `d=${Math.round(distanceMeters(pinLk.latitude, pinLk.longitude, sit.lat, sit.lon))}m` : 'no pin',
+  });
+  check('last_known does not restamp sitting clock to now', pickEffectiveSampleTimeMs(sitT, sitT, Date.now(), 'last_known', { spd: 0 }) === sitT);
+
+  const walk = offset(18, 0);
+  const walkT = Date.now();
+  await ingest(id, [
+    gpsSample(walkT, walk.lat, walk.lon, { spd: 1.4, sampleSource: 'direct', fixMs: walkT }),
+  ]);
+  const pin2 = await mapPin(id);
+  const card2 = await deviceCard(id);
+  check('GPS returns (walk): pin moved nearby (~18m) and badge live again', gpsState(pin2) === 'live' && pin2 && distanceMeters(pin2.latitude, pin2.longitude, walk.lat, walk.lon) < 25, {
+    detail: `map=${gpsState(pin2)} age=${pin2?.displayFixAgeSec ?? pin2?.fixAgeSec} moved=${pin2 ? Math.round(distanceMeters(pin2.latitude, pin2.longitude, sit.lat, sit.lon)) : '?'}m`,
+  });
+  check('GPS returns: listDevices card live again', card2 && deviceState(card2) === 'live', {
+    detail: card2 ? `card=${deviceState(card2)} age=${card2.gps?.displayAgeSec}` : 'missing',
+  });
+}
+
+{
+  const id = 'gps-hole';
+  const t0 = Date.now() - 12_000;
+  const trail = [];
+  for (let i = 0; i < 12; i++) {
+    const pos = offset(i * 5, 0);
+    const t = t0 + i * 1000;
+    trail.push(gpsSample(t, pos.lat, pos.lon, { spd: 5, sampleSource: 'direct', fixMs: t }));
+  }
+  await ingest(id, trail);
+  const pinBefore = await mapPin(id);
+  const before = pinBefore ? { lat: pinBefore.latitude, lon: pinBefore.longitude } : null;
+
+  const idNet = 'gps-net';
+  await ingest(idNet, [gpsSample(Date.now(), ORIGIN.lat, ORIGIN.lon, { spd: 4.2, sampleSource: 'direct' })]);
+  const netDropStarted = Date.now();
+
+  await sleep(HOLE_MS);
+
+  await ingest(id, [motionOnly(Date.now())]);
+  const pinPaused = await mapPin(id);
+  const pauseJump = pinPaused && before
+    ? distanceMeters(pinPaused.latitude, pinPaused.longitude, before.lat, before.lon)
+    : Infinity;
+  const pauseAge = pinPaused?.displayFixAgeSec ?? pinPaused?.fixAgeSec;
+  checkWait('GPS hole: pin paused (no leap) while age leaves live', pauseJump < 25 && gpsState(pinPaused) !== 'live' && pauseAge >= 25, {
+    detail: `jump=${Math.round(pauseJump)}m age=${pauseAge} state=${gpsState(pinPaused)}`,
+  });
+
+  const netDuring = await mapPin(idNet);
+  checkWait('network drop: lastSeen ages out of live (no flush yet)', Boolean(netDuring) && !lastSeenLive(netDuring), {
+    detail: `lastSeenAgo=${netDuring?.lastSeenAgoSec}s online=${netDuring?.online}`,
+  });
+
+  const leap = offset(4000, 0);
+  const leapT = Date.now();
+  const leapIn = await ingest(id, [gpsSample(leapT, leap.lat, leap.lon, { spd: 20, sampleSource: 'direct', fixMs: leapT })]);
+  const pinLeap = await mapPin(id);
+  const leapJump = pinLeap && before
+    ? distanceMeters(pinLeap.latitude, pinLeap.longitude, before.lat, before.lon)
+    : Infinity;
+  check('GPS hole then 4km leap: rejected, pin does not jump a km', pinLeap && leapJump < 80 && distanceMeters(pinLeap.latitude, pinLeap.longitude, leap.lat, leap.lon) > 1000, {
+    detail: `pinJump=${Math.round(leapJump)}m dropped=${leapIn.dropped ?? 0} outliers=${store.getMetrics().gpsOutliersRejected}`,
+  });
+  check('4km / ~32s is an outlier in rowing (speed×dt, no 30s bypass)', isGpsFixOutlier(
+    { t: Date.now() - 32_000, ...before },
+    { t: Date.now(), lat: leap.lat, lon: leap.lon, acc: 6 },
+    { mode: 'rowing' },
+  ) === true);
+
+  const resume = offset((before ? distanceMeters(ORIGIN.lat, ORIGIN.lon, before.lat, before.lon) : 55) + 40, 0);
+  const resumeT = Date.now();
+  await ingest(id, [gpsSample(resumeT, resume.lat, resume.lon, { spd: 4.8, sampleSource: 'direct', fixMs: resumeT })]);
+  const pinResume = await mapPin(id);
+  const resumeJump = pinResume && before
+    ? distanceMeters(pinResume.latitude, pinResume.longitude, before.lat, before.lon)
+    : Infinity;
+  checkWait('GPS hole then nearby resume: pin continues (~40m) and live again', gpsState(pinResume) === 'live' && resumeJump < 120 && resumeJump > 10, {
+    detail: `continue=${Math.round(resumeJump)}m state=${gpsState(pinResume)} age=${pinResume?.displayFixAgeSec ?? pinResume?.fixAgeSec}`,
+  });
+
+  // Phone keeps sampling during the outage (native outbox). Timestamps span the
+  // hole; the last sample is ~now. Walk-speed so rowing outlier rules keep them.
+  const flushNow = Date.now();
+  const queued = [];
+  const steps = 8;
+  const dtMs = Math.max(1000, Math.round((flushNow - netDropStarted) / steps));
+  for (let i = 1; i <= steps; i++) {
+    const t = netDropStarted + i * dtMs;
+    const pos = offset(i * 6, 0);
+    queued.push(gpsSample(Math.min(t, flushNow), pos.lat, pos.lon, { spd: 1.6, sampleSource: 'direct' }));
+  }
+  const flushed = await ingest(idNet, queued);
+  const netAfter = await mapPin(idNet);
+  check('network reconnect flush: lastSeen live again after queued ingest', netAfter && lastSeenLive(netAfter) && gpsState(netAfter) === 'live', {
+    detail: `lastSeenAgo=${netAfter?.lastSeenAgoSec}s state=${gpsState(netAfter)} received=${flushed.received} dropped=${flushed.dropped ?? 0}`,
+  });
+}
+
+{
+  const id = 'gps-stop';
+  const sessionId = `s-${id}`;
+  const a = offset(10, 0);
+  const b = offset(80, 0);
+  await ingest(id, [gpsSample(Date.now(), a.lat, a.lon, { spd: 4, sampleSource: 'direct' })], sessionId);
+  const pinA = await mapPin(id);
+  await store.endSession(ORG, sessionId, id, Date.now(), id);
+  const afterStop = await ingest(id, [gpsSample(Date.now(), b.lat, b.lon, { spd: 5, sampleSource: 'direct' })], sessionId);
+  const pinB = await mapPin(id);
+  const moved = pinA && pinB
+    ? distanceMeters(pinA.latitude, pinA.longitude, pinB.latitude, pinB.longitude)
+    : Infinity;
+  check('Stop: further GPS ignored for that session', afterStop.ignoredEndedSession === true || (afterStop.received === 0 && (afterStop.dropped || 0) > 0), {
+    detail: `received=${afterStop.received} dropped=${afterStop.dropped} ignored=${afterStop.ignoredEndedSession}`,
+  });
+  check('Stop: pin does not jump to post-stop GPS', moved < 30, {
+    detail: `moved=${Math.round(moved)}m`,
+  });
+}
+
+{
+  const id = 'gps-mode';
+  store.setOrgGpsOutlierModeCache(ORG, 'rowing');
+  const t0 = Date.now() - 9_000;
+  const drive = [];
+  for (let i = 0; i < 10; i++) {
+    const pos = offset(i * 25, 0);
+    const t = t0 + i * 1000;
+    drive.push(gpsSample(t, pos.lat, pos.lon, { spd: 25, sampleSource: 'direct', fixMs: t }));
+  }
+  const rRow = await ingest(id, drive);
+  const pinRow = await mapPin(id);
+  const stick = pinRow
+    ? distanceMeters(pinRow.latitude, pinRow.longitude, ORIGIN.lat, ORIGIN.lon)
+    : Infinity;
+  check('wrong mode (drive in rowing): pin sticks near first fix, not a 250m trail', stick < 80, {
+    detail: `stick=${Math.round(stick)}m dropped=${rRow.dropped ?? 0} received=${rRow.received}`,
+  });
+
+  store.setOrgGpsOutlierModeCache(ORG, 'car');
+  const t1 = Date.now();
+  const last = pinRow || { latitude: ORIGIN.lat, longitude: ORIGIN.lon };
+  const car = [];
+  for (let i = 1; i <= 8; i++) {
+    const pos = offset(stick + i * 25, 0);
+    const t = t1 + i * 1000;
+    car.push(gpsSample(t, pos.lat, pos.lon, { spd: 25, sampleSource: 'direct', fixMs: t }));
+  }
+  await ingest(id, car);
+  const pinCar = await mapPin(id);
+  const carMove = pinCar
+    ? distanceMeters(pinCar.latitude, pinCar.longitude, last.latitude ?? last.lat, last.longitude ?? last.lon)
+    : 0;
+  check('switch interpretation to car: pin moves along the drive', carMove > 80, {
+    detail: `moved=${Math.round(carMove)}m`,
+  });
+  store.setOrgGpsOutlierModeCache(ORG, 'rowing');
+}
+
+{
+  const { prev, fix } = (() => {
+    const t0 = Date.now();
+    return {
+      prev: { t: t0, ...ORIGIN, acc: 6 },
+      fix: { t: t0 + 1000, ...offset(25), acc: 6 },
+    };
+  })();
+  check('document pin-stick: 25 m / 1s rejected in rowing, kept in car', isGpsFixOutlier(prev, fix, { mode: 'rowing' }) === true && isGpsFixOutlier(prev, fix, { mode: 'car' }) === false);
+}
+
+// ---------------------------------------------------------------------------
+// Capsize
+// ---------------------------------------------------------------------------
+console.log('\n== Capsize (ingest-store / capsize-clear, in-memory) ==');
+
+{
+  const id = 'cap-stay';
+  const pos = offset(0, 40);
+  await ingest(id, [tipSample(Date.now(), pos.lat, pos.lon)]);
+  const a = await capsizeOf(id);
+  check('tip stay inverted: sticky active', a.capsize && a.phase === 'active' && !a.responding, {
+    detail: `phase=${a.phase} capsize=${a.capsize}`,
+  });
+}
+
+{
+  const id = 'cap-right';
+  const pos = offset(0, 80);
+  await ingest(id, [tipSample(Date.now() - 1500, pos.lat, pos.lon)]);
+  await ingest(id, [uprightSample(Date.now(), pos.lat, pos.lon)]);
+  const a = await capsizeOf(id);
+  check('tip then right, no ack: fleet sticky remains', a.capsize && a.phase === 'active', {
+    detail: `phase=${a.phase} (phone upright must not clear Manager)`,
+  });
+}
+
+{
+  const id = 'cap-onway';
+  const pos = offset(0, 120);
+  await ingest(id, [tipSample(Date.now(), pos.lat, pos.lon)]);
+  const ack = await store.clearCapsizeAlert(ORG, id, {
+    ackKind: 'responding',
+    ackedBy: 'Coach Tom',
+    ackSource: 'manager',
+  });
+  const a = await capsizeOf(id);
+  check('manager on-the-way: sticky stays, phase responding', a.capsize && a.phase === 'responding' && a.responding && a.respondingBy === 'Coach Tom' && ack.ackKind === 'responding' && (ack.cleared || []).length === 0, {
+    detail: `phase=${a.phase} by=${a.respondingBy} helpNotified=${JSON.stringify(ack.helpNotified)}`,
+  });
+  if (!ack.helpNotified?.length) {
+    drift.push('Help-on-the-way text is sent via db.setRegattaMessage — no-op without Postgres (explainer always shows the HUD). Shout stop is native.');
+  }
+}
+
+{
+  const id = 'cap-athlete';
+  const pos = offset(0, 160);
+  await ingest(id, [tipSample(Date.now() - 400, pos.lat, pos.lon)]);
+  await ingest(id, [recallSample(Date.now(), pos.lat, pos.lon)]);
+  const a = await capsizeOf(id);
+  const log = await dayLog.listDayLog(ORG);
+  const events = log?.events || [];
+  const mine = events.find((e) => e.deviceId === id);
+  check('athlete I\'m OK: crew safe, sticky cleared', !a.capsize, {
+    detail: `capsize=${a.capsize} logStatus=${mine?.status} ackedBy=${mine?.ackedBy}`,
+  });
+  check('athlete I\'m OK: day log Crew OK — false alarm', Boolean(mine) && /crew ok|false alarm/i.test(String(mine.ackedBy || '')), {
+    detail: `ackedBy=${mine?.ackedBy} status=${mine?.status}`,
+  });
+}
+
+{
+  const idMgr = 'cap-safe-mgr';
+  const idRs = 'cap-safe-rs';
+  const posM = offset(0, 200);
+  const posR = offset(0, 240);
+  await ingest(idMgr, [tipSample(Date.now(), posM.lat, posM.lon)]);
+  await ingest(idRs, [tipSample(Date.now(), posR.lat, posR.lon)]);
+  const mgr = await store.clearCapsizeAlert(ORG, idMgr, {
+    ackKind: 'safe',
+    ackedBy: 'Coach Tom',
+    ackSource: 'manager',
+  });
+  const rs = await store.clearCapsizeAlert(ORG, idRs, {
+    ackKind: 'safe',
+    ackedBy: 'RowSafe',
+    ackSource: 'rowsafe',
+  });
+  const aM = await capsizeOf(idMgr);
+  const aR = await capsizeOf(idRs);
+  check('crew is safe (manager, per-boat): sticky cleared', !aM.capsize && mgr.ackKind === 'safe', {
+    detail: `cleared=${JSON.stringify(mgr.cleared)}`,
+  });
+  check('crew is safe (rowsafe, per-boat): sticky cleared', !aR.capsize && rs.ackKind === 'safe', {
+    detail: `cleared=${JSON.stringify(rs.cleared)}`,
+  });
+}
+
+{
+  const id = 'cap-offline';
+  const pos = offset(0, 280);
+  const queuedTip = [tipSample(Date.now(), pos.lat, pos.lon)];
+  const before = await capsizeOf(id);
+  check('offline tip: fleet quiet until reconnect (queue not ingested)', !before.capsize, {
+    detail: 'no recordBatch yet',
+  });
+  await ingest(id, queuedTip);
+  const after = await capsizeOf(id);
+  check('offline reconnect: queued capsize:true raises sticky', after.capsize && after.phase === 'active', {
+    detail: `phase=${after.phase}`,
+  });
+}
+
+{
+  const idA = 'cap-two-a';
+  const idB = 'cap-two-b';
+  const posA = offset(20, 320);
+  const posB = offset(-20, 320);
+  await ingest(idA, [tipSample(Date.now(), posA.lat, posA.lon)]);
+  await ingest(idB, [tipSample(Date.now(), posB.lat, posB.lon)]);
+  const fleetWay = await store.clearCapsizeAlert(ORG, undefined, {
+    ackKind: 'responding',
+    ackedBy: 'Coach Tom',
+    ackSource: 'manager',
+  });
+  const aA = await capsizeOf(idA);
+  const aB = await capsizeOf(idB);
+  check('two boats: manager ack (no deviceId) covers unacked boats (both responding)', aA.phase === 'responding' && aB.phase === 'responding' && (fleetWay.responded || []).length >= 2, {
+    detail: `responded=${JSON.stringify(fleetWay.responded)}`,
+  });
+}
+
+{
+  const idA = 'cap-per-a';
+  const idB = 'cap-per-b';
+  const posA = offset(20, 360);
+  const posB = offset(-20, 360);
+  await ingest(idA, [tipSample(Date.now(), posA.lat, posA.lon)]);
+  await ingest(idB, [tipSample(Date.now(), posB.lat, posB.lon)]);
+  await ingest(idA, [recallSample(Date.now(), posA.lat, posA.lon)]);
+  const aA = await capsizeOf(idA);
+  const aB = await capsizeOf(idB);
+  check('two boats: athlete I\'m OK is per-boat (A safe, B still sticky)', !aA.capsize && aB.capsize && aB.phase === 'active', {
+    detail: `A=${aA.phase} B=${aB.phase}`,
+  });
+  await store.clearCapsizeAlert(ORG, idB, {
+    ackKind: 'safe',
+    ackedBy: 'RowSafe',
+    ackSource: 'rowsafe',
+  });
+  const bAfter = await capsizeOf(idB);
+  check('two boats: RowSafe crew-safe is per-boat (B cleared)', !bAfter.capsize);
+}
+
+{
+  const idRearm = 'cap-rearm';
+  const idHold = 'cap-hold';
+  const posR = offset(0, 400);
+  const posH = offset(0, 440);
+  await ingest(idRearm, [tipSample(Date.now(), posR.lat, posR.lon)]);
+  await store.clearCapsizeAlert(ORG, idRearm, {
+    ackKind: 'safe',
+    ackedBy: 'Coach Tom',
+    ackSource: 'manager',
+  });
+  const immediate = await ingest(idRearm, [tipSample(Date.now(), posR.lat, posR.lon)]);
+  const rearmNow = await capsizeOf(idRearm);
+  check('60s re-arm: tip immediately after crew-safe is ignored', !rearmNow.capsize, {
+    detail: `received=${immediate.received} capsize=${rearmNow.capsize}`,
+  });
+
+  await ingest(idHold, [tipSample(Date.now() - 200, posH.lat, posH.lon)]);
+  await ingest(idHold, [recallSample(Date.now(), posH.lat, posH.lon)]);
+  const holdCleared = await capsizeOf(idHold);
+  check('hold-until-upright: athlete recall clears sticky while still inverted', !holdCleared.capsize);
+
+  await sleep(REARM_MS);
+
+  await ingest(idRearm, [tipSample(Date.now(), posR.lat, posR.lon)]);
+  const rearmLater = await capsizeOf(idRearm);
+  checkWait('60s re-arm: tip after cooldown raises sticky again', rearmLater.capsize && rearmLater.phase === 'active', {
+    detail: `phase=${rearmLater.phase}`,
+  });
+
+  await ingest(idHold, [tipSample(Date.now(), posH.lat, posH.lon)]);
+  const holdStill = await capsizeOf(idHold);
+  checkWait('hold-until-upright: tip after 60s still ignored while inverted', !holdStill.capsize, {
+    detail: `capsize=${holdStill.capsize}`,
+  });
+  await ingest(idHold, [uprightSample(Date.now(), posH.lat, posH.lon)]);
+  await ingest(idHold, [tipSample(Date.now(), posH.lat, posH.lon)]);
+  const holdReleased = await capsizeOf(idHold);
+  checkWait('hold-until-upright: after upright, a new tip can fire', holdReleased.capsize && holdReleased.phase === 'active', {
+    detail: `phase=${holdReleased.phase}`,
+  });
+}
+
+{
+  const filterNearby = filterOutlierGpsFixes(
+    [
+      { t: 1_000, ...ORIGIN, acc: 6 },
+      { t: 46_000, ...offset(40), acc: 6 },
+    ],
+    { mode: 'rowing' },
+  );
+  const filterLeap = filterOutlierGpsFixes(
+    [
+      { t: 1_000, ...ORIGIN, acc: 6 },
+      { t: 46_000, ...offset(4000), acc: 6 },
+    ],
+    { mode: 'rowing' },
+  );
+  check('helper: 40m / 45s nearby resume kept', filterNearby.length === 2);
+  check('helper: 4km / 45s leap dropped', filterLeap.length === 1);
+}
+
+const fail = results.filter((r) => !r.pass);
+const passN = results.filter((r) => r.pass).length;
+
+const out = {
+  ranAt: new Date().toISOString(),
+  quick: QUICK,
+  hasDb: store.hasDb(),
+  passN,
+  failN: fail.length,
+  results,
+  drift,
+  apkOnly,
+  metrics: store.getMetrics(),
+};
+
+writeFileSync(join(HERE, '_tmp-gps-capsize-scenarios.out.json'), JSON.stringify(out, null, 2));
+
+console.log('\n== Summary ==');
+console.log(JSON.stringify({
+  passN,
+  failN: fail.length,
+  fail: fail.map((f) => f.name),
+  drift,
+  apkOnly,
+  quick: QUICK,
+}, null, 2));
+
+if (fail.length) process.exitCode = 1;

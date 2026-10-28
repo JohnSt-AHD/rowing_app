@@ -283,13 +283,41 @@ function destinationLatLon(lat, lon, course, distanceM) {
   return [toDeg(φ2), ((toDeg(λ2) + 540) % 360) - 180];
 }
 
-/** Age used for map live/delayed/lost — prefers upload time when fix clock lags. */
+/**
+ * Age used for map live/delayed/lost.
+ * Last-known / restamped office lock: use the satellite fix, not HTTP.
+ * Live moving + small clock skew: prefer ingest so the pin stays live.
+ */
 function mapDisplayAgeSec(p) {
   if (!p || typeof p !== 'object') return null;
   if (p.displayFixAgeSec != null && Number.isFinite(p.displayFixAgeSec)) {
     return p.displayFixAgeSec;
   }
   const ingest = p.ingestAgoSec ?? p.lastSeenAgoSec;
+  const trueFix = p.gpsFixAgeSec != null && Number.isFinite(p.gpsFixAgeSec)
+    ? p.gpsFixAgeSec
+    : p.fixAgeSec;
+  const lag =
+    p.uploadLagSec != null && Number.isFinite(p.uploadLagSec)
+      ? p.uploadLagSec
+      : trueFix != null && ingest != null
+        ? trueFix - ingest
+        : 0;
+  const clockGap = trueFix != null && ingest != null ? trueFix - ingest : 0;
+  const effectiveLag = Math.max(lag, clockGap);
+  const sitting = p.speed == null || !Number.isFinite(p.speed) || p.speed <= 0.75;
+  if (trueFix != null && ingest != null && effectiveLag > 20 && (sitting || effectiveLag > 60)) {
+    return trueFix;
+  }
+  if (
+    ingest != null &&
+    p.fixAgeSec != null &&
+    Number.isFinite(p.fixAgeSec) &&
+    p.fixAgeSec > 30 &&
+    p.fixAgeSec - ingest > 20
+  ) {
+    return p.fixAgeSec;
+  }
   if (
     p.fixAgeSec != null &&
     ingest != null &&
@@ -300,6 +328,31 @@ function mapDisplayAgeSec(p) {
     return ingest;
   }
   return p.fixAgeSec ?? null;
+}
+
+/** Last-seen label: when ingest vs fix diverge a lot, show the fix (last-known). */
+function lastSeenDisplaySec(d) {
+  if (!d || typeof d !== 'object') return null;
+  const seen = d.lastSeenAgoSec;
+  const gps = d.gps || {};
+  const fixAge = gps.gpsFixAgeSec ?? d.gpsFixAgeSec ?? gps.ageSec ?? d.fixAgeSec;
+  const ingest = gps.ingestAgoSec ?? d.ingestAgoSec ?? seen;
+  const lagVal = gps.uploadLagSec ?? d.uploadLagSec;
+  const lag =
+    lagVal != null && Number.isFinite(lagVal)
+      ? lagVal
+      : fixAge != null && ingest != null
+        ? fixAge - ingest
+        : 0;
+  if (
+    fixAge != null &&
+    Number.isFinite(fixAge) &&
+    lag > 20 &&
+    fixAge > (seen ?? 0) + 20
+  ) {
+    return fixAge;
+  }
+  return seen ?? null;
 }
 
 /** Seconds since last upload (prefer ingest/seen over fix clock). */
@@ -799,7 +852,7 @@ function deviceSummaryLine(d) {
     const spm = strokeRateForDevice(d);
     if (spm != null) parts.push(fmtSpm(spm));
   }
-  parts.push(`seen ${fmtAgoSec(d.lastSeenAgoSec)}`);
+  parts.push(`seen ${fmtAgoSec(lastSeenDisplaySec(d))}`);
   return parts.join(' · ');
 }
 
@@ -1397,7 +1450,7 @@ function popupHtml(p) {
     paceMps != null && window.RowingSpeed
       ? `<br>Pace: ${window.RowingSpeed.formatPaceWithPrognostic(paceMps, p.deviceId, p.athleteId, { suffix: true })}`
       : '';
-  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}${staleNote}<br>GPS fix ${fmtAgoSec(dispAge ?? p.fixAgeSec)} · seen ${fmtAgoSec(p.lastSeenAgoSec)}${smoothNote}${compareNote}${coachNote}${hb}${bat}${isCoachMapItem(p) ? '' : pace}${hr}${isCoachMapItem(p) ? '' : spm}${tilt}${cap}</div>`;
+  return `<div class="map-popup"><strong>${esc(p.deviceId)}</strong><br>${status}${staleNote}<br>GPS fix ${fmtAgoSec(dispAge ?? p.fixAgeSec)} · seen ${fmtAgoSec(lastSeenDisplaySec(p))}${smoothNote}${compareNote}${coachNote}${hb}${bat}${isCoachMapItem(p) ? '' : pace}${hr}${isCoachMapItem(p) ? '' : spm}${tilt}${cap}</div>`;
 }
 
 function updateMap(positions) {
@@ -1761,6 +1814,9 @@ function renderDevice(d) {
         displayFixAgeSec: d.gps?.displayAgeSec,
         ingestAgoSec: d.gps?.ingestAgoSec,
         lastSeenAgoSec: d.lastSeenAgoSec,
+        gpsFixAgeSec: d.gps?.gpsFixAgeSec,
+        uploadLagSec: d.gps?.uploadLagSec,
+        speed: d.gps?.last?.spd,
       });
   const dataStale = isDeviceDataStale(d);
   const receiveAge = deviceDataReceiveAgeSec(d);
@@ -1856,7 +1912,7 @@ function renderDevice(d) {
       <div class="meta-row">
         <span>Ingest <strong>${fmtHz(d.ingestRateHz)}</strong></span>
         <span>Total samples <strong>${d.totalSamples}</strong></span>
-        <span>Last seen <strong>${fmtAgoSec(d.lastSeenAgoSec)}</strong></span>
+        <span>Last seen <strong>${fmtAgoSec(lastSeenDisplaySec(d))}</strong></span>
       </div>
       ${coords ? `<div class="coords">${coords}${(() => {
         const disp = gpsDisplayAge(gps);

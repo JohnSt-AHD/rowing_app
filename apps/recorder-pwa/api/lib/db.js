@@ -1542,6 +1542,20 @@ async function endSession(orgId, sessionId, endedAtMs) {
   return (upd.rowCount ?? 0) > 0;
 }
 
+/** Lightweight ended_at lookup — do not pull samples. */
+async function getSessionEndedAtMs(orgId, sessionId) {
+  if (!hasDb() || !sessionId) return null;
+  const sql = await getSql();
+  const rows = await sql`
+    SELECT (EXTRACT(EPOCH FROM ended_at) * 1000)::bigint AS ended_at_ms
+    FROM rnz_sessions
+    WHERE org_id = ${orgId} AND session_id = ${String(sessionId)}
+    LIMIT 1
+  `;
+  const v = Number(rows.rows[0]?.ended_at_ms);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
 /**
  * Public walk-up check-in: start a no-GPS logbook session for a named rower + boat.
  * @returns {Promise<{ sessionId: string, deviceId: string, rowerName: string, startedAt: string }>}
@@ -1822,7 +1836,10 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
       s.gps?.fixMs != null && Number.isFinite(Number(s.gps.fixMs))
         ? Number(s.gps.fixMs)
         : null;
-    const t = pickEffectiveSampleTimeMs(s.t, fixMs, now, sampleSource);
+    const t = pickEffectiveSampleTimeMs(s.t, fixMs, now, sampleSource, {
+      spd: s.gps?.spd,
+      lastKnown: s.gps?.lastKnown,
+    });
     if (!Number.isFinite(t)) continue;
     if (!best || t >= best.t) {
       best = {
@@ -4662,6 +4679,7 @@ module.exports = {
   resolveMemoryOrgFromToken,
   persistBatch,
   endSession,
+  getSessionEndedAtMs,
   startWalkupSession,
   endWalkupSession,
   listOpenWalkupSessions,
