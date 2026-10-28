@@ -28,6 +28,7 @@ const {
   pickEffectiveSampleTimeMs,
   isSittingLastKnownFix,
   isGpsFixForMapPosition,
+  LAST_KNOWN_MAP_MOVE_M,
   GPS_OUTLIER_MAX_ROWING_MPS,
   GPS_OUTLIER_MAX_CAR_MPS,
   GPS_OUTLIER_MAX_JUMP_M,
@@ -531,6 +532,26 @@ const restampCases = [
   {
     name: 'last_known is not a live map fix and not restamped',
     pass: isGpsFixForMapPosition('last_known') === false && pickEffectiveSampleTimeMs(stale, stale, now, 'last_known', { spd: 0 }) === stale,
+  },
+  {
+    name: 'same-coord last_known is not map-eligible',
+    pass:
+      isGpsFixForMapPosition('last_known', {
+        prev: { lat: ORIGIN.lat, lon: ORIGIN.lon },
+        next: { lat: ORIGIN.lat, lon: ORIGIN.lon },
+      }) === false,
+  },
+  {
+    name: 'last_known moved is map-eligible',
+    pass:
+      LAST_KNOWN_MAP_MOVE_M <= 8 &&
+      isGpsFixForMapPosition('last_known', {
+        prev: { lat: ORIGIN.lat, lon: ORIGIN.lon },
+        next: {
+          lat: ORIGIN.lat + 20 / 111320,
+          lon: ORIGIN.lon,
+        },
+      }) === true,
   },
   expectEq('scheduled_cache not restamped', pickEffectiveSampleTimeMs(stale, stale, now, 'scheduled_cache', {}), stale),
   {

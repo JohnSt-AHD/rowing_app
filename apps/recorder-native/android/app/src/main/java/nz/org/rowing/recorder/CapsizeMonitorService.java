@@ -134,8 +134,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long FUSED_HISTORICAL_MAX_AGE_MS = 0L;
     /** Drop live-map samples older than this (elapsed realtime). */
     private static final long LIVE_FIX_MAX_AGE_MS = 8_000L;
-    /** If fused sits still this long, start raw GPS as a fallback. */
-    private static final long FUSED_FREEZE_MS = 25_000L;
+    /** If fused sits still this long, start GPS+network fallback. */
+    private static final long FUSED_FREEZE_MS = 8_000L;
+    /** After the first live fused fix, accept a short replay window (not the 5-min seed). */
+    private static final long FUSED_LIVE_MAX_AGE_MS = 4_000L;
+    /** Coach-like last-known continuity — never un-aged getLastLocation. */
+    private static final long LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L;
     private static final float FUSED_FREEZE_M = 15f;
     /** Near-zero displacement this long while timestamps advance = restamped lock. */
     private static final long RAW_GPS_STILL_MS = 8_000L;
@@ -242,6 +246,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** Last non-raw (fused) delivery — sitting GNSS must not overwrite this. */
     private long lastFusedProviderDeliveryWallMs;
     private boolean gpsSatelliteFallbackActive;
+    /** First live fused fix seen this session — unlocks 4s maxAge + 15s last-known. */
+    private boolean fusedSawLiveFix;
+    private boolean fusedLiveMaxAgeArmed;
     private long fusedFreezeSinceMs;
     private double fusedFreezeLat = Double.NaN;
     private double fusedFreezeLon = Double.NaN;
@@ -420,6 +427,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastGpsUploadWallMs = 0L;
         lastGpsSampleOfferedMs = 0L;
         latestGpsRawFixClockMs = 0L;
+        fusedSawLiveFix = false;
+        fusedLiveMaxAgeArmed = false;
         lastUploadedFixTimeMs = 0L;
         lastUploadedGpsBucket = -1L;
         lastStaleGpsPiggybackWallMs = 0L;
@@ -727,6 +736,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             if (!isRawGpsProvider(location)) {
                 lastFusedProviderDeliveryWallMs = lastFusedDeliveryWallMs;
             }
+            maybeArmFusedLiveMaxAge();
         }
         savePulseDiagnostics();
         cacheGpsLocation(location);
@@ -1222,6 +1232,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (lastFusedDeliveryWallMs > 0L && now - lastFusedDeliveryWallMs <= LIVE_FIX_MAX_AGE_MS) {
             return;
         }
+        maybeOfferAgedLastKnownFallback();
         requestFreshGpsLocation(
                 loc -> {
                     if (loc != null && isGpsFixRecentForMap(loc)) {
@@ -1665,18 +1676,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         boolean sitting = isSittingLastKnownFix(location);
         String source = sampleSource;
         if (sitting && isLiveGpsSampleSource(sampleSource)) {
-            long age = rawFixAgeMs(location);
-            long fixTime = location.getTime();
-            long nowWall = System.currentTimeMillis();
-            boolean staleClock =
-                    age > LIVE_FIX_MAX_AGE_MS
-                            || (fixTime > 0L
-                                    && fixTime <= nowWall + 5_000L
-                                    && nowWall - fixTime > 20_000L);
-            if (staleClock) {
-                // Drop stale last-known — Manager should age to last-known, not stay live.
-                return;
-            }
+            // Keep stale sitting samples as last_known. Empty holes are worse
+            // than a tagged last_known — the map rule decides whether to draw.
             source = "last_known";
         }
         try {
@@ -3153,16 +3154,30 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             startGpsSatelliteFallback();
             return;
         }
+        requestFusedLocationUpdates();
+    }
+
+    private long fusedMaxUpdateAgeMs() {
+        return fusedSawLiveFix ? FUSED_LIVE_MAX_AGE_MS : FUSED_HISTORICAL_MAX_AGE_MS;
+    }
+
+    private void requestFusedLocationUpdates() {
+        if (fusedClient == null) return;
+        if (fusedCallback != null) {
+            fusedClient.removeLocationUpdates(fusedCallback);
+            fusedCallback = null;
+        }
         long interval = locationTrackingIntervalMs();
         long minUpdate = Math.max(FUSED_MIN_UPDATE_MS, interval / 2);
+        long maxAge = fusedMaxUpdateAgeMs();
         LocationRequest request =
                 new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, interval)
                         .setMinUpdateIntervalMillis(minUpdate)
                         .setMaxUpdateDelayMillis(interval)
-                        .setMaxUpdateAgeMillis(FUSED_HISTORICAL_MAX_AGE_MS)
+                        .setMaxUpdateAgeMillis(maxAge)
                         .setGranularity(Granularity.GRANULARITY_FINE)
-                        // Maps-like fused: 1.0.57's true can stall callbacks and trip
-                        // the raw-GPS fallback. maxAge=0 still blocks last-known.
+                        // First-fix maxAge=0 blocks the 5-min seed. After a live
+                        // fix, 4s maxAge closes short fused stalls.
                         .setWaitForAccurateLocation(false)
                         .build();
         fusedCallback =
@@ -3179,12 +3194,80 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         fusedClient
                 .requestLocationUpdates(request, fusedCallback, Looper.getMainLooper())
                 .addOnSuccessListener(
-                        unused -> Log.i(TAG, "Fused location registered (" + interval + "ms)"))
+                        unused ->
+                                Log.i(
+                                        TAG,
+                                        "Fused location registered ("
+                                                + interval
+                                                + "ms, maxAge="
+                                                + maxAge
+                                                + "ms)"))
                 .addOnFailureListener(
                         e -> {
                             Log.w(TAG, "Fused location unavailable — starting satellite GPS fallback", e);
                             startGpsSatelliteFallback();
                         });
+    }
+
+    private void maybeArmFusedLiveMaxAge() {
+        if (fusedSawLiveFix && fusedLiveMaxAgeArmed) return;
+        fusedSawLiveFix = true;
+        if (fusedLiveMaxAgeArmed) return;
+        fusedLiveMaxAgeArmed = true;
+        requestFusedLocationUpdates();
+    }
+
+    private static Location pickNewerLocation(Location a, Location b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        long aRt = a.getElapsedRealtimeNanos();
+        long bRt = b.getElapsedRealtimeNanos();
+        if (aRt > 0L && bRt > 0L) return bRt >= aRt ? b : a;
+        long aT = a.getTime();
+        long bT = b.getTime();
+        if (aT > 0L && bT > 0L) return bT >= aT ? b : a;
+        return aRt > 0L ? a : b;
+    }
+
+    private Location agedLastKnownFromProviders() {
+        if (locationManager == null) return null;
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            return null;
+        }
+        Location gps = null;
+        Location net = null;
+        try {
+            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                gps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+            }
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                net = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+            }
+        } catch (SecurityException e) {
+            return null;
+        }
+        Location best = pickNewerLocation(gps, net);
+        if (best == null || !isGpsFixUsable(best)) return null;
+        if (rawFixAgeMs(best) > LAST_KNOWN_FALLBACK_MAX_AGE_MS) return null;
+        return best;
+    }
+
+    /**
+     * Coach-like continuity after a live lock: GPS+network last-known with a
+     * 15s max-age, tagged last_known. Never un-aged getLastLocation.
+     */
+    private void maybeOfferAgedLastKnownFallback() {
+        if (!enableGps || recordingHalted || !fusedSawLiveFix) return;
+        long now = System.currentTimeMillis();
+        if (lastFusedDeliveryWallMs > 0L && now - lastFusedDeliveryWallMs <= LIVE_FIX_MAX_AGE_MS) {
+            return;
+        }
+        Location loc = agedLastKnownFromProviders();
+        if (loc == null) return;
+        cacheGpsLocation(loc);
+        addFixToGpsWindow(loc);
+        uploadWindowAverageGps(true, "last_known");
     }
 
     /** Only if fused stays frozen — not the normal Maps path. */
@@ -3195,19 +3278,30 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 != PackageManager.PERMISSION_GRANTED) {
             return;
         }
-        if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            Log.w(TAG, "GPS_PROVIDER disabled");
+        long minTime = locationTrackingIntervalMs();
+        boolean any = false;
+        try {
+            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER, minTime, 0f, this, mainHandler.getLooper());
+                any = true;
+            }
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                        LocationManager.NETWORK_PROVIDER, minTime, 0f, this, mainHandler.getLooper());
+                any = true;
+            }
+        } catch (SecurityException e) {
+            Log.e(TAG, "GPS/network fallback permission error", e);
             return;
         }
-        long minTime = locationTrackingIntervalMs();
-        try {
-            locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER, minTime, 0f, this, mainHandler.getLooper());
-            gpsSatelliteFallbackActive = true;
-            Log.i(TAG, "Satellite GPS fallback registered (" + minTime + "ms)");
-        } catch (SecurityException e) {
-            Log.e(TAG, "GPS_PROVIDER permission error", e);
+        if (!any) {
+            Log.w(TAG, "GPS and network providers disabled");
+            return;
         }
+        gpsSatelliteFallbackActive = true;
+        maybeOfferAgedLastKnownFallback();
+        Log.i(TAG, "GPS+network fallback registered (" + minTime + "ms)");
     }
 
     private void stopGpsSatelliteFallback() {
@@ -3462,6 +3556,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastGpsUploadWallMs = 0L;
         lastGpsSampleOfferedMs = 0L;
         latestGpsRawFixClockMs = 0L;
+        fusedSawLiveFix = false;
+        fusedLiveMaxAgeArmed = false;
         lastUploadedFixTimeMs = 0L;
         lastUploadedGpsBucket = -1L;
         lastStaleGpsPiggybackWallMs = 0L;

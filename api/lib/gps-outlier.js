@@ -27,11 +27,42 @@ const SAMPLE_CLOCK_SKEW_MS = 20_000;
 const SAMPLE_CLOCK_FUTURE_SLACK_MS = 5_000;
 /** Sitting / last-known lock — same threshold as native RAW_GPS_MOVING_SPEED_MS. */
 const LAST_KNOWN_MAX_SPEED_MPS = 0.75;
+/**
+ * last_known may move the pin only when coords left the last map lock.
+ * Same-coord sitting last_known must not look GPS live (the 5-min badge bug).
+ */
+const LAST_KNOWN_MAP_MOVE_M = 8;
 
-/** @param {string|null|undefined} sampleSource */
-function isGpsFixForMapPosition(sampleSource) {
+/**
+ * Live GPS sources always move the pin.
+ * last_known is map-eligible only when coords moved from the last map pin.
+ *
+ * @param {string|null|undefined} sampleSource
+ * @param {{ prev?: { lat?: number, lon?: number }|null, next?: { lat?: number, lon?: number }|null }} [opts]
+ */
+function isGpsFixForMapPosition(sampleSource, opts = {}) {
   if (sampleSource == null || sampleSource === '') return true;
-  return !GPS_CACHE_SAMPLE_SOURCES.has(String(sampleSource).trim());
+  const src = String(sampleSource).trim();
+  if (!GPS_CACHE_SAMPLE_SOURCES.has(src)) return true;
+  if (src !== 'last_known') return false;
+  return lastKnownMovedFromMapPin(opts.prev, opts.next);
+}
+
+function lastKnownMovedFromMapPin(prev, next) {
+  if (!prev || !next) return false;
+  const plat = Number(prev.lat);
+  const plon = Number(prev.lon);
+  const nlat = Number(next.lat);
+  const nlon = Number(next.lon);
+  if (
+    !Number.isFinite(plat) ||
+    !Number.isFinite(plon) ||
+    !Number.isFinite(nlat) ||
+    !Number.isFinite(nlon)
+  ) {
+    return false;
+  }
+  return distanceMeters(plat, plon, nlat, nlon) >= LAST_KNOWN_MAP_MOVE_M;
 }
 
 function isUsableSampleClockMs(value, nowMs) {
@@ -247,6 +278,7 @@ module.exports = {
   GPS_CACHE_SAMPLE_SOURCES,
   SAMPLE_CLOCK_SKEW_MS,
   LAST_KNOWN_MAX_SPEED_MPS,
+  LAST_KNOWN_MAP_MOVE_M,
   parseGpsOutlierMode,
   gpsOutlierLimitsForMode,
   distanceMeters,

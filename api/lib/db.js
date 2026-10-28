@@ -1821,6 +1821,26 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
   } = require('./gps-outlier');
   const orgSettings = await getOrgClientSettings(orgId);
   const outlierOpts = gpsOutlierLimitsForMode(orgSettings.predictMode);
+  const sql = await getSql();
+  const prevRows = await sql`
+    SELECT last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
+    FROM rnz_devices
+    WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
+    LIMIT 1
+  `;
+  const prev = prevRows.rows[0];
+  const registryPrev =
+    prev?.last_lat != null && prev?.last_lon != null
+      ? {
+          t: Number(prev.last_gps_t_ms),
+          lat: Number(prev.last_lat),
+          lon: Number(prev.last_lon),
+          acc:
+            prev.last_gps_accuracy != null && Number.isFinite(Number(prev.last_gps_accuracy))
+              ? Number(prev.last_gps_accuracy)
+              : null,
+        }
+      : null;
   let best = null;
   const now = Date.now();
   for (const s of samples) {
@@ -1831,7 +1851,10 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
       typeof s.gps?.sampleSource === 'string' && s.gps.sampleSource.trim()
         ? s.gps.sampleSource.trim().slice(0, 32)
         : null;
-    if (!isGpsFixForMapPosition(sampleSource)) continue;
+    const next = { lat: Number(lat), lon: Number(lon) };
+    if (!isGpsFixForMapPosition(sampleSource, { prev: best || registryPrev, next })) {
+      continue;
+    }
     const fixMs =
       s.gps?.fixMs != null && Number.isFinite(Number(s.gps.fixMs))
         ? Number(s.gps.fixMs)
@@ -1841,7 +1864,7 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
       lastKnown: s.gps?.lastKnown,
     });
     if (!Number.isFinite(t)) continue;
-    if (!best || t >= best.t) {
+    if (!best || t >= best.t || sampleSource === 'last_known') {
       best = {
         t,
         fixMs,
@@ -1868,33 +1891,25 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
     }
   }
   if (!best) return;
-  const sql = await getSql();
-  const prevRows = await sql`
-    SELECT last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
-    FROM rnz_devices
-    WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
-    LIMIT 1
-  `;
-  const prev = prevRows.rows[0];
-  if (prev?.last_lat != null && prev?.last_lon != null && prev?.last_gps_t_ms != null) {
-    const prevFix = {
-      t: Number(prev.last_gps_t_ms),
-      lat: Number(prev.last_lat),
-      lon: Number(prev.last_lon),
-      acc:
-        prev.last_gps_accuracy != null && Number.isFinite(Number(prev.last_gps_accuracy))
-          ? Number(prev.last_gps_accuracy)
-          : null,
-    };
-    if (isGpsFixOutlier(prevFix, best, outlierOpts)) {
+  if (registryPrev) {
+    if (isGpsFixOutlier(registryPrev, best, outlierOpts)) {
       return;
     }
-    const derived = derivedGpsSpeedMps(prevFix, best);
+    const derived = derivedGpsSpeedMps(registryPrev, best);
     if (derived != null) best.spd = mergeGpsSpeedMps(derived);
   }
+  // last_known keeps satellite t/fixMs (no restamp-to-now). Bump write t
+  // only enough to replace the previous pin when coords moved.
+  const writeT =
+    best.sampleSource === 'last_known' &&
+    registryPrev?.t != null &&
+    Number.isFinite(registryPrev.t) &&
+    best.t < registryPrev.t
+      ? registryPrev.t
+      : best.t;
   await sql`
     UPDATE rnz_devices
-    SET last_gps_t_ms = ${best.t},
+    SET last_gps_t_ms = ${writeT},
         last_gps_fix_ms = ${best.fixMs ?? null},
         last_lat = ${best.lat},
         last_lon = ${best.lon},
@@ -1906,7 +1921,7 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
         last_gps_ingest_at = NOW()
     WHERE org_id = ${orgId}
       AND unique_id = ${String(uniqueId)}
-      AND (last_gps_t_ms IS NULL OR last_gps_t_ms <= ${best.t})
+      AND (last_gps_t_ms IS NULL OR last_gps_t_ms <= ${writeT})
   `;
 }
 

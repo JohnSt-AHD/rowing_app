@@ -534,13 +534,18 @@ function isValidGpsCoords(lat, lon) {
   return true;
 }
 
-function gpsFromSample(sample, { forTrack = false, forMapPosition = false } = {}) {
+function gpsFromSample(sample, { forTrack = false, forMapPosition = false, prevMapFix = null } = {}) {
   if (!sample || typeof sample !== 'object' || !sample.gps) return null;
   const sampleSource = sanitizeGpsSampleSource(sample.gps.sampleSource);
-  if (forMapPosition && !isGpsFixForMapPosition(sampleSource)) return null;
   const lat = Number(sample.gps.lat);
   const lon = Number(sample.gps.lon);
   if (!isValidGpsCoords(lat, lon)) return null;
+  if (
+    forMapPosition &&
+    !isGpsFixForMapPosition(sampleSource, { prev: prevMapFix, next: { lat, lon } })
+  ) {
+    return null;
+  }
   const acc =
     sample.gps.acc != null && Number.isFinite(Number(sample.gps.acc))
       ? Number(sample.gps.acc)
@@ -1452,10 +1457,17 @@ function warmGpsTracksFromSamplesByDevice(orgId, byDevice, opts = {}) {
   for (const [deviceId, entry] of entries) {
     if (!deviceId || !entry) continue;
     const trackKey = orgDeviceKey(orgId, deviceId);
+    let lastMapFix = null;
     for (const s of entry.samples || []) {
       if (!s?.gps) continue;
-      const fix = gpsFromSample(s, { forTrack: true, forMapPosition: true });
-      if (fix) updateGpsTrack(trackKey, fix, trackOpts);
+      const fix = gpsFromSample(s, {
+        forTrack: true,
+        forMapPosition: true,
+        prevMapFix: lastMapFix,
+      });
+      if (!fix) continue;
+      lastMapFix = fix;
+      updateGpsTrack(trackKey, fix, trackOpts);
     }
   }
 }
@@ -1666,9 +1678,13 @@ function sanitizeAndTrackSamples(deviceId, samples, outlierMode = 'rowing') {
           }
           next = rest;
         } else {
-          if (isGpsFixForMapPosition(fix.sampleSource)) {
+          if (isGpsFixForMapPosition(fix.sampleSource, { prev, next: fix })) {
             rememberAcceptedGpsFix(deviceId, fix);
-            const trackFix = gpsFromSample(sample, { forTrack: true, forMapPosition: true });
+            const trackFix = gpsFromSample(sample, {
+              forTrack: true,
+              forMapPosition: true,
+              prevMapFix: prev,
+            });
             if (trackFix) updateGpsTrack(deviceId, trackFix, { mode: outlierMode });
           } else {
             metrics.gpsCachePositionSkipped++;
@@ -1740,6 +1756,8 @@ function sensorStats(samples, windowMs, deviceId) {
         lat: s.gps.lat,
         lon: s.gps.lon,
         acc: s.gps.acc,
+        spd: s.gps.spd,
+        sampleSource: sanitizeGpsSampleSource(s.gps.sampleSource),
         ...(fixMs != null ? { fixMs } : {}),
       };
     }
@@ -2330,7 +2348,7 @@ async function getSession(orgId, sessionId) {
  *
  * @param {number|null|undefined} fixAgeSec
  * @param {number|null|undefined} ingestAgoSec
- * @param {{ gpsFixAgeSec?: number|null, uploadLagSec?: number|null, spd?: number|null }} [extra]
+ * @param {{ gpsFixAgeSec?: number|null, uploadLagSec?: number|null, spd?: number|null, sampleSource?: string|null }} [extra]
  */
 function displayGpsAgeSec(fixAgeSec, ingestAgoSec, extra = {}) {
   const gpsFixAgeSec = extra.gpsFixAgeSec;
@@ -2340,6 +2358,8 @@ function displayGpsAgeSec(fixAgeSec, ingestAgoSec, extra = {}) {
       ? Number(gpsFixAgeSec)
       : fixAgeSec;
   if (trueFixAge == null || !Number.isFinite(Number(trueFixAge))) return null;
+  const src = extra.sampleSource != null ? String(extra.sampleSource).trim() : '';
+  if (src === 'last_known') return Number(trueFixAge);
   const ingest = ingestAgoSec != null && Number.isFinite(Number(ingestAgoSec))
     ? Number(ingestAgoSec)
     : null;
@@ -2398,6 +2418,7 @@ function enrichMapPositionDisplayAge(p, now, registryRow) {
     gpsFixAgeSec: p.gpsFixAgeSec,
     uploadLagSec: p.uploadLagSec,
     spd: p.speed ?? p.gpsSpeed ?? p.spd,
+    sampleSource: p.gpsSampleSource ?? p.sampleSource,
   });
   const receiveAgoSec =
     p.lastSeenAgoSec != null && Number.isFinite(p.lastSeenAgoSec)
@@ -2457,6 +2478,7 @@ function buildDeviceEntry(orgId, entry, windowMs, onlineMs, now, registryTimes) 
     gpsFixAgeSec,
     uploadLagSec,
     spd: stats.gps?.last?.spd,
+    sampleSource: stats.gps?.last?.sampleSource,
   });
   const fixClockLagSec =
     fixAgeSec != null && gpsIngestAgoSec != null ? fixAgeSec - gpsIngestAgoSec : null;
@@ -3020,9 +3042,12 @@ function getPositionsSnapshot(orgId, onlineMs = 30000) {
 function latestGpsFromSamples(samples, { forMapPosition = false } = {}) {
   let lastGps = null;
   for (const s of samples) {
-    const fix = gpsFromSample(s, forMapPosition ? { forMapPosition: true } : {});
+    const fix = gpsFromSample(
+      s,
+      forMapPosition ? { forMapPosition: true, prevMapFix: lastGps } : {},
+    );
     if (!fix) continue;
-    if (!lastGps || fix.t >= lastGps.t) {
+    if (!lastGps || fix.t >= lastGps.t || forMapPosition) {
       lastGps = fix;
     }
   }
@@ -3082,11 +3107,7 @@ function getRawMemoryMapPositions(orgId, onlineMs, now) {
   const out = [];
   for (const row of sessions.values()) {
     if (row.orgId !== orgId) continue;
-    let fix = null;
-    for (let i = row.samples.length - 1; i >= 0; i--) {
-      fix = gpsFromSample(row.samples[i], { forMapPosition: true });
-      if (fix) break;
-    }
+    const fix = latestGpsFromSamples(row.samples, { forMapPosition: true });
     if (!fix) continue;
     out.push(
       buildRawMapPositionFromFix({

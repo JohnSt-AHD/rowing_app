@@ -209,7 +209,7 @@ const explainerHtml = readFileSync(join(ROOT, 'apps/recorder-pwa/public/capsize-
 
 check('native NetworkCallback onAvailable/onValidated kicks flush', /kickNetworkResume\("available"\)/.test(nativeSrc) && /kickNetworkResume\("validated"\)/.test(nativeSrc) && /onLost/.test(nativeSrc) && /Network lost — buffering ingest locally/.test(nativeSrc));
 check('native pending outbox PENDING_BATCHES_KEY + flushPendingIngest', /PENDING_BATCHES_KEY = "pendingIngestBatches"/.test(nativeSrc) && /flushPendingIngest\(p, MAX_PENDING_FLUSH_PER_CYCLE\)/.test(nativeSrc) && /flushIngestBufferNow\(\)/.test(nativeSrc));
-check('native drops stale sitting last-known so Manager can age', /Drop stale last-known/.test(nativeSrc) && /source = "last_known"/.test(nativeSrc));
+check('native uploads stale sitting last-known so the map can decide', /Keep stale sitting samples as last_known/.test(nativeSrc) && /source = "last_known"/.test(nativeSrc) && /FUSED_FREEZE_MS = 8_000L/.test(nativeSrc) && /LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L/.test(nativeSrc) && !/Drop stale last-known/.test(nativeSrc));
 check('native queues capsize ingest while offline', /Capsize ingest queued/.test(nativeSrc));
 check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
 check('explainer has no GPS-regain scenario', !/gps-regain|last-known|GPS live/.test(explainerSrc) && !/GPS regain/.test(explainerHtml));
@@ -255,10 +255,33 @@ console.log('\n== GPS / network regain ==');
   ]);
   const pinLk = await mapPin(id);
   check('last_known sample is not a live map fix', isGpsFixForMapPosition('last_known') === false && isSittingLastKnownFix({ lastKnown: true }) === true);
+  check('same-coord last_known does not look GPS live', gpsState(pinLk) !== 'live', {
+    detail: pinLk ? `map=${gpsState(pinLk)} age=${pinLk.displayFixAgeSec ?? pinLk.fixAgeSec}` : 'no pin',
+  });
   check('last_known does not leap the pin', pinLk && distanceMeters(pinLk.latitude, pinLk.longitude, sit.lat, sit.lon) < 15, {
     detail: pinLk ? `d=${Math.round(distanceMeters(pinLk.latitude, pinLk.longitude, sit.lat, sit.lon))}m` : 'no pin',
   });
   check('last_known does not restamp sitting clock to now', pickEffectiveSampleTimeMs(sitT, sitT, Date.now(), 'last_known', { spd: 0 }) === sitT);
+
+  const movedLk = offset(25, 0);
+  const movedFix = Date.now() - 90_000;
+  await ingest(id, [
+    gpsSample(Date.now(), movedLk.lat, movedLk.lon, {
+      spd: 0.2,
+      sampleSource: 'last_known',
+      lastKnown: true,
+      fixMs: movedFix,
+    }),
+  ]);
+  const pinMoved = await mapPin(id);
+  check('last_known moved is map-eligible', pinMoved && distanceMeters(pinMoved.latitude, pinMoved.longitude, movedLk.lat, movedLk.lon) < 15, {
+    detail: pinMoved
+      ? `d=${Math.round(distanceMeters(pinMoved.latitude, pinMoved.longitude, movedLk.lat, movedLk.lon))}m src=${pinMoved.gpsSampleSource}`
+      : 'no pin',
+  });
+  check('last_known moved with old fixMs is not a live badge', gpsState(pinMoved) !== 'live', {
+    detail: pinMoved ? `map=${gpsState(pinMoved)} age=${pinMoved.displayFixAgeSec ?? pinMoved.fixAgeSec}` : 'no pin',
+  });
 
   const walk = offset(18, 0);
   const walkT = Date.now();
