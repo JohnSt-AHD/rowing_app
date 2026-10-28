@@ -325,9 +325,7 @@
     if (!b || !b.fleetPhase) return;
     const falseAlarm = source === 'athlete';
     b.fleetPhase = null;
-    b.helpMessage = falseAlarm ? null : b.helpMessage;
     if (falseAlarm) {
-      b.helpMessage = null;
       b.phoneLocal = false;
     }
     b.respondingBy = null;
@@ -341,6 +339,14 @@
       source === 'athlete' ? ' (athlete phone)' : source === 'rowsafe' ? ' (RowSafe)' : ' (Manager)';
     pushLog(`${line} — ${b.name}${via}. Fleet sticky cleared.`, 'safe');
     updateShout();
+    render();
+  }
+
+  function dismissHelp(id) {
+    const b = boat(id);
+    if (!b || !b.helpMessage) return;
+    b.helpMessage = null;
+    pushLog('Athlete dismissed help-on-the-way', 'dismiss');
     render();
   }
 
@@ -520,9 +526,10 @@
         }
         ${
           b.helpMessage
-            ? `<div class="hud__help">
+            ? `<div class="hud__help" role="status" aria-live="polite">
                 <span>Help on the way</span>
                 <p>${esc(b.helpMessage)}</p>
+                <button type="button" class="hud__help-dismiss" data-dismiss-help="${b.id}">Dismiss</button>
               </div>`
             : ''
         }
@@ -678,6 +685,11 @@
 
   function handleAck(event) {
     const el = event.target instanceof Element ? event.target : event.target.parentElement;
+    const dismissBtn = el && el.closest('[data-dismiss-help]');
+    if (dismissBtn) {
+      dismissHelp(dismissBtn.getAttribute('data-dismiss-help'));
+      return;
+    }
     const btn = el && el.closest('[data-ack]');
     if (!btn) return;
     const kind = btn.getAttribute('data-ack');

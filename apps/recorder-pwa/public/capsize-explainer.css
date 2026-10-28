@@ -577,6 +577,25 @@ select {
   font-size: 0.92rem;
 }
 
+.hud__help-dismiss {
+  display: inline-block;
+  margin-top: 0.45rem;
+  padding: 0.32rem 0.75rem;
+  border: 1px solid rgba(212, 175, 55, 0.85);
+  border-radius: 6px;
+  background: var(--navy-2);
+  color: #f5d76e;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.hud__help-dismiss:hover,
+.hud__help-dismiss:active {
+  filter: brightness(1.08);
+}
+
 .hud__metrics {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
