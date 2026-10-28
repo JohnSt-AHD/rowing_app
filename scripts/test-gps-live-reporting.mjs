@@ -9,13 +9,16 @@
  *   - recent rnz on-water replay NEW vs OLD (token rnz)
  *   - Manager last-known / live / delayed uses satellite fix age, not HTTP
  *
- * Usage: node scripts/test-gps-live-reporting.mjs
+ * Usage:
+ *   node scripts/test-gps-live-reporting.mjs           # + production John/rnz replays
+ *   node scripts/test-gps-live-reporting.mjs --quick    # local only (CI; no network)
  */
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const QUICK = process.argv.includes('--quick') || process.argv.includes('--ci');
 const require = createRequire(import.meta.url);
 const gps = require('../apps/recorder-pwa/api/lib/gps-outlier.js');
 const {
@@ -593,7 +596,7 @@ if (overlayFile) {
 }
 
 // ---------------------------------------------------------------------------
-// 3 + 4. Production replays
+// 3 + 4. Production replays (skipped in --quick / CI)
 // ---------------------------------------------------------------------------
 async function replaySession(sid, token) {
   const hist = await getJson(`/api/history?format=dashboard&sessionId=${sid}`, token);
@@ -619,52 +622,62 @@ async function replaySession(sid, token) {
   };
 }
 
-const johnReplays = [];
-for (const spec of JOHN_SIDS) {
-  const r = await replaySession(spec.id, 'empty');
-  johnReplays.push({ ...spec, ...r });
-}
+let johnReplays = [];
+let rnzList = { status: 0, json: {} };
+let rnzSessions = [];
+let rnzCandidates = [];
+let rnzReplays = [];
+let rnzOnWater = [];
+let rnzPick = null;
+let rnzNotGutted = null;
+let juneLive = { status: 0, json: {} };
 
-const rnzList = await getJson('/api/history?list=sessions', 'rnz');
-const rnzSessions = (rnzList.json?.sessions || [])
-  .slice()
-  .sort(
-    (a, b) =>
-      Date.parse(b.updated_at || b.started_at || 0) - Date.parse(a.updated_at || a.started_at || 0),
+if (!QUICK) {
+  for (const spec of JOHN_SIDS) {
+    const r = await replaySession(spec.id, 'empty');
+    johnReplays.push({ ...spec, ...r });
+  }
+
+  rnzList = await getJson('/api/history?list=sessions', 'rnz');
+  rnzSessions = (rnzList.json?.sessions || [])
+    .slice()
+    .sort(
+      (a, b) =>
+        Date.parse(b.updated_at || b.started_at || 0) - Date.parse(a.updated_at || a.started_at || 0),
+    );
+  rnzCandidates = rnzSessions
+    .filter((s) => (s.sample_count || 0) >= 80)
+    .slice(0, 12);
+
+  for (const s of rnzCandidates) {
+    const sid = s.session_id || s.sessionId;
+    const r = await replaySession(sid, 'rnz');
+    rnzReplays.push({
+      listed: {
+        sessionId: sid,
+        uniqueId: s.unique_id || s.uniqueId,
+        sampleCount: s.sample_count,
+        startedNz: s.started_at ? nzIso(Date.parse(s.started_at)) : null,
+        endedNz: s.ended_at ? nzIso(Date.parse(s.ended_at)) : null,
+      },
+      ...r,
+    });
+  }
+
+  rnzOnWater = rnzReplays.filter(
+    (r) => r.fetched && (r.nearKarapiro || r.strokeN > 20 || (r.rowing?.kinds?.row?.n || 0) > 30),
   );
-const rnzCandidates = rnzSessions
-  .filter((s) => (s.sample_count || 0) >= 80)
-  .slice(0, 12);
+  rnzPick = rnzOnWater[0] || rnzReplays.find((r) => r.fetched && r.gpsN > 100) || null;
+  rnzNotGutted = rnzPick
+    ? rnzPick.rowing.keptPctNew >= 85 && (rnzPick.rowing.kinds.row?.droppedNew || 0) <= Math.max(2, (rnzPick.rowing.kinds.row?.n || 0) * 0.05)
+    : null;
 
-const rnzReplays = [];
-for (const s of rnzCandidates) {
-  const sid = s.session_id || s.sessionId;
-  const r = await replaySession(sid, 'rnz');
-  rnzReplays.push({
-    listed: {
-      sessionId: sid,
-      uniqueId: s.unique_id || s.uniqueId,
-      sampleCount: s.sample_count,
-      startedNz: s.started_at ? nzIso(Date.parse(s.started_at)) : null,
-      endedNz: s.ended_at ? nzIso(Date.parse(s.ended_at)) : null,
-    },
-    ...r,
-  });
+  // Try live June H6 again (history may have aged out).
+  juneLive = await getJson(
+    `/api/history?format=dashboard&uniqueId=H6&from=${encodeURIComponent('2026-06-03T23:30:00.000Z')}&to=${encodeURIComponent('2026-06-04T00:15:00.000Z')}`,
+    'rnz',
+  );
 }
-
-const rnzOnWater = rnzReplays.filter(
-  (r) => r.fetched && (r.nearKarapiro || r.strokeN > 20 || (r.rowing?.kinds?.row?.n || 0) > 30),
-);
-const rnzPick = rnzOnWater[0] || rnzReplays.find((r) => r.fetched && r.gpsN > 100) || null;
-const rnzNotGutted = rnzPick
-  ? rnzPick.rowing.keptPctNew >= 85 && (rnzPick.rowing.kinds.row?.droppedNew || 0) <= Math.max(2, (rnzPick.rowing.kinds.row?.n || 0) * 0.05)
-  : null;
-
-// Try live June H6 again (history may have aged out).
-const juneLive = await getJson(
-  `/api/history?format=dashboard&uniqueId=H6&from=${encodeURIComponent('2026-06-03T23:30:00.000Z')}&to=${encodeURIComponent('2026-06-04T00:15:00.000Z')}`,
-  'rnz',
-);
 
 // ---------------------------------------------------------------------------
 // 5. Dashboard last-known read-check
@@ -863,6 +876,7 @@ const johnTeleportOk = johnFetched
 
 const out = {
   ranAtNz: nzIso(Date.now()),
+  quick: QUICK,
   smokePass,
   restampPass,
   synthPass,
@@ -932,6 +946,7 @@ const fail = [
 if (june.found && !june.pass) fail.push('4 Jun 1 Hz drive chopped in car mode');
 
 console.log(JSON.stringify({
+  quick: QUICK,
   smokePass,
   restampPass,
   synthPass,

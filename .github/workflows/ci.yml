@@ -1,4 +1,4 @@
-# Build PWA + API bundle on every push (catches Vercel failures early).
+# Build PWA + API bundle, then must-pass smokes (catches Vercel + GPS/capsize regressions).
 name: CI
 
 on:
@@ -10,6 +10,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Smoke scripts must stay in-memory. Never persist fake GPS/capsizes.
+      POSTGRES_URL: ''
+      POSTGRES_URL_NON_POOLING: ''
+      DATABASE_URL: ''
     steps:
       - uses: actions/checkout@v4
 
@@ -25,4 +30,17 @@ jobs:
         run: npm run build
 
       - name: Verify API modules load
-        run: node -e "require('./apps/recorder-pwa/api/history.js'); require('./apps/recorder-pwa/api/ingest.js'); require('./apps/recorder-pwa/api/lib/map-positions-cache.js'); console.log('api ok')"
+        run: |
+          node -e "require('./apps/recorder-pwa/api/history.js'); require('./apps/recorder-pwa/api/ingest.js'); require('./apps/recorder-pwa/api/capsize-clear.js'); require('./apps/recorder-pwa/api/lib/map-positions-cache.js'); require('./apps/recorder-pwa/api/lib/gps-outlier.js'); require('./apps/recorder-pwa/api/lib/ingest-store.js'); console.log('api ok')"
+
+      - name: GPS live-reporting smoke (local, no production fetches)
+        run: node scripts/test-gps-live-reporting.mjs --quick
+
+      - name: GPS + capsize scenario smoke (skip 60s wall-clock waits)
+        run: node scripts/test-gps-capsize-scenarios.mjs --quick
+
+      - name: Session resume logic
+        run: node scripts/test-session-resume.mjs
+
+      - name: Geofence auto-start / auto-stop
+        run: node scripts/test-geofence-session.mjs --quick

@@ -10,7 +10,7 @@ Dependencies are installed by the startup update script (`npm install` at the re
 - Recorder PWA: `npm run dev` → http://localhost:5173
 - Coach PWA: `npm run dev:coach` → http://localhost:5185
 - Both Vite servers proxy `/api/*` → `http://localhost:3000` (see `apps/recorder-pwa/vite.config.ts`).
-- Build: `npm run build` (builds recorder PWA and syncs `apps/recorder-pwa/api` → root `api/`). CI (`.github/workflows/ci.yml`) is just `npm ci` + `npm run build` + a `node -e "require(...)"` API-module load check.
+- Build: `npm run build` (builds recorder PWA and syncs `apps/recorder-pwa/api` → root `api/`). CI (`.github/workflows/ci.yml`) is `npm ci` + `npm run build` + API-module load + `npm run test:smoke` (GPS live `--quick`, capsize `--quick`, session resume).
 
 ### Backend API gotcha (important)
 - The API lives in `apps/recorder-pwa/api/*.js` as **Vercel-style handlers** (`module.exports = (req, res) => ...` using `res.status().json()`, `req.query`, `req.body`).
@@ -22,7 +22,7 @@ Dependencies are installed by the startup update script (`npm install` at the re
 ### Lint / test / typecheck
 - No ESLint/Prettier and no test framework are configured.
 - `tsconfig.json` is strict but currently produces **pre-existing** `tsc --noEmit` errors in `apps/recorder-pwa` and `apps/coach-pwa`; the Vite/esbuild build does not typecheck and is unaffected. Do not treat `tsc --noEmit` as a passing gate.
-- Ad-hoc smoke scripts: `node scripts/test-session-resume.mjs`, `node scripts/test-motion-analysis.js`.
+- Must-pass smoke (CI / `npm run test:smoke`): `scripts/test-gps-live-reporting.mjs --quick`, `scripts/test-gps-capsize-scenarios.mjs --quick`, `scripts/test-session-resume.mjs`, `scripts/test-geofence-session.mjs --quick`. Full GPS replay vs production: `npm run test:gps`. Motion: `node scripts/test-motion-analysis.js`.
 
 ### Skip on Linux
 - Native targets (`native:android`, `native:ios`, `native:apk`, `coach:sync`) need Android Studio / Xcode / PowerShell — not runnable here.

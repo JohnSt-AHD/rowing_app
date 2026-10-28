@@ -229,6 +229,60 @@ export function findSessionRestrictionAt(
   return null;
 }
 
+/** Enabled zones that arm standby auto-start. */
+export function hasAutoStartZones(geofences: GeofenceConfig[]): boolean {
+  return geofences.some((g) => g.enabled && g.autoStartOnExit === true);
+}
+
+/**
+ * Restricted zone that blocks auto-start until allowed
+ * (inside boat park, or outside lake) when autoStartOnExit is set.
+ */
+export function findAutoStartBlockingAt(
+  lat: number,
+  lon: number,
+  geofences: GeofenceConfig[],
+): GeofenceConfig | null {
+  if (!geofences.length) return null;
+  const match = findSessionRestrictionAt(lat, lon, geofences);
+  if (match && match.autoStartOnExit === true) return match;
+  return null;
+}
+
+/**
+ * Restricted zone that should auto-stop after dwell when autoStopOnEnter is set.
+ * Pause-only (suppressRecording, no auto-stop) returns null.
+ */
+export function findAutoStopZoneAt(
+  lat: number,
+  lon: number,
+  geofences: GeofenceConfig[],
+): GeofenceConfig | null {
+  if (!geofences.length) return null;
+  const match = findSessionRestrictionAt(lat, lon, geofences);
+  if (match && match.autoStopOnEnter === true) return match;
+  return null;
+}
+
+/** Standby should auto-start: at least one auto-start zone, and not blocked. */
+export function shouldAutoStartAt(
+  lat: number,
+  lon: number,
+  geofences: GeofenceConfig[],
+): boolean {
+  if (!hasAutoStartZones(geofences)) return false;
+  return findAutoStartBlockingAt(lat, lon, geofences) == null;
+}
+
+/** Session should auto-stop after dwell at this point. */
+export function shouldAutoStopAt(
+  lat: number,
+  lon: number,
+  geofences: GeofenceConfig[],
+): boolean {
+  return findAutoStopZoneAt(lat, lon, geofences) != null;
+}
+
 export function findNotifyZoneAt(
   lat: number,
   lon: number,

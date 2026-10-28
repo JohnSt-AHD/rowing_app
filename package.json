@@ -31,7 +31,10 @@
     "native:android": "npm run open:android -w recorder-native",
     "native:ios": "npm run open:ios -w recorder-native",
     "preview": "npm run preview -w recorder-pwa",
-    "doc:summary": "python scripts/create_summary_doc.py"
+    "doc:summary": "python scripts/create_summary_doc.py",
+    "test:smoke": "node scripts/test-gps-live-reporting.mjs --quick && node scripts/test-gps-capsize-scenarios.mjs --quick && node scripts/test-session-resume.mjs && node scripts/test-geofence-session.mjs --quick",
+    "test:gps": "node scripts/test-gps-live-reporting.mjs",
+    "test:capsize": "node scripts/test-gps-capsize-scenarios.mjs"
   },
   "engines": {
     "node": "20.x"

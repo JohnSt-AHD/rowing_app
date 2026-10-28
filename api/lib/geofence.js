@@ -253,6 +253,46 @@ function findSuppressRecordingAt(lat, lon, geofences) {
   return null;
 }
 
+/** Enabled zones that arm standby auto-start (mirrors geofence-standby.ts). */
+function hasAutoStartZones(geofences) {
+  if (!Array.isArray(geofences) || !geofences.length) return false;
+  return geofences.some((g) => g && g.enabled !== false && g.autoStartOnExit === true);
+}
+
+/**
+ * Restricted zone that blocks auto-start until allowed
+ * (inside boat park, or outside lake) when autoStartOnExit is set.
+ * Empty org / no auto-start zones → null (not blocked; caller must no-op start).
+ */
+function findAutoStartBlockingAt(lat, lon, geofences) {
+  if (!Array.isArray(geofences) || !geofences.length) return null;
+  const match = findSessionRestrictionAt(lat, lon, geofences);
+  if (match && match.autoStartOnExit === true) return match;
+  return null;
+}
+
+/**
+ * Restricted zone that should auto-stop after dwell when autoStopOnEnter is set.
+ * Empty org → null (no auto-stop). Pause-only (suppress, no auto-stop) → null.
+ */
+function findAutoStopZoneAt(lat, lon, geofences) {
+  if (!Array.isArray(geofences) || !geofences.length) return null;
+  const match = findSessionRestrictionAt(lat, lon, geofences);
+  if (match && match.autoStopOnEnter === true) return match;
+  return null;
+}
+
+/** Standby should auto-start: at least one auto-start zone, and not blocked. */
+function shouldAutoStartAt(lat, lon, geofences) {
+  if (!hasAutoStartZones(geofences)) return false;
+  return findAutoStartBlockingAt(lat, lon, geofences) == null;
+}
+
+/** Session should auto-stop after dwell at this point. */
+function shouldAutoStopAt(lat, lon, geofences) {
+  return findAutoStopZoneAt(lat, lon, geofences) != null;
+}
+
 /** Traccar WKT `area` string for RowSafe / traccar-overlay consumers. */
 function toTraccarArea(g) {
   if (!g || g.enabled === false) return null;
@@ -352,6 +392,11 @@ module.exports = {
   findHazardZonesAt,
   entryNotifyMessageFor,
   findSuppressRecordingAt,
+  hasAutoStartZones,
+  findAutoStartBlockingAt,
+  findAutoStopZoneAt,
+  shouldAutoStartAt,
+  shouldAutoStopAt,
   normalizeGeofence,
   normalizeGeofenceKind,
   economyIntervalSecFromInput,

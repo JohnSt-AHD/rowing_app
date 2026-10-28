@@ -7,8 +7,9 @@ import type { RecorderSettings } from '@rowing/telemetry-types';
 import { startGpsWatcher } from '@rowing/sensor-adapters';
 import {
   entryNotifyMessageFor,
+  findAutoStartBlockingAt,
   findHazardZonesAt,
-  findSessionRestrictionAt,
+  hasAutoStartZones,
   normalizeGeofenceKind,
   type GeofenceConfig,
 } from './geofence';
@@ -102,7 +103,7 @@ export async function startGeofenceStandby(
   emit('Armed — loading geofences…');
   void refreshZones(true).then(() => {
     if (stopped) return;
-    if (!autoStartZones().length) {
+    if (!hasAutoStartZones(geofences)) {
       hooks.onLog(
         'No auto-start geofences loaded yet (check ingest token / network). GPS watch is on.',
       );
@@ -117,7 +118,7 @@ export async function startGeofenceStandby(
 
   const tryAutoStart = () => {
     if (stopped || startTriggered) return;
-    if (!autoStartZones().length) return;
+    if (!hasAutoStartZones(geofences)) return;
     if (inside) return;
     if (outsideSinceMs == null) return;
     if (!lastFreshFixMs) return;
@@ -152,13 +153,13 @@ export async function startGeofenceStandby(
     lastFreshFixMs = fixMs;
     updateHazardAt(lat, lon);
 
-    if (!autoStartZones().length) {
+    if (!hasAutoStartZones(geofences)) {
       emit('Armed — GPS ok, waiting for auto-start zones…');
       return;
     }
 
-    const match = findSessionRestrictionAt(lat, lon, geofences);
-    const blocking = match != null && match.autoStartOnExit === true;
+    const match = findAutoStartBlockingAt(lat, lon, geofences);
+    const blocking = match != null;
     inside = blocking;
     zoneName = blocking ? match!.name : null;
 
