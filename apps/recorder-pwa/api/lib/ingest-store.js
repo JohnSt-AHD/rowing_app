@@ -8,6 +8,7 @@ const {
   filterOutlierGpsFixes,
   pickEffectiveSampleTimeMs,
   reconcileSampleTimes,
+  shouldKeepManagerWatchLivePin,
 } = require('./gps-outlier');
 
 const CAPSIZE_ALERT_MAX_AGE_MS = db.CAPSIZE_ALERT_MAX_AGE_MS ?? 12 * 60 * 60 * 1000;
@@ -276,6 +277,8 @@ function rememberAcceptedGpsFix(deviceId, fix) {
     lat: fix.lat,
     lon: fix.lon,
     acc: fix.acc ?? null,
+    fixMs: fix.fixMs ?? null,
+    sampleSource: fix.sampleSource ?? null,
   });
 }
 
@@ -1684,13 +1687,17 @@ function sanitizeAndTrackSamples(deviceId, samples, outlierMode = 'rowing') {
           next = rest;
         } else {
           if (isGpsFixForMapPosition(fix.sampleSource, { prev, next: fix })) {
-            rememberAcceptedGpsFix(deviceId, fix);
-            const trackFix = gpsFromSample(sample, {
-              forTrack: true,
-              forMapPosition: true,
-              prevMapFix: prev,
-            });
-            if (trackFix) updateGpsTrack(deviceId, trackFix, { mode: outlierMode });
+            if (shouldKeepManagerWatchLivePin(prev, fix)) {
+              metrics.gpsCachePositionSkipped++;
+            } else {
+              rememberAcceptedGpsFix(deviceId, fix);
+              const trackFix = gpsFromSample(sample, {
+                forTrack: true,
+                forMapPosition: true,
+                prevMapFix: prev,
+              });
+              if (trackFix) updateGpsTrack(deviceId, trackFix, { mode: outlierMode });
+            }
           } else {
             metrics.gpsCachePositionSkipped++;
           }
@@ -3052,6 +3059,7 @@ function latestGpsFromSamples(samples, { forMapPosition = false } = {}) {
       forMapPosition ? { forMapPosition: true, prevMapFix: lastGps } : {},
     );
     if (!fix) continue;
+    if (forMapPosition && shouldKeepManagerWatchLivePin(lastGps, fix)) continue;
     if (!lastGps || fix.t >= lastGps.t || forMapPosition) {
       lastGps = fix;
     }

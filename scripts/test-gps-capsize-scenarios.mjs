@@ -211,6 +211,7 @@ check('native NetworkCallback onAvailable/onValidated kicks flush', /kickNetwork
 check('native pending outbox PENDING_BATCHES_KEY + flushPendingIngest', /PENDING_BATCHES_KEY = "pendingIngestBatches"/.test(nativeSrc) && /flushPendingIngest\(p, MAX_PENDING_FLUSH_PER_CYCLE\)/.test(nativeSrc) && /flushIngestBufferNow\(\)/.test(nativeSrc));
 check('native uploads stale sitting last-known so the map can decide', /Keep stale sitting samples as last_known/.test(nativeSrc) && /source = "last_known"/.test(nativeSrc) && /FUSED_FREEZE_MS = 8_000L/.test(nativeSrc) && /LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L/.test(nativeSrc) && !/Drop stale last-known/.test(nativeSrc));
 check('native GPS+network manager_watch live path (fused does not hide GPS)', /maybeOfferManagerWatchLive/.test(nativeSrc) && /"manager_watch"/.test(nativeSrc) && /isFusedQuietOrStale/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && /MANAGER_WATCH_GPS_MIN_M/.test(nativeSrc) && /Do not clone/.test(nativeSrc));
+check('native fused stall is GPS clock (fixMs/getTime) not callback silence', /isFusedGpsClockStale/.test(nativeSrc) && /gpsClockAgeMs/.test(nativeSrc) && /lastFusedGpsClockMs/.test(nativeSrc) && /Do not wait for fused to go silent/.test(nativeSrc) && /isFusedGpsClockStale\(\)\) return true/.test(nativeSrc));
 check('native queues capsize ingest while offline', /Capsize ingest queued/.test(nativeSrc));
 check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
 check('explainer has no GPS-regain scenario', !/gps-regain|last-known|GPS live/.test(explainerSrc) && !/GPS regain/.test(explainerHtml));
@@ -324,6 +325,49 @@ console.log('\n== GPS / network regain ==');
   check('manager_watch during fused stall moves the live pin', pinWatch && distanceMeters(pinWatch.latitude, pinWatch.longitude, stepped.lat, stepped.lon) < 15 && gpsState(pinWatch) === 'live', {
     detail: pinWatch
       ? `d=${Math.round(distanceMeters(pinWatch.latitude, pinWatch.longitude, stepped.lat, stepped.lon))}m src=${pinWatch.gpsSampleSource} map=${gpsState(pinWatch)}`
+      : 'no pin',
+  });
+}
+
+{
+  const id = 'gps-fused-stale-clock';
+  const fusedFix = Date.now() - 80_000;
+  const fused = offset(0, 0);
+  await ingest(id, [
+    gpsSample(Date.now(), fused.lat, fused.lon, {
+      spd: 5,
+      sampleSource: 'window_avg',
+      fixMs: fusedFix,
+    }),
+  ]);
+  const gpsPos = offset(25, 0);
+  const gpsT = Date.now() + 4_000;
+  await ingest(id, [
+    gpsSample(gpsT, gpsPos.lat, gpsPos.lon, {
+      spd: 5,
+      sampleSource: 'manager_watch',
+      fixMs: gpsT,
+    }),
+  ]);
+  const pinGps = await mapPin(id);
+  check('fused still ticking with 80s-old fixMs: manager_watch takes live pin', pinGps && distanceMeters(pinGps.latitude, pinGps.longitude, gpsPos.lat, gpsPos.lon) < 15 && gpsState(pinGps) === 'live' && pinGps.gpsSampleSource === 'manager_watch', {
+    detail: pinGps
+      ? `d=${Math.round(distanceMeters(pinGps.latitude, pinGps.longitude, gpsPos.lat, gpsPos.lon))}m src=${pinGps.gpsSampleSource} map=${gpsState(pinGps)} age=${pinGps.displayFixAgeSec ?? pinGps.fixAgeSec}`
+      : 'no pin',
+  });
+
+  const fused2 = offset(8, 0);
+  await ingest(id, [
+    gpsSample(gpsT + 1_000, fused2.lat, fused2.lon, {
+      spd: 5,
+      sampleSource: 'window_avg',
+      fixMs: Date.now() - 80_000,
+    }),
+  ]);
+  const pinHeld = await mapPin(id);
+  check('fused still ticking after manager_watch: GPS keeps live pin (stale fused does not steal it)', pinHeld && distanceMeters(pinHeld.latitude, pinHeld.longitude, gpsPos.lat, gpsPos.lon) < 15 && pinHeld.gpsSampleSource === 'manager_watch' && gpsState(pinHeld) === 'live', {
+    detail: pinHeld
+      ? `d=${Math.round(distanceMeters(pinHeld.latitude, pinHeld.longitude, gpsPos.lat, gpsPos.lon))}m src=${pinHeld.gpsSampleSource} map=${gpsState(pinHeld)}`
       : 'no pin',
   });
 }

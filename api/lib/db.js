@@ -1818,12 +1818,14 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
     isGpsFixForMapPosition,
     pickEffectiveSampleTimeMs,
     gpsOutlierLimitsForMode,
+    shouldKeepManagerWatchLivePin,
   } = require('./gps-outlier');
   const orgSettings = await getOrgClientSettings(orgId);
   const outlierOpts = gpsOutlierLimitsForMode(orgSettings.predictMode);
   const sql = await getSql();
   const prevRows = await sql`
-    SELECT last_gps_t_ms, last_lat, last_lon, last_gps_accuracy
+    SELECT last_gps_t_ms, last_lat, last_lon, last_gps_accuracy,
+           last_gps_fix_ms, last_gps_sample_source
     FROM rnz_devices
     WHERE org_id = ${orgId} AND unique_id = ${String(uniqueId)}
     LIMIT 1
@@ -1839,6 +1841,11 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
             prev.last_gps_accuracy != null && Number.isFinite(Number(prev.last_gps_accuracy))
               ? Number(prev.last_gps_accuracy)
               : null,
+          fixMs:
+            prev.last_gps_fix_ms != null && Number.isFinite(Number(prev.last_gps_fix_ms))
+              ? Number(prev.last_gps_fix_ms)
+              : null,
+          sampleSource: prev.last_gps_sample_source || null,
         }
       : null;
   let best = null;
@@ -1864,6 +1871,14 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
       lastKnown: s.gps?.lastKnown,
     });
     if (!Number.isFinite(t)) continue;
+    const candidate = {
+      t,
+      fixMs,
+      sampleSource,
+    };
+    if (shouldKeepManagerWatchLivePin(best || registryPrev, candidate, now)) {
+      continue;
+    }
     if (!best || t >= best.t || sampleSource === 'last_known') {
       best = {
         t,

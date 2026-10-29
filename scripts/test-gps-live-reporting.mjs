@@ -29,6 +29,8 @@ const {
   isSittingLastKnownFix,
   isGpsFixForMapPosition,
   LAST_KNOWN_MAP_MOVE_M,
+  shouldKeepManagerWatchLivePin,
+  FUSED_GPS_CLOCK_STALE_MS,
   GPS_OUTLIER_MAX_ROWING_MPS,
   GPS_OUTLIER_MAX_CAR_MPS,
   GPS_OUTLIER_MAX_JUMP_M,
@@ -753,6 +755,21 @@ const sourceChecks = [
       && /isFusedQuietOrStale/.test(nativeSrc),
   },
   {
+    name: 'native fused stall uses GPS clock (fixMs/getTime) not callback silence',
+    pass: /isFusedGpsClockStale/.test(nativeSrc)
+      && /gpsClockAgeMs/.test(nativeSrc)
+      && /lastFusedGpsClockMs/.test(nativeSrc)
+      && /Do not wait for fused to go silent/.test(nativeSrc)
+      && /location\.getTime\(\)/.test(nativeSrc)
+      && /isFusedGpsClockStale\(\)\) return true/.test(nativeSrc),
+  },
+  {
+    name: 'outlier keeps manager_watch live pin over stale-clock fused',
+    pass: /shouldKeepManagerWatchLivePin/.test(outlierSrc)
+      && /FUSED_GPS_CLOCK_STALE_MS/.test(outlierSrc)
+      && /40–100s-old fixMs/.test(outlierSrc),
+  },
+  {
     name: 'dashboard gpsFixState uses mapDisplayAgeSec (live/amber/lost)',
     pass: /function gpsFixState\(p\)/.test(dashSrc) && /mapDisplayAgeSec/.test(dashSrc)
       && /GPS live \(≤30s\)/.test(dashSrc) && /Last known \(>5min\)/.test(dashSrc),
@@ -769,7 +786,8 @@ const sourceChecks = [
   {
     name: 'ingest-store keeps manager_watch and ages last_known from fixMs',
     pass: /'manager_watch'/.test(storeSrc)
-      && /src === 'last_known' \|\| src === 'manager_watch'/.test(storeSrc),
+      && /src === 'last_known' \|\| src === 'manager_watch'/.test(storeSrc)
+      && /shouldKeepManagerWatchLivePin/.test(storeSrc),
   },
   {
     name: 'outlier last_known is map-eligible without 8m gate',
@@ -932,6 +950,31 @@ const lastKnownCases = [];
       }) === 12
       && mapDisplayAgeSec(managerWatch) === 12
       && gpsFixState(managerWatch) === 'live',
+  });
+}
+{
+  const now = Date.now();
+  const fusedFix = now - 80_000;
+  const gpsFix = now - 1_500;
+  lastKnownCases.push({
+    name: 'fused still ticking with 80s-old fixMs: manager_watch keeps live pin',
+    pass:
+      FUSED_GPS_CLOCK_STALE_MS === 8_000
+      && shouldKeepManagerWatchLivePin(
+        { sampleSource: 'manager_watch', fixMs: gpsFix, t: now },
+        { sampleSource: 'window_avg', fixMs: fusedFix, t: now },
+        now,
+      ) === true
+      && shouldKeepManagerWatchLivePin(
+        { sampleSource: 'manager_watch', fixMs: gpsFix, t: now },
+        { sampleSource: 'window_avg', fixMs: now - 2_000, t: now },
+        now,
+      ) === false
+      && shouldKeepManagerWatchLivePin(
+        { sampleSource: 'window_avg', fixMs: fusedFix, t: now },
+        { sampleSource: 'manager_watch', fixMs: gpsFix, t: now },
+        now,
+      ) === false,
   });
 }
 {

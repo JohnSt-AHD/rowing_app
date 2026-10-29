@@ -132,7 +132,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      * getTime() is not live tracking and must not veto fused.
      */
     private static final long FUSED_HISTORICAL_MAX_AGE_MS = 0L;
-    /** Drop live-map samples older than this (elapsed realtime). */
+    /**
+     * Live fused stall window. 1.0.62 only used this as fused *callback*
+     * silence. 1.0.63 also uses it as GPS-clock (fixMs / getTime()) age so
+     * fused can keep ticking with 40–100s-old coords and still lose the live pin.
+     */
     private static final long LIVE_FIX_MAX_AGE_MS = 8_000L;
     /** If fused sits still this long, start GPS+network fallback. */
     private static final long FUSED_FREEZE_MS = 8_000L;
@@ -250,6 +254,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private long lastFusedDeliveryWallMs;
     /** Last non-raw (fused) delivery — sitting GNSS must not overwrite this. */
     private long lastFusedProviderDeliveryWallMs;
+    /**
+     * Fused location.getTime() (GPS clock / fixMs). ElapsedRealtimeNanos is
+     * restamped on every fused callback, so it cannot detect a stale GPS clock.
+     */
+    private long lastFusedGpsClockMs;
     private boolean gpsSatelliteFallbackActive;
     /** Last GPS/network LocationManager fix — live pin when fused is frozen. */
     private Location latestManagerWatchLocation;
@@ -435,6 +444,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastGpsUploadWallMs = 0L;
         lastGpsSampleOfferedMs = 0L;
         latestGpsRawFixClockMs = 0L;
+        lastFusedGpsClockMs = 0L;
         fusedSawLiveFix = false;
         fusedLiveMaxAgeArmed = false;
         lastUploadedFixTimeMs = 0L;
@@ -629,13 +639,56 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Fused callbacks stopped, or fused is still ticking the same frozen coord.
-     * 1.0.61 treated restamped fused callbacks as live and ignored GPS.
+     * Satellite / location.getTime() age — not elapsedRealtimeNanos.
+     * Fused restamps elapsedRealtime on every callback while fixMs stays 40–100s old.
+     */
+    private static long gpsClockAgeMs(Location location) {
+        if (location == null) return Long.MAX_VALUE;
+        long fixTime = location.getTime();
+        if (fixTime <= 0L) return Long.MAX_VALUE;
+        long now = System.currentTimeMillis();
+        if (fixTime > now + 5_000L) return 0L;
+        return now - fixTime;
+    }
+
+    /**
+     * Fused GPS clock (fixMs / getTime()) is older than the live stall window.
+     * Do not wait for fused to go silent — 1.0.62 kept uploading window_avg.
+     */
+    private boolean isFusedGpsClockStale() {
+        if (lastFusedGpsClockMs <= 0L) return false;
+        long now = System.currentTimeMillis();
+        if (lastFusedGpsClockMs > now + 5_000L) return false;
+        return now - lastFusedGpsClockMs > LIVE_FIX_MAX_AGE_MS;
+    }
+
+    private void noteFusedGpsClock(Location location) {
+        if (location == null || isManagerWatchProvider(location)) return;
+        long fixTime = location.getTime();
+        long now = System.currentTimeMillis();
+        if (fixTime > 0L && fixTime <= now + 5_000L) {
+            lastFusedGpsClockMs = fixTime;
+        }
+    }
+
+    private boolean managerWatchHasFresherGpsClock(Location location) {
+        if (location == null) return false;
+        long locClock = location.getTime();
+        if (locClock <= 0L) return false;
+        if (lastFusedGpsClockMs <= 0L) return true;
+        return locClock > lastFusedGpsClockMs;
+    }
+
+    /**
+     * Fused callbacks stopped, fused GPS clock is old, or fused is frozen.
+     * 1.0.62 only used callback wall-clock, so fused ticking every ~6s with
+     * 40–100s-old fixMs kept hiding GPS+network.
      */
     private boolean isFusedQuietOrStale() {
         long now = System.currentTimeMillis();
         if (lastFusedProviderDeliveryWallMs <= 0L) return true;
         if (now - lastFusedProviderDeliveryWallMs > LIVE_FIX_MAX_AGE_MS) return true;
+        if (isFusedGpsClockStale()) return true;
         return fusedFreezeSinceMs > 0L && now - fusedFreezeSinceMs >= FUSED_FREEZE_MS;
     }
 
@@ -713,6 +766,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /**
      * Sitting / restamped GPS+network must not overwrite a live *moving* fused fix.
      * Frozen fused callbacks (Karapiro drive stall) must not hide GPS/network.
+     * Stale fused GPS clock (fixMs old while callbacks still tick) also must not
+     * hide GPS/network — do not wait for fused to go silent.
      */
     private boolean shouldIgnoreRawGps(Location location) {
         if (!isManagerWatchProvider(location)) return false;
@@ -767,8 +822,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (rawFix > 0L && rawFix <= now + 5_000L) {
             latestGpsRawFixClockMs = rawFix;
         }
-        if (!isRawGpsProvider(location) && isGpsFixRecentForMap(location)) {
-            lastFusedProviderDeliveryWallMs = now;
+        if (!isRawGpsProvider(location)) {
+            noteFusedGpsClock(location);
+            if (isGpsFixRecentForMap(location) && gpsClockAgeMs(location) <= LIVE_FIX_MAX_AGE_MS) {
+                lastFusedProviderDeliveryWallMs = now;
+            }
         }
         saveLastGpsToPrefs(location, ingestTimeMs(location), nativeGpsCount);
     }
@@ -793,7 +851,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (shouldIgnoreFused(location) || shouldIgnoreRawGps(location)) {
             return;
         }
-        if (isGpsFixRecentForMap(location)) {
+        noteFusedGpsClock(location);
+        if (isGpsFixRecentForMap(location) && gpsClockAgeMs(location) <= LIVE_FIX_MAX_AGE_MS) {
             lastFusedDeliveryWallMs = System.currentTimeMillis();
             lastFusedProviderDeliveryWallMs = lastFusedDeliveryWallMs;
             maybeArmFusedLiveMaxAge();
@@ -1016,6 +1075,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void addFixToGpsWindow(Location location) {
         if (!enableGps || location == null || !isGpsFixUsable(location)) return;
         if (!isGpsFixRecentForMap(location)) return;
+        // History window stays fused when the GPS clock is live. Stale-clock
+        // fused still ticking must not fill the live window_avg pin.
+        if (gpsClockAgeMs(location) > LIVE_FIX_MAX_AGE_MS) return;
         long now = System.currentTimeMillis();
         if (now - lastWindowCollectWallMs < GPS_COLLECT_INTERVAL_MS) return;
         lastWindowCollectWallMs = now;
@@ -1290,7 +1352,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return Math.abs(a.getLatitude() - lat) < 1e-6 && Math.abs(a.getLongitude() - lon) < 1e-6;
     }
 
-    /** Timer-driven upload from the live fused stream. Poll only if callbacks stall. */
+    /**
+     * Timer-driven upload from the live fused stream. When fused GPS clock is
+     * stale (or callbacks stall), GPS+network manager_watch takes the live pin.
+     */
     private void tickScheduledGpsUpload() {
         if (recordingHalted || !enableGps) return;
         if (isFusedQuietOrStale()) {
@@ -3361,13 +3426,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Upload GPS/network as map-eligible live when fused is quiet/frozen and
-     * the provider has actually moved. Do not clone the fused last_known pin.
+     * Upload GPS/network as map-eligible live when fused is quiet/frozen or
+     * its GPS clock (fixMs) is old, even if fused callbacks still tick.
+     * Do not wait for fused to go silent. Do not clone the fused last_known pin.
      */
     private void maybeOfferManagerWatchLive(Location location) {
         if (!enableGps || recordingHalted || standbyMode) return;
         if (!isManagerWatchProvider(location) || !isGpsFixUsable(location)) return;
         if (!isFusedQuietOrStale()) return;
+        if (isFusedGpsClockStale() && !managerWatchHasFresherGpsClock(location)) return;
         if (!managerWatchNewerOrMoved(location)) return;
         if (!isGpsFixFresh(location) && !isGpsFixRecentForMap(location)) return;
         long now = System.currentTimeMillis();
@@ -3388,7 +3455,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 TAG,
                 "Manager-watch live "
                         + live.getProvider()
-                        + " — fused quiet/stale, uploading map pin");
+                        + " — fused GPS clock stale or quiet, uploading map pin");
         uploadExecutor.execute(
                 () -> enqueueGpsSample(live, ingestTimeMs(live), true, "manager_watch"));
     }
@@ -3510,6 +3577,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         gpsSatelliteFallbackActive = false;
         latestManagerWatchLocation = null;
         lastManagerWatchUploadMs = 0L;
+        lastFusedGpsClockMs = 0L;
         clearFusedFreeze();
         clearRawGpsStill();
         clearSittingLock();
@@ -3711,6 +3779,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastGpsUploadWallMs = 0L;
         lastGpsSampleOfferedMs = 0L;
         latestGpsRawFixClockMs = 0L;
+        lastFusedGpsClockMs = 0L;
         fusedSawLiveFix = false;
         fusedLiveMaxAgeArmed = false;
         lastUploadedFixTimeMs = 0L;

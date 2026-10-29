@@ -32,6 +32,8 @@ const LAST_KNOWN_MAX_SPEED_MPS = 0.75;
  * draws like Manager (Maps-style last fix). Kept for tests / native comments.
  */
 const LAST_KNOWN_MAP_MOVE_M = 8;
+/** Same order as native LIVE_FIX_MAX_AGE_MS / fused-stall fallback. */
+const FUSED_GPS_CLOCK_STALE_MS = 8_000;
 
 /**
  * Live GPS sources always move the pin.
@@ -47,6 +49,27 @@ function isGpsFixForMapPosition(sampleSource, _opts = {}) {
   const src = String(sampleSource).trim();
   if (!GPS_CACHE_SAMPLE_SOURCES.has(src)) return true;
   return src === 'last_known';
+}
+
+/**
+ * Live pin: keep GPS+network (manager_watch) when fused/window_avg is still
+ * ticking with an old GPS clock (fixMs). 1.0.62 Karapiro drive: window_avg
+ * every ~6s with 40–100s-old fixMs moved the pin; Manager stayed on GPS.
+ *
+ * @param {{ sampleSource?: string|null, fixMs?: number|null, t?: number }|null|undefined} prev
+ * @param {{ sampleSource?: string|null, fixMs?: number|null, t?: number }|null|undefined} next
+ * @param {number} [now]
+ */
+function shouldKeepManagerWatchLivePin(prev, next, now = Date.now()) {
+  if (!prev || !next) return false;
+  const prevSrc = prev.sampleSource != null ? String(prev.sampleSource).trim() : '';
+  const nextSrc = next.sampleSource != null ? String(next.sampleSource).trim() : '';
+  if (prevSrc !== 'manager_watch') return false;
+  if (nextSrc === 'manager_watch' || nextSrc === 'last_known') return false;
+  const prevFix = Number(prev.fixMs != null ? prev.fixMs : prev.t);
+  const nextFix = Number(next.fixMs != null ? next.fixMs : next.t);
+  if (!Number.isFinite(prevFix) || !Number.isFinite(nextFix)) return false;
+  return Number(now) - nextFix > FUSED_GPS_CLOCK_STALE_MS && nextFix < prevFix;
 }
 
 function lastKnownMovedFromMapPin(prev, next) {
@@ -289,12 +312,14 @@ module.exports = {
   SAMPLE_CLOCK_SKEW_MS,
   LAST_KNOWN_MAX_SPEED_MPS,
   LAST_KNOWN_MAP_MOVE_M,
+  FUSED_GPS_CLOCK_STALE_MS,
   parseGpsOutlierMode,
   gpsOutlierLimitsForMode,
   distanceMeters,
   isGpsFixOutlier,
   isGpsFixForMapPosition,
   isSittingLastKnownFix,
+  shouldKeepManagerWatchLivePin,
   pickCloserClockMs,
   pickEffectiveSampleTimeMs,
   reconcileSampleTime,
