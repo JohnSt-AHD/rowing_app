@@ -39,6 +39,7 @@ const {
   isGpsFixForMapPosition,
   LAST_KNOWN_MAP_MOVE_M,
   shouldKeepManagerWatchLivePin,
+  shouldPreferManagerWatchLivePin,
   FUSED_GPS_CLOCK_STALE_MS,
   GPS_OUTLIER_MAX_ROWING_MPS,
   GPS_OUTLIER_MAX_CAR_MPS,
@@ -807,11 +808,14 @@ const sourceChecks = [
     pass: /gpsSampleSource === 'last_known' \|\| p\.gpsSampleSource === 'manager_watch'/.test(dashSrc),
   },
   {
-    name: 'native always-on GPS+network manager_watch live path',
+    name: 'native GPS listener is the live pin (not gated on beating fused)',
     pass: /manager_watch/.test(nativeSrc)
       && /startGpsSatelliteFallback\(\)/.test(nativeSrc)
       && /MANAGER_WATCH_MIN_UPLOAD_MS/.test(nativeSrc)
-      && /isFusedQuietOrStale/.test(nativeSrc),
+      && /Live pin is the LocationManager GPS listener/.test(nativeSrc)
+      && /MANAGER_WATCH_REQUEST_MS = 5_000L/.test(nativeSrc)
+      && /MANAGER_WATCH_GPS_MIN_M/.test(nativeSrc)
+      && !/managerWatchHasFresherGpsClock/.test(nativeSrc),
   },
   {
     name: 'native fused stall uses GPS clock (fixMs/getTime) not callback silence',
@@ -1028,12 +1032,42 @@ const lastKnownCases = [];
         { sampleSource: 'manager_watch', fixMs: gpsFix, t: now },
         { sampleSource: 'window_avg', fixMs: now - 2_000, t: now },
         now,
-      ) === false
+      ) === true
       && shouldKeepManagerWatchLivePin(
         { sampleSource: 'window_avg', fixMs: fusedFix, t: now },
         { sampleSource: 'manager_watch', fixMs: gpsFix, t: now },
         now,
       ) === false,
+  });
+}
+{
+  // Fri 30 Oct Melville walk: GPS manager_watch fixMs was ~8s older than the
+  // nearest fused window_avg (t−fixMs p50 48s). The newer fused clock must not
+  // take the live pin, and an older GPS sample must still replace window_avg.
+  const now = Date.now();
+  const gpsFix = now - 48_000;
+  const fusedFix = now - 40_000;
+  const gpsPos = offset(0, 0);
+  const fusedPos = offset(45, 0);
+  lastKnownCases.push({
+    name: 'Melville walk: newer fused fixMs does not steal live pin from older GPS manager_watch',
+    pass:
+      fusedFix > gpsFix
+      && distanceMeters(gpsPos.lat, gpsPos.lon, fusedPos.lat, fusedPos.lon) > 40
+      && shouldKeepManagerWatchLivePin(
+        { sampleSource: 'manager_watch', fixMs: gpsFix, t: now, lat: gpsPos.lat, lon: gpsPos.lon },
+        { sampleSource: 'window_avg', fixMs: fusedFix, t: now + 1_000, lat: fusedPos.lat, lon: fusedPos.lon },
+        now,
+      ) === true
+      && shouldPreferManagerWatchLivePin(
+        { sampleSource: 'window_avg', fixMs: fusedFix, t: now, lat: fusedPos.lat, lon: fusedPos.lon },
+        { sampleSource: 'manager_watch', fixMs: gpsFix, t: now, lat: gpsPos.lat, lon: gpsPos.lon },
+      ) === true
+      && shouldKeepManagerWatchLivePin(
+        { sampleSource: 'manager_watch', fixMs: gpsFix, t: now },
+        { sampleSource: 'window_avg', fixMs: now - 2_000, t: now },
+        now,
+      ) === true,
   });
 }
 {

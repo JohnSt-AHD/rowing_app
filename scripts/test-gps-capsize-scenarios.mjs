@@ -221,7 +221,7 @@ const explainerHtml = readFileSync(join(ROOT, 'apps/recorder-pwa/public/capsize-
 check('native NetworkCallback onAvailable/onValidated kicks flush', /kickNetworkResume\("available"\)/.test(nativeSrc) && /kickNetworkResume\("validated"\)/.test(nativeSrc) && /onLost/.test(nativeSrc) && /Network lost — buffering ingest locally/.test(nativeSrc));
 check('native pending outbox PENDING_BATCHES_KEY + flushPendingIngest', /PENDING_BATCHES_KEY = "pendingIngestBatches"/.test(nativeSrc) && /flushPendingIngest\(p, MAX_PENDING_FLUSH_PER_CYCLE\)/.test(nativeSrc) && /flushIngestBufferNow\(\)/.test(nativeSrc));
 check('native uploads stale sitting last-known so the map can decide', /Keep stale sitting samples as last_known/.test(nativeSrc) && /source = "last_known"/.test(nativeSrc) && /FUSED_FREEZE_MS = 8_000L/.test(nativeSrc) && /LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L/.test(nativeSrc) && !/Drop stale last-known/.test(nativeSrc));
-check('native GPS+network manager_watch live path (fused does not hide GPS)', /maybeOfferManagerWatchLive/.test(nativeSrc) && /"manager_watch"/.test(nativeSrc) && /isFusedQuietOrStale/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && /MANAGER_WATCH_GPS_MIN_M/.test(nativeSrc) && /Do not clone/.test(nativeSrc));
+check('native GPS listener is the live pin (not gated on beating fused)', /Live pin is the LocationManager GPS listener/.test(nativeSrc) && /"manager_watch"/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && /MANAGER_WATCH_GPS_MIN_M/.test(nativeSrc) && /MANAGER_WATCH_REQUEST_MS = 5_000L/.test(nativeSrc) && /Do not clone/.test(nativeSrc) && !/managerWatchHasFresherGpsClock/.test(nativeSrc));
 check('native fused stall is GPS clock (fixMs/getTime) not callback silence', /isFusedGpsClockStale/.test(nativeSrc) && /gpsClockAgeMs/.test(nativeSrc) && /lastFusedGpsClockMs/.test(nativeSrc) && /Do not wait for fused to go silent/.test(nativeSrc) && /isFusedGpsClockStale\(\)\) return true/.test(nativeSrc));
 check('native queues capsize ingest while offline', /Capsize ingest queued/.test(nativeSrc));
 check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
@@ -422,6 +422,66 @@ console.log('\n== GPS / network regain ==');
   check('fused still ticking after manager_watch: GPS keeps live pin (stale fused does not steal it)', pinHeld && distanceMeters(pinHeld.latitude, pinHeld.longitude, gpsPos.lat, gpsPos.lon) < 15 && pinHeld.gpsSampleSource === 'manager_watch' && gpsState(pinHeld) === 'live', {
     detail: pinHeld
       ? `d=${Math.round(distanceMeters(pinHeld.latitude, pinHeld.longitude, gpsPos.lat, gpsPos.lon))}m src=${pinHeld.gpsSampleSource} map=${gpsState(pinHeld)}`
+      : 'no pin',
+  });
+}
+
+{
+  // Fri 30 Oct Melville walk: GPS clocks were ~8s older than fused (t−fixMs
+  // p50 48s) and the live pin stayed on window_avg, ~40m off Manager.
+  const id = 'gps-melville-newer-fused';
+  const tNow = Date.now();
+  const gpsFix = tNow - 48_000;
+  const fusedFix = tNow - 40_000;
+  const gpsPos = offset(400, 0);
+  const fusedPos = offset(445, 0);
+  await ingest(id, [
+    gpsSample(tNow, gpsPos.lat, gpsPos.lon, { spd: 1.4, sampleSource: 'manager_watch', fixMs: gpsFix }),
+    gpsSample(tNow + 1_000, fusedPos.lat, fusedPos.lon, { spd: 1.4, sampleSource: 'window_avg', fixMs: fusedFix }),
+  ]);
+  const pinMel = await mapPin(id);
+  const dGps = pinMel ? distanceMeters(pinMel.latitude, pinMel.longitude, gpsPos.lat, gpsPos.lon) : Infinity;
+  const dFused = pinMel ? distanceMeters(pinMel.latitude, pinMel.longitude, fusedPos.lat, fusedPos.lon) : 0;
+  const age = Number(pinMel?.displayFixAgeSec ?? pinMel?.gpsFixAgeSec ?? pinMel?.fixAgeSec);
+  check('Melville walk: newer fused fixMs does not steal live pin from GPS manager_watch', pinMel && dGps < 15 && dFused > 30 && pinMel.gpsSampleSource === 'manager_watch' && age >= 45, {
+    detail: pinMel
+      ? `dGps=${Math.round(dGps)}m dFused=${Math.round(dFused)}m src=${pinMel.gpsSampleSource} age=${age} gpsFixAge=${pinMel.gpsFixAgeSec}`
+      : 'no pin',
+  });
+
+  const fusedLater = offset(490, 0);
+  await ingest(id, [
+    gpsSample(tNow + 2_000, fusedLater.lat, fusedLater.lon, {
+      spd: 1.4,
+      sampleSource: 'window_avg',
+      fixMs: tNow - 1_000,
+    }),
+  ]);
+  const pinHeldMel = await mapPin(id);
+  const dHeld = pinHeldMel
+    ? distanceMeters(pinHeldMel.latitude, pinHeldMel.longitude, gpsPos.lat, gpsPos.lon)
+    : Infinity;
+  check('Melville walk: later window_avg with a fresher fixMs stays off the live pin', pinHeldMel && dHeld < 15 && pinHeldMel.gpsSampleSource === 'manager_watch' && Number(pinHeldMel.displayFixAgeSec ?? pinHeldMel.gpsFixAgeSec) >= 45, {
+    detail: pinHeldMel
+      ? `d=${Math.round(dHeld)}m src=${pinHeldMel.gpsSampleSource} age=${pinHeldMel.displayFixAgeSec ?? pinHeldMel.gpsFixAgeSec}`
+      : 'no pin',
+  });
+
+  const idAfter = 'gps-melville-gps-after-fused';
+  const fusedFirst = offset(600, 0);
+  const gpsSecond = offset(645, 0);
+  await ingest(idAfter, [
+    gpsSample(tNow, fusedFirst.lat, fusedFirst.lon, { spd: 1.4, sampleSource: 'window_avg', fixMs: tNow - 2_000 }),
+  ]);
+  await ingest(idAfter, [
+    gpsSample(tNow + 1_000, gpsSecond.lat, gpsSecond.lon, { spd: 1.4, sampleSource: 'manager_watch', fixMs: gpsFix }),
+  ]);
+  const pinAfter = await mapPin(idAfter);
+  const dAfterGps = pinAfter ? distanceMeters(pinAfter.latitude, pinAfter.longitude, gpsSecond.lat, gpsSecond.lon) : Infinity;
+  const dAfterFused = pinAfter ? distanceMeters(pinAfter.latitude, pinAfter.longitude, fusedFirst.lat, fusedFirst.lon) : 0;
+  check('Melville walk: older GPS manager_watch replaces a newer fused pin', pinAfter && dAfterGps < 15 && dAfterFused > 30 && pinAfter.gpsSampleSource === 'manager_watch', {
+    detail: pinAfter
+      ? `dGps=${Math.round(dAfterGps)}m dFused=${Math.round(dAfterFused)}m src=${pinAfter.gpsSampleSource} age=${pinAfter.displayFixAgeSec ?? pinAfter.gpsFixAgeSec}`
       : 'no pin',
   });
 }

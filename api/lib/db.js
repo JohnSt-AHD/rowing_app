@@ -1819,6 +1819,7 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
     pickEffectiveSampleTimeMs,
     gpsOutlierLimitsForMode,
     shouldKeepManagerWatchLivePin,
+    shouldPreferManagerWatchLivePin,
   } = require('./gps-outlier');
   const orgSettings = await getOrgClientSettings(orgId);
   const outlierOpts = gpsOutlierLimitsForMode(orgSettings.predictMode);
@@ -1876,10 +1877,16 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
       fixMs,
       sampleSource,
     };
-    if (shouldKeepManagerWatchLivePin(best || registryPrev, candidate, now)) {
+    const pinPrev = best || registryPrev;
+    if (shouldKeepManagerWatchLivePin(pinPrev, candidate, now)) {
       continue;
     }
-    if (!best || t >= best.t || sampleSource === 'last_known') {
+    if (
+      !best ||
+      t >= best.t ||
+      sampleSource === 'last_known' ||
+      shouldPreferManagerWatchLivePin(pinPrev, candidate)
+    ) {
       best = {
         t,
         fixMs,
@@ -1914,9 +1921,15 @@ async function updateDeviceLatestGps(orgId, uniqueId, samples) {
     if (derived != null) best.spd = mergeGpsSpeedMps(derived);
   }
   // last_known keeps satellite t/fixMs (no restamp-to-now). Bump write t
-  // only enough to replace the previous pin when coords moved.
+  // only enough to replace the previous pin when coords moved. manager_watch
+  // replaces a newer fused/window_avg the same way — the GPS fixMs stays put.
+  const replacingFused =
+    best.sampleSource === 'manager_watch' &&
+    registryPrev &&
+    registryPrev.sampleSource !== 'manager_watch' &&
+    registryPrev.sampleSource !== 'last_known';
   const writeT =
-    best.sampleSource === 'last_known' &&
+    (best.sampleSource === 'last_known' || replacingFused) &&
     registryPrev?.t != null &&
     Number.isFinite(registryPrev.t) &&
     best.t < registryPrev.t

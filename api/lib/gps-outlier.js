@@ -51,25 +51,46 @@ function isGpsFixForMapPosition(sampleSource, _opts = {}) {
   return src === 'last_known';
 }
 
+function gpsSampleSourceOf(sample) {
+  if (!sample || sample.sampleSource == null) return '';
+  return String(sample.sampleSource).trim();
+}
+
 /**
- * Live pin: keep GPS+network (manager_watch) when fused/window_avg is still
- * ticking with an old GPS clock (fixMs). 1.0.62 Karapiro drive: window_avg
- * every ~6s with 40–100s-old fixMs moved the pin; Manager stayed on GPS.
+ * Live pin is GPS/network manager_watch — the same source as Manager.
+ * A later fused/window_avg must not steal it, even when fused fixMs is newer.
+ * 1.0.62 Karapiro drive: window_avg every ~6s with 40–100s-old fixMs moved the
+ * pin. Melville walk (30 Oct): fused fixMs was ~8s newer than GPS, so the
+ * clock comparison kept window_avg and the pin stayed ~40 m off Manager.
+ * last_known may still update the pin (sitting continuity, true fix clock).
  *
  * @param {{ sampleSource?: string|null, fixMs?: number|null, t?: number }|null|undefined} prev
  * @param {{ sampleSource?: string|null, fixMs?: number|null, t?: number }|null|undefined} next
  * @param {number} [now]
  */
-function shouldKeepManagerWatchLivePin(prev, next, now = Date.now()) {
+function shouldKeepManagerWatchLivePin(prev, next, _now = Date.now()) {
   if (!prev || !next) return false;
-  const prevSrc = prev.sampleSource != null ? String(prev.sampleSource).trim() : '';
-  const nextSrc = next.sampleSource != null ? String(next.sampleSource).trim() : '';
+  const prevSrc = gpsSampleSourceOf(prev);
+  const nextSrc = gpsSampleSourceOf(next);
   if (prevSrc !== 'manager_watch') return false;
   if (nextSrc === 'manager_watch' || nextSrc === 'last_known') return false;
-  const prevFix = Number(prev.fixMs != null ? prev.fixMs : prev.t);
-  const nextFix = Number(next.fixMs != null ? next.fixMs : next.t);
-  if (!Number.isFinite(prevFix) || !Number.isFinite(nextFix)) return false;
-  return Number(now) - nextFix > FUSED_GPS_CLOCK_STALE_MS && nextFix < prevFix;
+  return true;
+}
+
+/**
+ * Incoming GPS/network replaces a fused/window pin even when its fixMs or t
+ * is older. last_known is not displaced by an older manager_watch.
+ *
+ * @param {{ sampleSource?: string|null }|null|undefined} prev
+ * @param {{ sampleSource?: string|null }|null|undefined} next
+ */
+function shouldPreferManagerWatchLivePin(prev, next) {
+  if (!prev || !next) return false;
+  const nextSrc = gpsSampleSourceOf(next);
+  const prevSrc = gpsSampleSourceOf(prev);
+  if (nextSrc !== 'manager_watch') return false;
+  if (prevSrc === 'manager_watch' || prevSrc === 'last_known') return false;
+  return true;
 }
 
 function lastKnownMovedFromMapPin(prev, next) {
@@ -320,6 +341,7 @@ module.exports = {
   isGpsFixForMapPosition,
   isSittingLastKnownFix,
   shouldKeepManagerWatchLivePin,
+  shouldPreferManagerWatchLivePin,
   pickCloserClockMs,
   pickEffectiveSampleTimeMs,
   reconcileSampleTime,

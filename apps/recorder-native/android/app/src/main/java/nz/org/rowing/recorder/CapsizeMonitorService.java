@@ -144,8 +144,18 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long FUSED_LIVE_MAX_AGE_MS = 4_000L;
     /** Coach-like last-known continuity — never un-aged getLastLocation. */
     private static final long LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L;
-    /** Live GPS/network pin while fused is frozen (Coach manager_watch cadence). */
+    /**
+     * Live pin upload cadence. Coach force-uploads on the listener at most every
+     * min(locationInterval, 8s). CrewSight keeps that 8s cap.
+     */
     private static final long MANAGER_WATCH_MIN_UPLOAD_MS = 8_000L;
+    /**
+     * CoachMonitorService locationIntervalMs floor (max(5s, pref), default pref
+     * 20s). Manager's ~3s fix age is the GNSS time on the callback, not a faster
+     * request. The recorder live path uses this floor plus Coach's 4 m / 8 m
+     * distances — not the 500 ms fused window rate, and not getLastKnownLocation.
+     */
+    private static final long MANAGER_WATCH_REQUEST_MS = 5_000L;
     /** Same min-distance as CoachMonitorService GPS / network watches. */
     private static final float MANAGER_WATCH_GPS_MIN_M = 4f;
     private static final float MANAGER_WATCH_NETWORK_MIN_M = 8f;
@@ -260,7 +270,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      */
     private long lastFusedGpsClockMs;
     private boolean gpsSatelliteFallbackActive;
-    /** Last GPS/network LocationManager fix — live pin when fused is frozen. */
+    /** LocationManager GPS/network listener. This is the live map pin, same as Coach. */
+    private LocationListener liveGpsListener;
+    /** Last GPS/network listener fix. Not a getLastKnownLocation snapshot. */
     private Location latestManagerWatchLocation;
     private long lastManagerWatchUploadMs;
     /** First live fused fix seen this session — unlocks 4s maxAge + 15s last-known. */
@@ -671,14 +683,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
-    private boolean managerWatchHasFresherGpsClock(Location location) {
-        if (location == null) return false;
-        long locClock = location.getTime();
-        if (locClock <= 0L) return false;
-        if (lastFusedGpsClockMs <= 0L) return true;
-        return locClock > lastFusedGpsClockMs;
-    }
-
     /**
      * Fused callbacks stopped, fused GPS clock is old, or fused is frozen.
      * 1.0.62 only used callback wall-clock, so fused ticking every ~6s with
@@ -690,26 +694,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (now - lastFusedProviderDeliveryWallMs > LIVE_FIX_MAX_AGE_MS) return true;
         if (isFusedGpsClockStale()) return true;
         return fusedFreezeSinceMs > 0L && now - fusedFreezeSinceMs >= FUSED_FREEZE_MS;
-    }
-
-    /**
-     * GPS/network has left the fused lock, or fused never had a pin.
-     * Same frozen coord is not a live step (do not clone fused last_known).
-     */
-    private boolean managerWatchNewerOrMoved(Location loc) {
-        if (loc == null || !isGpsFixUsable(loc)) return false;
-        if (!Double.isFinite(fusedFreezeLat)
-                && (latestGpsLocation == null || isManagerWatchProvider(latestGpsLocation))) {
-            return isGpsFixRecentForMap(loc) || isGpsFixFresh(loc);
-        }
-        double refLat = Double.isFinite(fusedFreezeLat)
-                ? fusedFreezeLat
-                : latestGpsLocation.getLatitude();
-        double refLon = Double.isFinite(fusedFreezeLon)
-                ? fusedFreezeLon
-                : latestGpsLocation.getLongitude();
-        return distanceMeters(refLat, refLon, loc.getLatitude(), loc.getLongitude())
-                >= MANAGER_WATCH_GPS_MIN_M;
     }
 
     private boolean hasRecentRawGps() {
@@ -834,12 +818,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void deliverLocation(Location location) {
         if (!enableGps || location == null) return;
         if (isManagerWatchProvider(location)) {
+            // Live pin is this listener fix. Do not drop it because fused is
+            // still ticking, and do not wait until its clock beats fused.
             noteRawGpsMovement(location);
-            maybeOfferManagerWatchLive(location);
-            if (shouldIgnoreRawGps(location)) {
-                return;
-            }
             cacheManagerWatchOnly(location);
+            maybeOfferManagerWatchLive(location);
             if (standbyMode) {
                 handleStandbyLocation(location);
                 return;
@@ -1353,30 +1336,23 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Timer-driven upload from the live fused stream. When fused GPS clock is
-     * stale (or callbacks stall), GPS+network manager_watch takes the live pin.
+     * Timer uploads fused window_avg for session history only. The live pin is
+     * the GPS listener (maybeOfferManagerWatchLive), not this cache and not
+     * getLastKnownLocation. A quiet fused stream may still refresh history.
      */
     private void tickScheduledGpsUpload() {
         if (recordingHalted || !enableGps) return;
-        if (isFusedQuietOrStale()) {
-            Location watch =
-                    latestManagerWatchLocation != null
-                            ? latestManagerWatchLocation
-                            : agedLastKnownFromProviders();
-            if (watch != null && managerWatchNewerOrMoved(watch)) {
-                maybeOfferManagerWatchLive(watch);
-            } else {
-                maybeOfferAgedLastKnownFallback();
-            }
-            requestFreshGpsLocation(
-                    loc -> {
-                        if (loc != null && !isManagerWatchProvider(loc)) {
-                            deliverLocation(loc);
-                        }
-                    });
-            return;
-        }
         uploadWindowAverageGps(true);
+        if (!isFusedQuietOrStale()) return;
+        if (latestManagerWatchLocation == null) {
+            maybeOfferAgedLastKnownFallback();
+        }
+        requestFreshGpsLocation(
+                loc -> {
+                    if (loc != null && !isManagerWatchProvider(loc)) {
+                        deliverLocation(loc);
+                    }
+                });
     }
 
     private void requestGpsFlush() {
@@ -3400,19 +3376,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Coach-like continuity after a live lock: GPS+network last-known with a
-     * 15s max-age. Moved GPS/network becomes manager_watch. Same-coord sitting
-     * stays last_known with the true fix clock — never a fused window clone.
+     * Sitting continuity only when the GPS listener has not delivered a fix.
+     * Same-coord last_known keeps the true fix clock — never a fused window
+     * clone, and never a manager_watch (that tag is the listener).
      */
     private void maybeOfferAgedLastKnownFallback() {
         if (!enableGps || recordingHalted || !fusedSawLiveFix) return;
+        if (latestManagerWatchLocation != null) return;
         if (!isFusedQuietOrStale()) return;
         Location loc = agedLastKnownFromProviders();
         if (loc == null) return;
-        if (managerWatchNewerOrMoved(loc)) {
-            maybeOfferManagerWatchLive(loc);
-            return;
-        }
         if (sameCoords(loc, lastUploadedLat, lastUploadedLon)
                 && lastGpsSampleOfferedMs > 0L
                 && System.currentTimeMillis() - lastGpsSampleOfferedMs
@@ -3425,63 +3398,90 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 () -> enqueueGpsSample(aged, ingestTimeMs(aged), true, "last_known"));
     }
 
+    /** GPS listener fix is newer than this network callback — network is fallback only. */
+    private boolean hasFresherGpsListenerFix() {
+        Location gps = latestManagerWatchLocation;
+        if (gps == null || !LocationManager.GPS_PROVIDER.equals(gps.getProvider())) return false;
+        return rawFixAgeMs(gps) <= MANAGER_WATCH_MIN_UPLOAD_MS;
+    }
+
     /**
-     * Upload GPS/network as map-eligible live when fused is quiet/frozen or
-     * its GPS clock (fixMs) is old, even if fused callbacks still tick.
-     * Do not wait for fused to go silent. Do not clone the fused last_known pin.
+     * Live pin is the LocationManager GPS listener (network fallback), same as
+     * Coach. Listener callbacks forward as manager_watch. Not gated on beating
+     * fused fixMs. Do not clone a stale getLastKnownLocation snapshot.
+     * Do not clone the fused last_known pin.
      */
     private void maybeOfferManagerWatchLive(Location location) {
         if (!enableGps || recordingHalted || standbyMode) return;
         if (!isManagerWatchProvider(location) || !isGpsFixUsable(location)) return;
-        if (!isFusedQuietOrStale()) return;
-        if (isFusedGpsClockStale() && !managerWatchHasFresherGpsClock(location)) return;
-        if (!managerWatchNewerOrMoved(location)) return;
-        if (!isGpsFixFresh(location) && !isGpsFixRecentForMap(location)) return;
+        if (LocationManager.NETWORK_PROVIDER.equals(location.getProvider())
+                && hasFresherGpsListenerFix()) {
+            return;
+        }
         long now = System.currentTimeMillis();
         if (lastManagerWatchUploadMs > 0L
                 && now - lastManagerWatchUploadMs < MANAGER_WATCH_MIN_UPLOAD_MS) {
             return;
         }
-        if (sameCoords(location, lastUploadedLat, lastUploadedLon)) return;
         if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
         lastManagerWatchUploadMs = now;
         lastUploadedLat = location.getLatitude();
         lastUploadedLon = location.getLongitude();
         lastUploadedFixTimeMs = now;
-        latestManagerWatchLocation = copyLocationForUpload(location);
-        cacheManagerWatchOnly(location);
         final Location live = copyLocationForUpload(location);
-        Log.i(
-                TAG,
-                "Manager-watch live "
-                        + live.getProvider()
-                        + " — fused GPS clock stale or quiet, uploading map pin");
+        final long sampleT = now;
+        Log.i(TAG, "Manager-watch live " + live.getProvider() + " listener fix");
         uploadExecutor.execute(
-                () -> enqueueGpsSample(live, ingestTimeMs(live), true, "manager_watch"));
+                () -> enqueueGpsSample(live, sampleT, true, "manager_watch"));
     }
 
+    /** Remember the listener fix. Do not overwrite the fused history provider. */
     private void cacheManagerWatchOnly(Location location) {
         if (location == null || !isGpsFixUsable(location)) return;
+        if (LocationManager.NETWORK_PROVIDER.equals(location.getProvider())
+                && hasFresherGpsListenerFix()) {
+            return;
+        }
         latestManagerWatchLocation = copyLocationForUpload(location);
-        latestGpsCachedWallMs = System.currentTimeMillis();
-        String provider = location.getProvider();
-        if (provider != null && !provider.isEmpty()) {
-            latestGpsProvider = provider;
-        }
         long rawFix = location.getTime();
-        long now = System.currentTimeMillis();
-        if (rawFix > 0L && rawFix <= now + 5_000L) {
-            if (latestGpsRawFixClockMs <= 0L
-                    || rawFix >= latestGpsRawFixClockMs
-                    || managerWatchNewerOrMoved(location)) {
-                latestGpsRawFixClockMs = rawFix;
-            }
-        }
-        saveLastGpsToPrefs(location, ingestTimeMs(location), nativeGpsCount);
+        long stamp = rawFix > 0L ? rawFix : System.currentTimeMillis();
+        saveLastGpsToPrefs(location, stamp, nativeGpsCount);
         savePulseDiagnostics();
     }
 
-    /** Always-on GPS+network (Manager way) in addition to fused. */
+    private void ensureLiveGpsListener() {
+        if (liveGpsListener != null) return;
+        liveGpsListener =
+                new LocationListener() {
+                    @Override
+                    public void onLocationChanged(Location location) {
+                        deliverLocation(location);
+                    }
+
+                    @Override
+                    public void onStatusChanged(String provider, int status, Bundle extras) {}
+
+                    @Override
+                    public void onProviderEnabled(String provider) {}
+
+                    @Override
+                    public void onProviderDisabled(String provider) {}
+                };
+    }
+
+    private void removeLiveGpsUpdates() {
+        if (locationManager == null || liveGpsListener == null) return;
+        try {
+            locationManager.removeUpdates(liveGpsListener);
+        } catch (SecurityException ignored) {
+        }
+    }
+
+    /**
+     * Always-on GPS+network listener (Coach request: 5s floor, 4 m GPS, 8 m
+     * network) in addition to fused. Fused stays for history, capsize, and
+     * geofence. One last-known seed, then listener callbacks only.
+     */
     private void startGpsSatelliteFallback() {
         if (gpsSatelliteFallbackActive) return;
         if (locationManager == null) return;
@@ -3489,7 +3489,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 != PackageManager.PERMISSION_GRANTED) {
             return;
         }
-        long minTime = locationTrackingIntervalMs();
+        ensureLiveGpsListener();
+        long minTime = MANAGER_WATCH_REQUEST_MS;
         boolean any = false;
         try {
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
@@ -3497,7 +3498,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         LocationManager.GPS_PROVIDER,
                         minTime,
                         MANAGER_WATCH_GPS_MIN_M,
-                        this,
+                        liveGpsListener,
                         mainHandler.getLooper());
                 any = true;
             }
@@ -3506,12 +3507,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         LocationManager.NETWORK_PROVIDER,
                         minTime,
                         MANAGER_WATCH_NETWORK_MIN_M,
-                        this,
+                        liveGpsListener,
                         mainHandler.getLooper());
                 any = true;
             }
         } catch (SecurityException e) {
-            Log.e(TAG, "GPS/network fallback permission error", e);
+            Log.e(TAG, "GPS/network live listener permission error", e);
             return;
         }
         if (!any) {
@@ -3519,16 +3520,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return;
         }
         gpsSatelliteFallbackActive = true;
-        maybeOfferAgedLastKnownFallback();
-        Log.i(TAG, "GPS+network manager-watch registered (" + minTime + "ms)");
+        Location seed = agedLastKnownFromProviders();
+        if (seed != null && latestManagerWatchLocation == null) {
+            deliverLocation(seed);
+        }
+        Log.i(TAG, "GPS+network manager-watch listener registered (" + minTime + "ms)");
     }
 
     private void stopGpsSatelliteFallback() {
         if (!gpsSatelliteFallbackActive || locationManager == null) return;
-        try {
-            locationManager.removeUpdates(this);
-        } catch (SecurityException ignored) {
-        }
+        removeLiveGpsUpdates();
         gpsSatelliteFallbackActive = false;
         Log.i(TAG, "Satellite GPS fallback cleared");
     }
@@ -3568,6 +3569,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             fusedClient.removeLocationUpdates(fusedCallback);
             fusedCallback = null;
         }
+        removeLiveGpsUpdates();
         if (locationManager != null) {
             try {
                 locationManager.removeUpdates(this);

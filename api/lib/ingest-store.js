@@ -9,6 +9,7 @@ const {
   pickEffectiveSampleTimeMs,
   reconcileSampleTimes,
   shouldKeepManagerWatchLivePin,
+  shouldPreferManagerWatchLivePin,
 } = require('./gps-outlier');
 
 const CAPSIZE_ALERT_MAX_AGE_MS = db.CAPSIZE_ALERT_MAX_AGE_MS ?? 12 * 60 * 60 * 1000;
@@ -1474,6 +1475,12 @@ function warmGpsTracksFromSamplesByDevice(orgId, byDevice, opts = {}) {
         prevMapFix: lastMapFix,
       });
       if (!fix) continue;
+      if (shouldKeepManagerWatchLivePin(lastMapFix, fix)) continue;
+      if (shouldPreferManagerWatchLivePin(lastMapFix, fix)) {
+        gpsTracks.set(trackKey, resetGpsSmoothState(fix));
+        lastMapFix = fix;
+        continue;
+      }
       lastMapFix = fix;
       updateGpsTrack(trackKey, fix, trackOpts);
     }
@@ -1675,7 +1682,13 @@ function sanitizeAndTrackSamples(deviceId, samples, outlierMode = 'rowing') {
         next = rest;
       } else {
         const prev = lastAcceptedGpsFixFor(deviceId);
-        if (prev && isGpsFixOutlier(prev, fix, outlierOpts)) {
+        if (shouldKeepManagerWatchLivePin(prev, fix)) {
+          // History keeps the fused sample. It does not move the live pin.
+          metrics.gpsCachePositionSkipped++;
+        } else if (shouldPreferManagerWatchLivePin(prev, fix)) {
+          rememberAcceptedGpsFix(deviceId, fix);
+          gpsTracks.set(String(deviceId), resetGpsSmoothState(fix));
+        } else if (prev && isGpsFixOutlier(prev, fix, outlierOpts)) {
           metrics.gpsOutliersRejected++;
           const { gps, ...rest } = sample;
           const hasPayload =
@@ -1685,22 +1698,16 @@ function sanitizeAndTrackSamples(deviceId, samples, outlierMode = 'rowing') {
             continue;
           }
           next = rest;
+        } else if (isGpsFixForMapPosition(fix.sampleSource, { prev, next: fix })) {
+          rememberAcceptedGpsFix(deviceId, fix);
+          const trackFix = gpsFromSample(sample, {
+            forTrack: true,
+            forMapPosition: true,
+            prevMapFix: prev,
+          });
+          if (trackFix) updateGpsTrack(deviceId, trackFix, { mode: outlierMode });
         } else {
-          if (isGpsFixForMapPosition(fix.sampleSource, { prev, next: fix })) {
-            if (shouldKeepManagerWatchLivePin(prev, fix)) {
-              metrics.gpsCachePositionSkipped++;
-            } else {
-              rememberAcceptedGpsFix(deviceId, fix);
-              const trackFix = gpsFromSample(sample, {
-                forTrack: true,
-                forMapPosition: true,
-                prevMapFix: prev,
-              });
-              if (trackFix) updateGpsTrack(deviceId, trackFix, { mode: outlierMode });
-            }
-          } else {
-            metrics.gpsCachePositionSkipped++;
-          }
+          metrics.gpsCachePositionSkipped++;
         }
       }
     }
@@ -3059,8 +3066,13 @@ function latestGpsFromSamples(samples, { forMapPosition = false } = {}) {
       forMapPosition ? { forMapPosition: true, prevMapFix: lastGps } : {},
     );
     if (!fix) continue;
-    if (forMapPosition && shouldKeepManagerWatchLivePin(lastGps, fix)) continue;
-    if (!lastGps || fix.t >= lastGps.t || forMapPosition) {
+    if (shouldKeepManagerWatchLivePin(lastGps, fix)) continue;
+    if (
+      !lastGps ||
+      fix.t >= lastGps.t ||
+      forMapPosition ||
+      shouldPreferManagerWatchLivePin(lastGps, fix)
+    ) {
       lastGps = fix;
     }
   }
