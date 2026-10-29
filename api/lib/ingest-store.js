@@ -6,7 +6,7 @@ const {
   isGpsFixOutlier,
   isGpsFixForMapPosition,
   filterOutlierGpsFixes,
-  pickCloserClockMs,
+  pickEffectiveSampleTimeMs,
   reconcileSampleTimes,
 } = require('./gps-outlier');
 
@@ -553,7 +553,11 @@ function gpsFromSample(sample, { forTrack = false, forMapPosition = false, prevM
   if (forTrack && acc != null && acc > MAX_GPS_ACCURACY_M) return null;
   const rawT = Number(sample.t);
   const fixMs = gpsFixMsFromSample(sample);
-  const t = pickCloserClockMs(rawT, fixMs) ?? rawT;
+  const t =
+    pickEffectiveSampleTimeMs(rawT, fixMs, Date.now(), sampleSource, {
+      spd: sample.gps?.spd,
+      lastKnown: sample.gps?.lastKnown,
+    }) ?? rawT;
   if (!Number.isFinite(t)) return null;
   const spd =
     sample.gps.spd != null && Number.isFinite(Number(sample.gps.spd))
@@ -610,6 +614,7 @@ const GPS_SAMPLE_SOURCES = new Set([
   'heartbeat_cache',
   'stale_piggyback',
   'last_known',
+  'manager_watch',
   'web',
 ]);
 
@@ -2359,7 +2364,7 @@ function displayGpsAgeSec(fixAgeSec, ingestAgoSec, extra = {}) {
       : fixAgeSec;
   if (trueFixAge == null || !Number.isFinite(Number(trueFixAge))) return null;
   const src = extra.sampleSource != null ? String(extra.sampleSource).trim() : '';
-  if (src === 'last_known') return Number(trueFixAge);
+  if (src === 'last_known' || src === 'manager_watch') return Number(trueFixAge);
   const ingest = ingestAgoSec != null && Number.isFinite(Number(ingestAgoSec))
     ? Number(ingestAgoSec)
     : null;

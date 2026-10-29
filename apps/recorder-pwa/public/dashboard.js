@@ -305,7 +305,10 @@ function mapDisplayAgeSec(p) {
         : 0;
   const clockGap = trueFix != null && ingest != null ? trueFix - ingest : 0;
   const effectiveLag = Math.max(lag, clockGap);
-  if (p.gpsSampleSource === 'last_known' && trueFix != null) {
+  if (
+    (p.gpsSampleSource === 'last_known' || p.gpsSampleSource === 'manager_watch') &&
+    trueFix != null
+  ) {
     return trueFix;
   }
   const sitting = p.speed == null || !Number.isFinite(p.speed) || p.speed <= 0.75;

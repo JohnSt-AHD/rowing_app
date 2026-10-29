@@ -140,6 +140,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long FUSED_LIVE_MAX_AGE_MS = 4_000L;
     /** Coach-like last-known continuity — never un-aged getLastLocation. */
     private static final long LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L;
+    /** Live GPS/network pin while fused is frozen (Coach manager_watch cadence). */
+    private static final long MANAGER_WATCH_MIN_UPLOAD_MS = 8_000L;
+    /** Same min-distance as CoachMonitorService GPS / network watches. */
+    private static final float MANAGER_WATCH_GPS_MIN_M = 4f;
+    private static final float MANAGER_WATCH_NETWORK_MIN_M = 8f;
     private static final float FUSED_FREEZE_M = 15f;
     /** Near-zero displacement this long while timestamps advance = restamped lock. */
     private static final long RAW_GPS_STILL_MS = 8_000L;
@@ -246,6 +251,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** Last non-raw (fused) delivery — sitting GNSS must not overwrite this. */
     private long lastFusedProviderDeliveryWallMs;
     private boolean gpsSatelliteFallbackActive;
+    /** Last GPS/network LocationManager fix — live pin when fused is frozen. */
+    private Location latestManagerWatchLocation;
+    private long lastManagerWatchUploadMs;
     /** First live fused fix seen this session — unlocks 4s maxAge + 15s last-known. */
     private boolean fusedSawLiveFix;
     private boolean fusedLiveMaxAgeArmed;
@@ -612,6 +620,45 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return location != null && LocationManager.GPS_PROVIDER.equals(location.getProvider());
     }
 
+    /** Coach LocationManager providers — live pin, not fused sitting-lock. */
+    private static boolean isManagerWatchProvider(Location location) {
+        if (location == null) return false;
+        String provider = location.getProvider();
+        return LocationManager.GPS_PROVIDER.equals(provider)
+                || LocationManager.NETWORK_PROVIDER.equals(provider);
+    }
+
+    /**
+     * Fused callbacks stopped, or fused is still ticking the same frozen coord.
+     * 1.0.61 treated restamped fused callbacks as live and ignored GPS.
+     */
+    private boolean isFusedQuietOrStale() {
+        long now = System.currentTimeMillis();
+        if (lastFusedProviderDeliveryWallMs <= 0L) return true;
+        if (now - lastFusedProviderDeliveryWallMs > LIVE_FIX_MAX_AGE_MS) return true;
+        return fusedFreezeSinceMs > 0L && now - fusedFreezeSinceMs >= FUSED_FREEZE_MS;
+    }
+
+    /**
+     * GPS/network has left the fused lock, or fused never had a pin.
+     * Same frozen coord is not a live step (do not clone fused last_known).
+     */
+    private boolean managerWatchNewerOrMoved(Location loc) {
+        if (loc == null || !isGpsFixUsable(loc)) return false;
+        if (!Double.isFinite(fusedFreezeLat)
+                && (latestGpsLocation == null || isManagerWatchProvider(latestGpsLocation))) {
+            return isGpsFixRecentForMap(loc) || isGpsFixFresh(loc);
+        }
+        double refLat = Double.isFinite(fusedFreezeLat)
+                ? fusedFreezeLat
+                : latestGpsLocation.getLatitude();
+        double refLon = Double.isFinite(fusedFreezeLon)
+                ? fusedFreezeLon
+                : latestGpsLocation.getLongitude();
+        return distanceMeters(refLat, refLon, loc.getLatitude(), loc.getLongitude())
+                >= MANAGER_WATCH_GPS_MIN_M;
+    }
+
     private boolean hasRecentRawGps() {
         return latestGpsLocation != null
                 && LocationManager.GPS_PROVIDER.equals(latestGpsProvider)
@@ -663,9 +710,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return !isGpsFixRecentForMap(location);
     }
 
-    /** Sitting / restamped raw must not overwrite a live fused fix. */
+    /**
+     * Sitting / restamped GPS+network must not overwrite a live *moving* fused fix.
+     * Frozen fused callbacks (Karapiro drive stall) must not hide GPS/network.
+     */
     private boolean shouldIgnoreRawGps(Location location) {
-        if (!isRawGpsProvider(location)) return false;
+        if (!isManagerWatchProvider(location)) return false;
+        if (isFusedQuietOrStale()) return false;
         return isFusedStillDelivering();
     }
 
@@ -674,7 +725,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (!isGpsFixRecentForMap(fused)) return;
         if (isRawGpsActuallyTracking()) return;
         if (!isRawGpsSittingStill() && !fusedMovedFromRawGps(fused)) return;
-        stopGpsSatelliteFallback();
         clearRawGpsStill();
         Log.i(TAG, "Following fused — satellite GPS lock sitting still");
     }
@@ -725,17 +775,27 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void deliverLocation(Location location) {
         if (!enableGps || location == null) return;
-        if (isRawGpsProvider(location)) {
+        if (isManagerWatchProvider(location)) {
             noteRawGpsMovement(location);
+            maybeOfferManagerWatchLive(location);
+            if (shouldIgnoreRawGps(location)) {
+                return;
+            }
+            cacheManagerWatchOnly(location);
+            if (standbyMode) {
+                handleStandbyLocation(location);
+                return;
+            }
+            maybeApplyGeofenceEconomy(location.getLatitude(), location.getLongitude());
+            maybeNotifyZoneEntry(location.getLatitude(), location.getLongitude());
+            return;
         }
         if (shouldIgnoreFused(location) || shouldIgnoreRawGps(location)) {
             return;
         }
         if (isGpsFixRecentForMap(location)) {
             lastFusedDeliveryWallMs = System.currentTimeMillis();
-            if (!isRawGpsProvider(location)) {
-                lastFusedProviderDeliveryWallMs = lastFusedDeliveryWallMs;
-            }
+            lastFusedProviderDeliveryWallMs = lastFusedDeliveryWallMs;
             maybeArmFusedLiveMaxAge();
         }
         savePulseDiagnostics();
@@ -747,9 +807,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         addFixToGpsWindow(location);
         maybeApplyGeofenceEconomy(location.getLatitude(), location.getLongitude());
         maybeNotifyZoneEntry(location.getLatitude(), location.getLongitude());
-        if (!isRawGpsProvider(location)) {
-            noteFusedMovement(location);
-        }
+        noteFusedMovement(location);
     }
 
     private void noteFusedMovement(Location location) {
@@ -761,7 +819,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             fusedFreezeLat = location.getLatitude();
             fusedFreezeLon = location.getLongitude();
             fusedFreezeSinceMs = now;
-            stopGpsSatelliteFallback();
             return;
         }
         if (fusedFreezeSinceMs <= 0L) fusedFreezeSinceMs = now;
@@ -852,6 +909,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (location == null) return false;
         if (location.hasSpeed() && location.getSpeed() > RAW_GPS_MOVING_SPEED_MS) {
             return false;
+        }
+        if (Double.isFinite(sittingLockLat)) {
+            float movedM =
+                    distanceMeters(
+                            sittingLockLat,
+                            sittingLockLon,
+                            location.getLatitude(),
+                            location.getLongitude());
+            if (movedM > SITTING_LOCK_M) return false;
         }
         long age = rawFixAgeMs(location);
         if (age > LIVE_FIX_MAX_AGE_MS) return true;
@@ -1227,19 +1293,25 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** Timer-driven upload from the live fused stream. Poll only if callbacks stall. */
     private void tickScheduledGpsUpload() {
         if (recordingHalted || !enableGps) return;
-        uploadWindowAverageGps(true);
-        long now = System.currentTimeMillis();
-        if (lastFusedDeliveryWallMs > 0L && now - lastFusedDeliveryWallMs <= LIVE_FIX_MAX_AGE_MS) {
+        if (isFusedQuietOrStale()) {
+            Location watch =
+                    latestManagerWatchLocation != null
+                            ? latestManagerWatchLocation
+                            : agedLastKnownFromProviders();
+            if (watch != null && managerWatchNewerOrMoved(watch)) {
+                maybeOfferManagerWatchLive(watch);
+            } else {
+                maybeOfferAgedLastKnownFallback();
+            }
+            requestFreshGpsLocation(
+                    loc -> {
+                        if (loc != null && !isManagerWatchProvider(loc)) {
+                            deliverLocation(loc);
+                        }
+                    });
             return;
         }
-        maybeOfferAgedLastKnownFallback();
-        requestFreshGpsLocation(
-                loc -> {
-                    if (loc != null && isGpsFixRecentForMap(loc)) {
-                        cacheGpsLocation(loc);
-                        addFixToGpsWindow(loc);
-                    }
-                });
+        uploadWindowAverageGps(true);
     }
 
     private void requestGpsFlush() {
@@ -1564,7 +1636,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private static boolean isLiveGpsSampleSource(String sampleSource) {
         if (sampleSource == null || sampleSource.isEmpty()) return true;
-        return "direct".equals(sampleSource) || "window_avg".equals(sampleSource);
+        return "direct".equals(sampleSource)
+                || "window_avg".equals(sampleSource)
+                || "manager_watch".equals(sampleSource);
     }
 
     private String resolveGpsProvider(Location location) {
@@ -1592,9 +1666,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (location.hasAltitude()) {
             gps.put("alt", Math.round(location.getAltitude() * 10) / 10.0);
         }
-        if (latestGpsRawFixClockMs > 0L) {
-            gps.put("fixMs", latestGpsRawFixClockMs);
-        }
+        long locFix = location.getTime();
+        long now = System.currentTimeMillis();
+        long fixMs =
+                locFix > 0L && locFix <= now + 5_000L ? locFix : latestGpsRawFixClockMs;
+        if (fixMs > 0L) gps.put("fixMs", fixMs);
         String provider = resolveGpsProvider(location);
         if (provider != null && !provider.isEmpty()) gps.put("provider", provider);
         if (sampleSource != null && !sampleSource.isEmpty()) gps.put("sampleSource", sampleSource);
@@ -1673,6 +1749,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             // Keep location cache for geofence checks; do not upload while in suppress zone.
             return;
         }
+        noteSittingLock(location);
         boolean sitting = isSittingLastKnownFix(location);
         String source = sampleSource;
         if (sitting && isLiveGpsSampleSource(sampleSource)) {
@@ -1683,10 +1760,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         try {
             JSONObject sample = new JSONObject();
             long now = System.currentTimeMillis();
-            long offeredT =
-                    sitting && latestGpsRawFixClockMs > 0L ? latestGpsRawFixClockMs : t;
+            long locFix = location.getTime();
+            long sittingFix =
+                    locFix > 0L && locFix <= now + 5_000L ? locFix : latestGpsRawFixClockMs;
+            long offeredT = sitting && sittingFix > 0L ? sittingFix : t;
             long sampleT =
-                    pickEffectiveSampleTimeMs(offeredT, latestGpsRawFixClockMs, now, sitting);
+                    pickEffectiveSampleTimeMs(offeredT, sittingFix, now, sitting);
             sample.put("t", sampleT);
             sample.put("gps", buildGpsJson(location, source));
             if (enableMotion && (lastAx != 0f || lastAy != 0f || lastAz != 0f)) {
@@ -3146,6 +3225,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         unregisterLocation();
         registerFusedLocation();
+        // Manager way: GPS+network always on, not only after a fused freeze.
+        startGpsSatelliteFallback();
     }
 
     private void registerFusedLocation() {
@@ -3255,22 +3336,85 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * Coach-like continuity after a live lock: GPS+network last-known with a
-     * 15s max-age, tagged last_known. Never un-aged getLastLocation.
+     * 15s max-age. Moved GPS/network becomes manager_watch. Same-coord sitting
+     * stays last_known with the true fix clock — never a fused window clone.
      */
     private void maybeOfferAgedLastKnownFallback() {
         if (!enableGps || recordingHalted || !fusedSawLiveFix) return;
-        long now = System.currentTimeMillis();
-        if (lastFusedDeliveryWallMs > 0L && now - lastFusedDeliveryWallMs <= LIVE_FIX_MAX_AGE_MS) {
-            return;
-        }
+        if (!isFusedQuietOrStale()) return;
         Location loc = agedLastKnownFromProviders();
         if (loc == null) return;
-        cacheGpsLocation(loc);
-        addFixToGpsWindow(loc);
-        uploadWindowAverageGps(true, "last_known");
+        if (managerWatchNewerOrMoved(loc)) {
+            maybeOfferManagerWatchLive(loc);
+            return;
+        }
+        if (sameCoords(loc, lastUploadedLat, lastUploadedLon)
+                && lastGpsSampleOfferedMs > 0L
+                && System.currentTimeMillis() - lastGpsSampleOfferedMs
+                        < MANAGER_WATCH_MIN_UPLOAD_MS) {
+            return;
+        }
+        if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
+        final Location aged = copyLocationForUpload(loc);
+        uploadExecutor.execute(
+                () -> enqueueGpsSample(aged, ingestTimeMs(aged), true, "last_known"));
     }
 
-    /** Only if fused stays frozen — not the normal Maps path. */
+    /**
+     * Upload GPS/network as map-eligible live when fused is quiet/frozen and
+     * the provider has actually moved. Do not clone the fused last_known pin.
+     */
+    private void maybeOfferManagerWatchLive(Location location) {
+        if (!enableGps || recordingHalted || standbyMode) return;
+        if (!isManagerWatchProvider(location) || !isGpsFixUsable(location)) return;
+        if (!isFusedQuietOrStale()) return;
+        if (!managerWatchNewerOrMoved(location)) return;
+        if (!isGpsFixFresh(location) && !isGpsFixRecentForMap(location)) return;
+        long now = System.currentTimeMillis();
+        if (lastManagerWatchUploadMs > 0L
+                && now - lastManagerWatchUploadMs < MANAGER_WATCH_MIN_UPLOAD_MS) {
+            return;
+        }
+        if (sameCoords(location, lastUploadedLat, lastUploadedLon)) return;
+        if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
+        lastManagerWatchUploadMs = now;
+        lastUploadedLat = location.getLatitude();
+        lastUploadedLon = location.getLongitude();
+        lastUploadedFixTimeMs = now;
+        latestManagerWatchLocation = copyLocationForUpload(location);
+        cacheManagerWatchOnly(location);
+        final Location live = copyLocationForUpload(location);
+        Log.i(
+                TAG,
+                "Manager-watch live "
+                        + live.getProvider()
+                        + " — fused quiet/stale, uploading map pin");
+        uploadExecutor.execute(
+                () -> enqueueGpsSample(live, ingestTimeMs(live), true, "manager_watch"));
+    }
+
+    private void cacheManagerWatchOnly(Location location) {
+        if (location == null || !isGpsFixUsable(location)) return;
+        latestManagerWatchLocation = copyLocationForUpload(location);
+        latestGpsCachedWallMs = System.currentTimeMillis();
+        String provider = location.getProvider();
+        if (provider != null && !provider.isEmpty()) {
+            latestGpsProvider = provider;
+        }
+        long rawFix = location.getTime();
+        long now = System.currentTimeMillis();
+        if (rawFix > 0L && rawFix <= now + 5_000L) {
+            if (latestGpsRawFixClockMs <= 0L
+                    || rawFix >= latestGpsRawFixClockMs
+                    || managerWatchNewerOrMoved(location)) {
+                latestGpsRawFixClockMs = rawFix;
+            }
+        }
+        saveLastGpsToPrefs(location, ingestTimeMs(location), nativeGpsCount);
+        savePulseDiagnostics();
+    }
+
+    /** Always-on GPS+network (Manager way) in addition to fused. */
     private void startGpsSatelliteFallback() {
         if (gpsSatelliteFallbackActive) return;
         if (locationManager == null) return;
@@ -3283,12 +3427,20 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         try {
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                 locationManager.requestLocationUpdates(
-                        LocationManager.GPS_PROVIDER, minTime, 0f, this, mainHandler.getLooper());
+                        LocationManager.GPS_PROVIDER,
+                        minTime,
+                        MANAGER_WATCH_GPS_MIN_M,
+                        this,
+                        mainHandler.getLooper());
                 any = true;
             }
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
                 locationManager.requestLocationUpdates(
-                        LocationManager.NETWORK_PROVIDER, minTime, 0f, this, mainHandler.getLooper());
+                        LocationManager.NETWORK_PROVIDER,
+                        minTime,
+                        MANAGER_WATCH_NETWORK_MIN_M,
+                        this,
+                        mainHandler.getLooper());
                 any = true;
             }
         } catch (SecurityException e) {
@@ -3301,7 +3453,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         gpsSatelliteFallbackActive = true;
         maybeOfferAgedLastKnownFallback();
-        Log.i(TAG, "GPS+network fallback registered (" + minTime + "ms)");
+        Log.i(TAG, "GPS+network manager-watch registered (" + minTime + "ms)");
     }
 
     private void stopGpsSatelliteFallback() {
@@ -3356,8 +3508,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             }
         }
         gpsSatelliteFallbackActive = false;
+        latestManagerWatchLocation = null;
+        lastManagerWatchUploadMs = 0L;
         clearFusedFreeze();
         clearRawGpsStill();
+        clearSittingLock();
     }
 
     private void acquireWakeLock() {

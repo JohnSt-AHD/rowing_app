@@ -281,6 +281,12 @@ function mapDisplayAgeSec(p) {
         : 0;
   const clockGap = trueFix != null && ingest != null ? trueFix - ingest : 0;
   const effectiveLag = Math.max(lag, clockGap);
+  if (
+    (p.gpsSampleSource === 'last_known' || p.gpsSampleSource === 'manager_watch') &&
+    trueFix != null
+  ) {
+    return trueFix;
+  }
   const sitting = p.speed == null || !Number.isFinite(p.speed) || p.speed <= 0.75;
   if (trueFix != null && ingest != null && effectiveLag > 20 && (sitting || effectiveLag > 60)) {
     return trueFix;
@@ -340,6 +346,8 @@ function displayGpsAgeSec(fixAgeSec, ingestAgoSec, extra = {}) {
   const trueFixAge =
     gpsFixAgeSec != null && Number.isFinite(Number(gpsFixAgeSec)) ? Number(gpsFixAgeSec) : fixAgeSec;
   if (trueFixAge == null || !Number.isFinite(Number(trueFixAge))) return null;
+  const src = extra.sampleSource != null ? String(extra.sampleSource).trim() : '';
+  if (src === 'last_known' || src === 'manager_watch') return Number(trueFixAge);
   const ingest = ingestAgoSec != null && Number.isFinite(Number(ingestAgoSec)) ? Number(ingestAgoSec) : null;
   const lag =
     uploadLagSec != null && Number.isFinite(Number(uploadLagSec))
@@ -530,16 +538,20 @@ const restampCases = [
   expectEq('sitting spd=0.1 not restamped', pickEffectiveSampleTimeMs(stale, stale, now, 'fused', { spd: 0.1 }), stale),
   expectEq('moving spd=12 restamped to now', pickEffectiveSampleTimeMs(stale, stale, now, 'fused', { spd: 12 }), now),
   {
-    name: 'last_known is not a live map fix and not restamped',
-    pass: isGpsFixForMapPosition('last_known') === false && pickEffectiveSampleTimeMs(stale, stale, now, 'last_known', { spd: 0 }) === stale,
+    name: 'last_known is map-eligible and not restamped',
+    pass: isGpsFixForMapPosition('last_known') === true && pickEffectiveSampleTimeMs(stale, stale, now, 'last_known', { spd: 0 }) === stale,
   },
   {
-    name: 'same-coord last_known is not map-eligible',
+    name: 'last_known with t=now still keeps satellite fixMs',
+    pass: pickEffectiveSampleTimeMs(now, stale, now, 'last_known', { spd: 0 }) === stale,
+  },
+  {
+    name: 'same-coord last_known is map-eligible (manager-like live pin)',
     pass:
       isGpsFixForMapPosition('last_known', {
         prev: { lat: ORIGIN.lat, lon: ORIGIN.lon },
         next: { lat: ORIGIN.lat, lon: ORIGIN.lon },
-      }) === false,
+      }) === true,
   },
   {
     name: 'last_known moved is map-eligible',
@@ -552,6 +564,14 @@ const restampCases = [
           lon: ORIGIN.lon,
         },
       }) === true,
+  },
+  {
+    name: 'manager_watch is map-eligible',
+    pass: isGpsFixForMapPosition('manager_watch') === true,
+  },
+  {
+    name: 'scheduled_cache is not map-eligible',
+    pass: isGpsFixForMapPosition('scheduled_cache') === false,
   },
   expectEq('scheduled_cache not restamped', pickEffectiveSampleTimeMs(stale, stale, now, 'scheduled_cache', {}), stale),
   {
@@ -706,6 +726,10 @@ if (!QUICK) {
 const dashSrc = readFileSync(join(ROOT, 'apps', 'recorder-pwa', 'public', 'dashboard.js'), 'utf8');
 const storeSrc = readFileSync(join(ROOT, 'apps', 'recorder-pwa', 'api', 'lib', 'ingest-store.js'), 'utf8');
 const outlierSrc = readFileSync(join(ROOT, 'apps', 'recorder-pwa', 'api', 'lib', 'gps-outlier.js'), 'utf8');
+const nativeSrc = readFileSync(
+  join(ROOT, 'apps', 'recorder-native', 'android', 'app', 'src', 'main', 'java', 'nz', 'org', 'rowing', 'recorder', 'CapsizeMonitorService.java'),
+  'utf8',
+);
 
 const sourceChecks = [
   {
@@ -716,6 +740,17 @@ const sourceChecks = [
     name: 'dashboard sitting last-known uses trueFix (not HTTP ingest)',
     pass: /effectiveLag > 20 && \(sitting \|\| effectiveLag > 60\)/.test(dashSrc)
       && /return trueFix;/.test(dashSrc),
+  },
+  {
+    name: 'dashboard last_known and manager_watch age from fixMs',
+    pass: /gpsSampleSource === 'last_known' \|\| p\.gpsSampleSource === 'manager_watch'/.test(dashSrc),
+  },
+  {
+    name: 'native always-on GPS+network manager_watch live path',
+    pass: /manager_watch/.test(nativeSrc)
+      && /startGpsSatelliteFallback\(\)/.test(nativeSrc)
+      && /MANAGER_WATCH_MIN_UPLOAD_MS/.test(nativeSrc)
+      && /isFusedQuietOrStale/.test(nativeSrc),
   },
   {
     name: 'dashboard gpsFixState uses mapDisplayAgeSec (live/amber/lost)',
@@ -730,6 +765,16 @@ const sourceChecks = [
     name: 'ingest-store displayGpsAgeSec sitting last-known uses trueFixAge',
     pass: /Last-known \/ restamped office lock/.test(storeSrc)
       && /effectiveLag > 20 && \(sitting \|\| effectiveLag > 60\)/.test(storeSrc),
+  },
+  {
+    name: 'ingest-store keeps manager_watch and ages last_known from fixMs',
+    pass: /'manager_watch'/.test(storeSrc)
+      && /src === 'last_known' \|\| src === 'manager_watch'/.test(storeSrc),
+  },
+  {
+    name: 'outlier last_known is map-eligible without 8m gate',
+    pass: /return src === 'last_known';/.test(outlierSrc)
+      && /draw the last GPS\/network\/last_known/.test(outlierSrc),
   },
   {
     name: 'outlier always speed×dt after 30s hole',
@@ -856,6 +901,37 @@ const lastKnownCases = [];
       }) === 45
       && mapDisplayAgeSec(holeHeartbeat) === 45
       && gpsFixState(holeHeartbeat) === 'amber',
+  });
+}
+{
+  const managerWatch = {
+    gpsSampleSource: 'manager_watch',
+    gpsFixAgeSec: 12,
+    fixAgeSec: 2,
+    ingestAgoSec: 2,
+    lastSeenAgoSec: 2,
+    uploadLagSec: 10,
+    speed: 15,
+  };
+  lastKnownCases.push({
+    name: 'manager_watch ages from GPS fixMs not HTTP ingest',
+    store: displayGpsAgeSec(managerWatch.fixAgeSec, managerWatch.ingestAgoSec, {
+      gpsFixAgeSec: managerWatch.gpsFixAgeSec,
+      uploadLagSec: managerWatch.uploadLagSec,
+      spd: managerWatch.speed,
+      sampleSource: 'manager_watch',
+    }),
+    dash: mapDisplayAgeSec(managerWatch),
+    state: gpsFixState(managerWatch),
+    pass:
+      displayGpsAgeSec(managerWatch.fixAgeSec, managerWatch.ingestAgoSec, {
+        gpsFixAgeSec: managerWatch.gpsFixAgeSec,
+        uploadLagSec: managerWatch.uploadLagSec,
+        spd: managerWatch.speed,
+        sampleSource: 'manager_watch',
+      }) === 12
+      && mapDisplayAgeSec(managerWatch) === 12
+      && gpsFixState(managerWatch) === 'live',
   });
 }
 {

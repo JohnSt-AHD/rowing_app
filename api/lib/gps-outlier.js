@@ -28,24 +28,25 @@ const SAMPLE_CLOCK_FUTURE_SLACK_MS = 5_000;
 /** Sitting / last-known lock — same threshold as native RAW_GPS_MOVING_SPEED_MS. */
 const LAST_KNOWN_MAX_SPEED_MPS = 0.75;
 /**
- * last_known may move the pin only when coords left the last map lock.
- * Same-coord sitting last_known must not look GPS live (the 5-min badge bug).
+ * Sitting-lock hysteresis leftover. Live pin no longer waits on this — last_known
+ * draws like Manager (Maps-style last fix). Kept for tests / native comments.
  */
 const LAST_KNOWN_MAP_MOVE_M = 8;
 
 /**
  * Live GPS sources always move the pin.
- * last_known is map-eligible only when coords moved from the last map pin.
+ * last_known is map-eligible even when coords did not move 8 m (Manager way:
+ * draw the last GPS/network/last_known; badge age from fixMs). Other cache
+ * sources (scheduled/heartbeat clones) still do not move the pin.
  *
  * @param {string|null|undefined} sampleSource
  * @param {{ prev?: { lat?: number, lon?: number }|null, next?: { lat?: number, lon?: number }|null }} [opts]
  */
-function isGpsFixForMapPosition(sampleSource, opts = {}) {
+function isGpsFixForMapPosition(sampleSource, _opts = {}) {
   if (sampleSource == null || sampleSource === '') return true;
   const src = String(sampleSource).trim();
   if (!GPS_CACHE_SAMPLE_SOURCES.has(src)) return true;
-  if (src !== 'last_known') return false;
-  return lastKnownMovedFromMapPin(opts.prev, opts.next);
+  return src === 'last_known';
 }
 
 function lastKnownMovedFromMapPin(prev, next) {
@@ -124,6 +125,15 @@ function isSittingLastKnownFix(opts = {}) {
 function pickEffectiveSampleTimeMs(sampleT, gpsFixMs, now = Date.now(), sampleSource, opts = {}) {
   const nowMs = Number(now);
   const receiveMs = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
+  const src = sampleSource != null ? String(sampleSource).trim() : '';
+  // last_known / cache clones keep satellite fixMs even when the client sent t=now.
+  // Do not restamp sitting last-known to ingest time (1.0.57 5-min-live bug).
+  if (
+    (src === 'last_known' || GPS_CACHE_SAMPLE_SOURCES.has(src) || opts?.lastKnown === true) &&
+    isUsableSampleClockMs(gpsFixMs, receiveMs)
+  ) {
+    return Number(gpsFixMs);
+  }
   const chosen = pickCloserClockMs(sampleT, gpsFixMs, receiveMs);
   if (chosen == null) return receiveMs;
   if (isGpsFixForMapPosition(sampleSource) && receiveMs - chosen > SAMPLE_CLOCK_SKEW_MS) {

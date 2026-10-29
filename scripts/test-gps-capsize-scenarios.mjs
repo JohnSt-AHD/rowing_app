@@ -210,6 +210,7 @@ const explainerHtml = readFileSync(join(ROOT, 'apps/recorder-pwa/public/capsize-
 check('native NetworkCallback onAvailable/onValidated kicks flush', /kickNetworkResume\("available"\)/.test(nativeSrc) && /kickNetworkResume\("validated"\)/.test(nativeSrc) && /onLost/.test(nativeSrc) && /Network lost — buffering ingest locally/.test(nativeSrc));
 check('native pending outbox PENDING_BATCHES_KEY + flushPendingIngest', /PENDING_BATCHES_KEY = "pendingIngestBatches"/.test(nativeSrc) && /flushPendingIngest\(p, MAX_PENDING_FLUSH_PER_CYCLE\)/.test(nativeSrc) && /flushIngestBufferNow\(\)/.test(nativeSrc));
 check('native uploads stale sitting last-known so the map can decide', /Keep stale sitting samples as last_known/.test(nativeSrc) && /source = "last_known"/.test(nativeSrc) && /FUSED_FREEZE_MS = 8_000L/.test(nativeSrc) && /LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L/.test(nativeSrc) && !/Drop stale last-known/.test(nativeSrc));
+check('native GPS+network manager_watch live path (fused does not hide GPS)', /maybeOfferManagerWatchLive/.test(nativeSrc) && /"manager_watch"/.test(nativeSrc) && /isFusedQuietOrStale/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && /MANAGER_WATCH_GPS_MIN_M/.test(nativeSrc) && /Do not clone/.test(nativeSrc));
 check('native queues capsize ingest while offline', /Capsize ingest queued/.test(nativeSrc));
 check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
 check('explainer has no GPS-regain scenario', !/gps-regain|last-known|GPS live/.test(explainerSrc) && !/GPS regain/.test(explainerHtml));
@@ -254,12 +255,14 @@ console.log('\n== GPS / network regain ==');
     }),
   ]);
   const pinLk = await mapPin(id);
-  check('last_known sample is not a live map fix', isGpsFixForMapPosition('last_known') === false && isSittingLastKnownFix({ lastKnown: true }) === true);
+  check('last_known sample is map-eligible (manager-like live pin)', isGpsFixForMapPosition('last_known') === true && isSittingLastKnownFix({ lastKnown: true }) === true);
+  check('same-coord last_known still draws the pin', pinLk && distanceMeters(pinLk.latitude, pinLk.longitude, sit.lat, sit.lon) < 15, {
+    detail: pinLk
+      ? `d=${Math.round(distanceMeters(pinLk.latitude, pinLk.longitude, sit.lat, sit.lon))}m src=${pinLk.gpsSampleSource}`
+      : 'no pin',
+  });
   check('same-coord last_known does not look GPS live', gpsState(pinLk) !== 'live', {
     detail: pinLk ? `map=${gpsState(pinLk)} age=${pinLk.displayFixAgeSec ?? pinLk.fixAgeSec}` : 'no pin',
-  });
-  check('last_known does not leap the pin', pinLk && distanceMeters(pinLk.latitude, pinLk.longitude, sit.lat, sit.lon) < 15, {
-    detail: pinLk ? `d=${Math.round(distanceMeters(pinLk.latitude, pinLk.longitude, sit.lat, sit.lon))}m` : 'no pin',
   });
   check('last_known does not restamp sitting clock to now', pickEffectiveSampleTimeMs(sitT, sitT, Date.now(), 'last_known', { spd: 0 }) === sitT);
 
@@ -295,6 +298,33 @@ console.log('\n== GPS / network regain ==');
   });
   check('GPS returns: listDevices card live again', card2 && deviceState(card2) === 'live', {
     detail: card2 ? `card=${deviceState(card2)} age=${card2.gps?.displayAgeSec}` : 'missing',
+  });
+}
+
+{
+  const id = 'gps-manager-watch';
+  const t0 = Date.now() - 8_000;
+  const frozen = offset(0, 0);
+  await ingest(id, [
+    gpsSample(t0, frozen.lat, frozen.lon, { spd: 0.1, sampleSource: 'last_known', lastKnown: true, fixMs: t0 }),
+  ]);
+  const pinFrozen = await mapPin(id);
+  check('fused stall last_known still draws the pin', pinFrozen && distanceMeters(pinFrozen.latitude, pinFrozen.longitude, frozen.lat, frozen.lon) < 15, {
+    detail: pinFrozen
+      ? `src=${pinFrozen.gpsSampleSource} map=${gpsState(pinFrozen)}`
+      : 'no pin',
+  });
+
+  const stepped = offset(30, 0);
+  const stepT = Date.now();
+  await ingest(id, [
+    gpsSample(stepT, stepped.lat, stepped.lon, { spd: 5, sampleSource: 'manager_watch', fixMs: stepT }),
+  ]);
+  const pinWatch = await mapPin(id);
+  check('manager_watch during fused stall moves the live pin', pinWatch && distanceMeters(pinWatch.latitude, pinWatch.longitude, stepped.lat, stepped.lon) < 15 && gpsState(pinWatch) === 'live', {
+    detail: pinWatch
+      ? `d=${Math.round(distanceMeters(pinWatch.latitude, pinWatch.longitude, stepped.lat, stepped.lon))}m src=${pinWatch.gpsSampleSource} map=${gpsState(pinWatch)}`
+      : 'no pin',
   });
 }
 
