@@ -10,6 +10,10 @@
  *   - empty John 30 Oct 05:38 Hamilton drive — fused window_avg still ticking with
  *     80s+ stale fixMs while GPS moved ~1–2 km (Karapiro→Hamilton)
  *   - Thu 29 Oct afternoon + Fri morning — client live pin vs concurrent manager_watch
+ *   - Fri 30 Oct 2026 09:54 same-phone Melville walk — manager_watch gaps p50 31s
+ *     vs Manager 7s on the same GPS chip. Fused must not be registered beside
+ *     the live LocationManager listener. Live pin follows manager_watch even
+ *     when fused/window_avg samples exist.
  *   - Thu 29 Oct 14:36 — fused hole 62s / 2.2 km; live pin must follow GPS intermediates
  *   - 1.0.57 restamp — sitting last_known t=now must not badge "GPS live"
  *   - Thu afternoon last_known flood (122 samples, 3 map-eligible under old 8m rule)
@@ -222,6 +226,7 @@ check('native NetworkCallback onAvailable/onValidated kicks flush', /kickNetwork
 check('native pending outbox PENDING_BATCHES_KEY + flushPendingIngest', /PENDING_BATCHES_KEY = "pendingIngestBatches"/.test(nativeSrc) && /flushPendingIngest\(p, MAX_PENDING_FLUSH_PER_CYCLE\)/.test(nativeSrc) && /flushIngestBufferNow\(\)/.test(nativeSrc));
 check('native uploads stale sitting last-known so the map can decide', /Keep stale sitting samples as last_known/.test(nativeSrc) && /source = "last_known"/.test(nativeSrc) && /FUSED_FREEZE_MS = 8_000L/.test(nativeSrc) && /LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L/.test(nativeSrc) && !/Drop stale last-known/.test(nativeSrc));
 check('native GPS listener is the live pin (not gated on beating fused)', /Live pin is the LocationManager GPS listener/.test(nativeSrc) && /"manager_watch"/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && /MANAGER_WATCH_GPS_MIN_M/.test(nativeSrc) && /MANAGER_WATCH_REQUEST_MS = 5_000L/.test(nativeSrc) && /Do not clone/.test(nativeSrc) && !/managerWatchHasFresherGpsClock/.test(nativeSrc));
+check('native live GNSS is LocationManager only (no fused beside the listener)', /Do not register FusedLocationProviderClient beside this live listener/.test(nativeSrc) && /Fri 30 Oct 2026 09:54 same-phone Melville walk/.test(nativeSrc) && /p50 31s/.test(nativeSrc) && /Manager 7s/.test(nativeSrc) && /unregisterLocation\(\);\s*startGpsSatelliteFallback\(\);/.test(nativeSrc) && !/LocationServices\.getFusedLocationProviderClient/.test(nativeSrc) && !/\.getCurrentLocation\(/.test(nativeSrc) && !/fusedClient\s*\.requestLocationUpdates/.test(nativeSrc) && !/registerFusedLocation\(\);/.test(nativeSrc));
 check('native fused stall is GPS clock (fixMs/getTime) not callback silence', /isFusedGpsClockStale/.test(nativeSrc) && /gpsClockAgeMs/.test(nativeSrc) && /lastFusedGpsClockMs/.test(nativeSrc) && /Do not wait for fused to go silent/.test(nativeSrc) && /isFusedGpsClockStale\(\)\) return true/.test(nativeSrc));
 check('native queues capsize ingest while offline', /Capsize ingest queued/.test(nativeSrc));
 check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
@@ -427,8 +432,9 @@ console.log('\n== GPS / network regain ==');
 }
 
 {
-  // Fri 30 Oct Melville walk: GPS clocks were ~8s older than fused (t−fixMs
-  // p50 48s) and the live pin stayed on window_avg, ~40m off Manager.
+  // Fri 30 Oct 2026 09:54 same-phone Melville walk: both apps, one GPS chip.
+  // CrewSight gaps p50 31s vs Manager 7s because fused held GNSS. The ingest
+  // pin must stay on manager_watch even when a newer fused/window_avg exists.
   const id = 'gps-melville-newer-fused';
   const tNow = Date.now();
   const gpsFix = tNow - 48_000;

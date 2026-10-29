@@ -13,6 +13,10 @@
  *   - empty John 30 Oct 05:38 Hamilton drive — window_avg every ~6s with 40–100s-old
  *     fixMs; live pin must follow GPS/manager_watch, not stale fused (Karapiro→Hamilton)
  *   - Thu 29 Oct afternoon + Fri morning — client fused vs concurrent coach manager_watch
+ *   - Fri 30 Oct 2026 09:54 same-phone Melville walk — CrewSight manager_watch gaps
+ *     p50 31s vs Manager 7s because fused held GNSS beside the GPS listener.
+ *     Live pin must follow manager_watch even when fused/window_avg samples exist.
+ *     Do not register FusedLocationProviderClient beside that listener.
  *   - Thu 29 Oct 14:36 — fused hole 62s / 2.2 km while GPS+network had intermediates
  *   - 1.0.57 restamp — sitting last_known t=now, old fixMs must not badge "GPS live"
  *   - Thu afternoon last_known flood (122 samples, 3 map-eligible under old 8m rule)
@@ -818,6 +822,18 @@ const sourceChecks = [
       && !/managerWatchHasFresherGpsClock/.test(nativeSrc),
   },
   {
+    name: 'native live GNSS is LocationManager only (no fused beside the listener)',
+    pass: /Do not register FusedLocationProviderClient beside this live listener/.test(nativeSrc)
+      && /Fri 30 Oct 2026 09:54 same-phone Melville walk/.test(nativeSrc)
+      && /p50 31s/.test(nativeSrc)
+      && /Manager 7s/.test(nativeSrc)
+      && /unregisterLocation\(\);\s*startGpsSatelliteFallback\(\);/.test(nativeSrc)
+      && !/LocationServices\.getFusedLocationProviderClient/.test(nativeSrc)
+      && !/\.getCurrentLocation\(/.test(nativeSrc)
+      && !/fusedClient\s*\.requestLocationUpdates/.test(nativeSrc)
+      && !/registerFusedLocation\(\);/.test(nativeSrc),
+  },
+  {
     name: 'native fused stall uses GPS clock (fixMs/getTime) not callback silence',
     pass: /isFusedGpsClockStale/.test(nativeSrc)
       && /gpsClockAgeMs/.test(nativeSrc)
@@ -1041,9 +1057,10 @@ const lastKnownCases = [];
   });
 }
 {
-  // Fri 30 Oct Melville walk: GPS manager_watch fixMs was ~8s older than the
-  // nearest fused window_avg (t−fixMs p50 48s). The newer fused clock must not
-  // take the live pin, and an older GPS sample must still replace window_avg.
+  // Fri 30 Oct 2026 09:54 same-phone Melville walk: both apps on one GPS chip.
+  // CrewSight manager_watch gaps were p50 31s vs Manager 7s because fused held
+  // GNSS beside the LocationManager listener. If fused/window_avg samples still
+  // arrive, the live pin must stay on manager_watch.
   const now = Date.now();
   const gpsFix = now - 48_000;
   const fusedFix = now - 40_000;
