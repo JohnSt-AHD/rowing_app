@@ -6,6 +6,16 @@
  * production, rnz tokens, or Postgres. Native NetworkCallback / siren / radio
  * are source-checked only.
  *
+ * Field outings these --quick cases exist to catch (1.0.62 smoke missed fused-still-ticking):
+ *   - empty John 30 Oct 05:38 Hamilton drive — fused window_avg still ticking with
+ *     80s+ stale fixMs while GPS moved ~1–2 km (Karapiro→Hamilton)
+ *   - Thu 29 Oct afternoon + Fri morning — client live pin vs concurrent manager_watch
+ *   - Thu 29 Oct 14:36 — fused hole 62s / 2.2 km; live pin must follow GPS intermediates
+ *   - 1.0.57 restamp — sitting last_known t=now must not badge "GPS live"
+ *   - Thu afternoon last_known flood (122 samples, 3 map-eligible under old 8m rule)
+ *   - empty org predictMode=car — John 13–31 m/s drive must not use 7.5 m/s rowing cap
+ *   - after Stop leftover last-seen looking live for minutes
+ *
  * Usage:
  *   node scripts/test-gps-capsize-scenarios.mjs
  *   node scripts/test-gps-capsize-scenarios.mjs --quick   # skip 32s / 61s waits
@@ -152,16 +162,17 @@ function recallSample(t, lat, lon) {
   };
 }
 
-async function ingest(deviceId, samples, sessionId = `s-${deviceId}`) {
+async function ingest(deviceId, samples, sessionId = `s-${deviceId}`, boatMeta = {}) {
   return store.recordBatch(ORG, sessionId, deviceId, deviceId, samples, undefined, {
     boatName: deviceId,
+    ...boatMeta,
   });
 }
 
-async function mapPin(deviceId) {
+async function mapPin(deviceId, predictMode = 'rowing') {
   try {
     const positions = await store.getMapPositions(ORG, ONLINE_MS, STALE_MS, {
-      predictMode: 'rowing',
+      predictMode,
     });
     return (positions || []).find((p) => p.deviceId === deviceId) || null;
   } catch (err) {
@@ -265,6 +276,9 @@ console.log('\n== GPS / network regain ==');
   check('same-coord last_known does not look GPS live', gpsState(pinLk) !== 'live', {
     detail: pinLk ? `map=${gpsState(pinLk)} age=${pinLk.displayFixAgeSec ?? pinLk.fixAgeSec}` : 'no pin',
   });
+  check('sitting last_known t=now old fixMs ages from fixMs not ingest (1.0.57 restamp)', gpsState(pinLk) !== 'live' && (pinLk.displayFixAgeSec ?? pinLk.fixAgeSec) >= 150, {
+    detail: pinLk ? `map=${gpsState(pinLk)} age=${pinLk.displayFixAgeSec ?? pinLk.fixAgeSec} src=${pinLk.gpsSampleSource}` : 'no pin',
+  });
   check('last_known does not restamp sitting clock to now', pickEffectiveSampleTimeMs(sitT, sitT, Date.now(), 'last_known', { spd: 0 }) === sitT);
 
   const movedLk = offset(25, 0);
@@ -299,6 +313,46 @@ console.log('\n== GPS / network regain ==');
   });
   check('GPS returns: listDevices card live again', card2 && deviceState(card2) === 'live', {
     detail: card2 ? `card=${deviceState(card2)} age=${card2.gps?.displayAgeSec}` : 'missing',
+  });
+}
+
+{
+  // Thu afternoon: 122 last_known, 3 map-eligible under the old 8m rule.
+  // Restamping the same coord with t=now must not look like the boat moving.
+  const id = 'gps-last-known-flood';
+  const sit = offset(0, 0);
+  const sitT = Date.now() - 180_000;
+  await ingest(id, [gpsSample(sitT, sit.lat, sit.lon, { spd: 0, sampleSource: 'direct', fixMs: sitT })]);
+  const flood = [];
+  for (let i = 0; i < 24; i++) {
+    flood.push(gpsSample(Date.now(), sit.lat, sit.lon, {
+      spd: 0,
+      sampleSource: 'last_known',
+      lastKnown: true,
+      fixMs: sitT,
+    }));
+  }
+  await ingest(id, flood);
+  const pinFlood = await mapPin(id);
+  check('last_known flood same-coord does not look like live progress (Thu afternoon 122 last_known)', pinFlood && distanceMeters(pinFlood.latitude, pinFlood.longitude, sit.lat, sit.lon) < 15 && gpsState(pinFlood) !== 'live' && (pinFlood.displayFixAgeSec ?? pinFlood.fixAgeSec) >= 150, {
+    detail: pinFlood
+      ? `d=${Math.round(distanceMeters(pinFlood.latitude, pinFlood.longitude, sit.lat, sit.lon))}m map=${gpsState(pinFlood)} age=${pinFlood.displayFixAgeSec ?? pinFlood.fixAgeSec} src=${pinFlood.gpsSampleSource}`
+      : 'no pin',
+  });
+}
+
+{
+  const id = 'gps-sit-restamp';
+  const sit = offset(0, 0);
+  const sitT = Date.now() - 180_000;
+  await ingest(id, [
+    gpsSample(Date.now(), sit.lat, sit.lon, { spd: 0.05, sampleSource: 'window_avg', fixMs: sitT }),
+  ]);
+  const pinSit = await mapPin(id);
+  check('sitting fused t=now old fixMs is not GPS live (1.0.57 restamp via ingest time)', pinSit && gpsState(pinSit) !== 'live' && (pinSit.displayFixAgeSec ?? pinSit.gpsFixAgeSec ?? pinSit.fixAgeSec) >= 150, {
+    detail: pinSit
+      ? `map=${gpsState(pinSit)} age=${pinSit.displayFixAgeSec ?? pinSit.fixAgeSec} gpsFixAge=${pinSit.gpsFixAgeSec} src=${pinSit.gpsSampleSource}`
+      : 'no pin',
   });
 }
 
@@ -370,6 +424,138 @@ console.log('\n== GPS / network regain ==');
       ? `d=${Math.round(distanceMeters(pinHeld.latitude, pinHeld.longitude, gpsPos.lat, gpsPos.lon))}m src=${pinHeld.gpsSampleSource} map=${gpsState(pinHeld)}`
       : 'no pin',
   });
+}
+
+{
+  // empty John 30 Oct 05:38 Hamilton drive (predictMode=car): fused window_avg
+  // still ticking every ~6s with 80s+ stale fixMs at Karapiro while GPS/network
+  // had already moved ~1.5 km toward Hamilton. 1.0.62 only checked fused-going-quiet.
+  store.setOrgGpsOutlierModeCache(ORG, 'car');
+  const id = 'gps-fused-stale-hamilton';
+  const tNow = Date.now();
+  const fusedFix = tNow - 90_000;
+  const start = offset(0, 0);
+  const steps = 8;
+  const stepM = 180;
+  const dest = offset(steps * stepM, 0);
+  const samples = [
+    gpsSample(tNow, start.lat, start.lon, { spd: 22, sampleSource: 'window_avg', fixMs: fusedFix }),
+  ];
+  for (let i = 1; i <= steps; i++) {
+    const t = tNow - (steps - i) * 6_000;
+    const pos = offset(i * stepM, 0);
+    samples.push(gpsSample(t, pos.lat, pos.lon, { spd: 30, sampleSource: 'manager_watch', fixMs: t }));
+    samples.push(gpsSample(tNow, start.lat, start.lon, { spd: 20, sampleSource: 'window_avg', fixMs: fusedFix }));
+  }
+  await ingest(id, samples);
+  const pinHam = await mapPin(id, 'car');
+  const dDest = pinHam ? distanceMeters(pinHam.latitude, pinHam.longitude, dest.lat, dest.lon) : Infinity;
+  const dStart = pinHam ? distanceMeters(pinHam.latitude, pinHam.longitude, start.lat, start.lon) : 0;
+  check('fused ticking 90s-old fixMs after ~1.5 km GPS move: live pin is GPS not Karapiro (empty John 30 Oct 05:38 Hamilton drive)', pinHam && dDest < 250 && dStart > 1000 && pinHam.gpsSampleSource === 'manager_watch' && gpsState(pinHam) === 'live', {
+    detail: pinHam
+      ? `fromStart=${Math.round(dStart)}m fromDest=${Math.round(dDest)}m src=${pinHam.gpsSampleSource} map=${gpsState(pinHam)} age=${pinHam.displayFixAgeSec ?? pinHam.fixAgeSec}`
+      : 'no pin',
+  });
+
+  const coachId = 'gps-coach-hamilton';
+  await ingest(
+    coachId,
+    [gpsSample(tNow, dest.lat, dest.lon, { spd: 30, sampleSource: 'manager_watch', fixMs: tNow })],
+    `s-${coachId}`,
+    { source: 'manager', boatClass: 'Coach' },
+  );
+  const coachPin = await mapPin(coachId, 'car');
+  const vsCoach = pinHam && coachPin
+    ? distanceMeters(pinHam.latitude, pinHam.longitude, coachPin.latitude, coachPin.longitude)
+    : Infinity;
+  check('manager vs client live pin: client not 500m–2km behind concurrent manager_watch (Thu afternoon + Fri morning)', pinHam && coachPin && vsCoach < 250 && gpsState(coachPin) === 'live' && gpsState(pinHam) === 'live', {
+    detail: pinHam && coachPin
+      ? `clientVsCoach=${Math.round(vsCoach)}m clientSrc=${pinHam.gpsSampleSource} coachSrc=${coachPin.gpsSampleSource} clientAge=${pinHam.displayFixAgeSec ?? pinHam.fixAgeSec}`
+      : 'missing pin',
+  });
+  store.setOrgGpsOutlierModeCache(ORG, 'rowing');
+}
+
+{
+  // Thu 29 Oct 14:36: fused froze ~62s then jumped 2.2 km. GPS+network had
+  // intermediate highway points — live pin must have followed those, not jump.
+  store.setOrgGpsOutlierModeCache(ORG, 'car');
+  const id = 'gps-highway-hole-jump';
+  const tNow = Date.now();
+  const fusedFix = tNow - 70_000;
+  const start = offset(0, 0);
+  const steps = 11;
+  const stepM = 200;
+  const dest = offset(steps * stepM, 0);
+  const samples = [
+    gpsSample(tNow - 70_000, start.lat, start.lon, { spd: 28, sampleSource: 'window_avg', fixMs: fusedFix }),
+  ];
+  for (let i = 1; i <= steps; i++) {
+    const t = tNow - (steps - i) * 6_000;
+    const pos = offset(i * stepM, 0);
+    samples.push(gpsSample(t, pos.lat, pos.lon, { spd: 33, sampleSource: 'manager_watch', fixMs: t }));
+    samples.push(gpsSample(tNow, start.lat, start.lon, { spd: 20, sampleSource: 'window_avg', fixMs: fusedFix }));
+  }
+  await ingest(id, samples);
+  const pinAlong = await mapPin(id, 'car');
+  const alongFromStart = pinAlong
+    ? distanceMeters(pinAlong.latitude, pinAlong.longitude, start.lat, start.lon)
+    : 0;
+  const alongFromDest = pinAlong
+    ? distanceMeters(pinAlong.latitude, pinAlong.longitude, dest.lat, dest.lon)
+    : Infinity;
+  check('highway fused hole: live pin followed GPS intermediates, not frozen at start (Thu 29 Oct 14:36 62s / 2.2 km)', pinAlong && alongFromStart > 1500 && alongFromDest < 400 && pinAlong.gpsSampleSource === 'manager_watch', {
+    detail: pinAlong
+      ? `fromStart=${Math.round(alongFromStart)}m fromDest=${Math.round(alongFromDest)}m src=${pinAlong.gpsSampleSource}`
+      : 'no pin',
+  });
+
+  await ingest(id, [
+    gpsSample(tNow, dest.lat, dest.lon, { spd: 28, sampleSource: 'window_avg', fixMs: tNow }),
+  ]);
+  const pinCaught = await mapPin(id, 'car');
+  const catchJump = pinAlong && pinCaught
+    ? distanceMeters(pinAlong.latitude, pinAlong.longitude, pinCaught.latitude, pinCaught.longitude)
+    : Infinity;
+  check('highway fused hole: fused catch-up does not jump 2 km after GPS already moved', pinCaught && catchJump < 400 && distanceMeters(pinCaught.latitude, pinCaught.longitude, start.lat, start.lon) > 1500, {
+    detail: pinCaught
+      ? `catchJump=${Math.round(catchJump)}m fromStart=${Math.round(distanceMeters(pinCaught.latitude, pinCaught.longitude, start.lat, start.lon))}m`
+      : 'no pin',
+  });
+  store.setOrgGpsOutlierModeCache(ORG, 'rowing');
+}
+
+{
+  // empty org predictMode=car: John 13–31 m/s highway must not be stripped at 7.5 m/s.
+  store.setOrgGpsOutlierModeCache(ORG, 'car');
+  const id = 'gps-car-highway-keep';
+  const t0 = Date.now() - 8_000;
+  const drive = [];
+  for (let i = 0; i < 4; i++) {
+    const pos = offset(i * 13, 0);
+    const t = t0 + i * 1000;
+    drive.push(gpsSample(t, pos.lat, pos.lon, { spd: 13, sampleSource: 'direct', fixMs: t }));
+  }
+  for (let i = 1; i <= 4; i++) {
+    const pos = offset(39 + i * 31, 0);
+    const t = t0 + 4_000 + i * 1000;
+    drive.push(gpsSample(t, pos.lat, pos.lon, { spd: 31, sampleSource: 'direct', fixMs: t }));
+  }
+  const rDrive = await ingest(id, drive);
+  const pinDrive = await mapPin(id, 'car');
+  const destDrive = offset(39 + 4 * 31, 0);
+  const driveFromStart = pinDrive
+    ? distanceMeters(pinDrive.latitude, pinDrive.longitude, ORIGIN.lat, ORIGIN.lon)
+    : 0;
+  const driveFromDest = pinDrive
+    ? distanceMeters(pinDrive.latitude, pinDrive.longitude, destDrive.lat, destDrive.lon)
+    : Infinity;
+  check('car 13–31 m/s highway kept (empty org predictMode=car, John drive)', pinDrive && driveFromStart > 80 && driveFromDest < 40 && (rDrive.dropped ?? 0) === 0, {
+    detail: pinDrive
+      ? `fromStart=${Math.round(driveFromStart)}m fromDest=${Math.round(driveFromDest)}m dropped=${rDrive.dropped ?? 0}`
+      : 'no pin',
+  });
+  store.setOrgGpsOutlierModeCache(ORG, 'rowing');
 }
 
 {
@@ -469,6 +655,41 @@ console.log('\n== GPS / network regain ==');
   });
   check('Stop: pin does not jump to post-stop GPS', moved < 30, {
     detail: `moved=${Math.round(moved)}m`,
+  });
+
+  const leftoverT = Date.now();
+  const leftover = offset(200, 0);
+  const leftoverGps = await ingest(
+    id,
+    [gpsSample(leftoverT, leftover.lat, leftover.lon, { spd: 5, sampleSource: 'last_known', lastKnown: true, fixMs: leftoverT })],
+    sessionId,
+  );
+  const pinLeftover = await mapPin(id);
+  const leftoverMoved = pinA && pinLeftover
+    ? distanceMeters(pinA.latitude, pinA.longitude, pinLeftover.latitude, pinLeftover.longitude)
+    : Infinity;
+  check('Stop leftover last_known GPS is ignored (does not look live for minutes)', leftoverGps.ignoredEndedSession === true || leftoverGps.received === 0, {
+    detail: `received=${leftoverGps.received} dropped=${leftoverGps.dropped} ignored=${leftoverGps.ignoredEndedSession}`,
+  });
+  check('Stop leftover last-seen: pin stays at pre-stop fix, not leftover last_known', leftoverMoved < 30, {
+    detail: `moved=${Math.round(leftoverMoved)}m src=${pinLeftover?.gpsSampleSource} map=${gpsState(pinLeftover)}`,
+  });
+
+  const leftoverHb = await ingest(
+    id,
+    [{
+      t: Date.now(),
+      gps: { lat: leftover.lat, lon: leftover.lon, acc: 6, spd: 0, fixMs: Date.now(), sampleSource: 'last_known', lastKnown: true },
+      derived: { heartbeat: true },
+    }],
+    sessionId,
+  );
+  const pinHb = await mapPin(id);
+  const hbMoved = pinA && pinHb
+    ? distanceMeters(pinA.latitude, pinA.longitude, pinHb.latitude, pinHb.longitude)
+    : Infinity;
+  check('Stop leftover heartbeat+last_known: GPS stripped, pin does not jump', hbMoved < 30 && (leftoverHb.ignoredEndedSession === true || (leftoverHb.dropped || 0) > 0 || leftoverHb.received >= 0), {
+    detail: `moved=${Math.round(hbMoved)}m received=${leftoverHb.received} dropped=${leftoverHb.dropped} ignored=${leftoverHb.ignoredEndedSession}`,
   });
 }
 

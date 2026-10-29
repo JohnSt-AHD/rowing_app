@@ -9,6 +9,15 @@
  *   - recent rnz on-water replay NEW vs OLD (token rnz)
  *   - Manager last-known / live / delayed uses satellite fix age, not HTTP
  *
+ * Field outings these --quick cases exist to catch (1.0.62 smoke missed fused-still-ticking):
+ *   - empty John 30 Oct 05:38 Hamilton drive — window_avg every ~6s with 40–100s-old
+ *     fixMs; live pin must follow GPS/manager_watch, not stale fused (Karapiro→Hamilton)
+ *   - Thu 29 Oct afternoon + Fri morning — client fused vs concurrent coach manager_watch
+ *   - Thu 29 Oct 14:36 — fused hole 62s / 2.2 km while GPS+network had intermediates
+ *   - 1.0.57 restamp — sitting last_known t=now, old fixMs must not badge "GPS live"
+ *   - Thu afternoon last_known flood (122 samples, 3 map-eligible under old 8m rule)
+ *   - empty org predictMode=car — John 13–31 m/s highway must not hit 7.5 m/s rowing cap
+ *
  * Usage:
  *   node scripts/test-gps-live-reporting.mjs           # + production John/rnz replays
  *   node scripts/test-gps-live-reporting.mjs --quick    # local only (CI; no network)
@@ -504,6 +513,40 @@ const cases = [];
   cases.push(expect('car 25 m / 1s (90 km/h 1 Hz)', isGpsFixOutlier(prev, fix, { mode: 'car' }), false));
   cases.push(expect('car 25 m / 1s in rowing (must reject)', isGpsFixOutlier(prev, fix, { mode: 'rowing' }), true));
 }
+{
+  // empty org predictMode=car, John highway 13–31 m/s (must not use 7.5 m/s rowing cap)
+  const slow = pair(1, 13);
+  cases.push(expect('car 13 m / 1s (empty-org John drive, keep)', isGpsFixOutlier(slow.prev, slow.fix, { mode: 'car' }), false));
+  cases.push(expect('car 13 m / 1s in rowing (must reject)', isGpsFixOutlier(slow.prev, slow.fix, { mode: 'rowing' }), true));
+  const fast = pair(1, 31);
+  cases.push(expect('car 31 m / 1s (empty-org John 13–31 m/s drive, keep)', isGpsFixOutlier(fast.prev, fast.fix, { mode: 'car' }), false));
+  cases.push(expect('car 31 m / 1s in rowing (must reject)', isGpsFixOutlier(fast.prev, fast.fix, { mode: 'rowing' }), true));
+  cases.push(expectEq('rowing cap is 7.5 m/s (highway GPS must not use this in car)', GPS_OUTLIER_MAX_ROWING_MPS, 7.5));
+}
+{
+  // Thu 29 Oct 14:36 fused hole: 2.2 km / 62s is keepable in car, so GPS intermediates
+  // are what must prevent the visual freeze-then-jump. A single leap is not an outlier.
+  const t0 = 1_700_000_000_000;
+  const fusedLeap = {
+    prev: { t: t0, ...ORIGIN, acc: 8 },
+    fix: { t: t0 + 62_000, ...offset(2200), acc: 8 },
+  };
+  cases.push(expect('2.2 km / 62s car (Thu 14:36 fused hole jump is not an outlier)', isGpsFixOutlier(fusedLeap.prev, fusedLeap.fix, { mode: 'car' }), false));
+  cases.push(expect('2.2 km / 62s rowing (must reject)', isGpsFixOutlier(fusedLeap.prev, fusedLeap.fix, { mode: 'rowing' }), true));
+  const gpsTrail = [];
+  for (let i = 0; i <= 11; i++) {
+    gpsTrail.push({ t: t0 + i * 6_000, ...offset(i * 200), acc: 8 });
+  }
+  const keptCar = filterOutlierGpsFixes(gpsTrail, { mode: 'car' });
+  const keptRow = filterOutlierGpsFixes(gpsTrail, { mode: 'rowing' });
+  cases.push(expectEq('GPS+network intermediates across 2.2 km / 62s kept in car', keptCar.length, gpsTrail.length));
+  cases.push({
+    name: 'same 2.2 km trail is stripped in rowing (7.5 m/s cap)',
+    pass: keptRow.length < gpsTrail.length && keptRow.length <= 3,
+    got: keptRow.length,
+    want: '<=3',
+  });
+}
 for (const dt of [30, 31, 34]) {
   const { prev, fix } = pair(dt, 4600);
   for (const mode of ['rowing', 'car']) {
@@ -579,6 +622,22 @@ const restampCases = [
   {
     name: 'missing speed + stale clock is sitting last-known',
     pass: isSittingLastKnownFix({ sampleSource: 'window_avg' }) === true,
+  },
+  {
+    // Thu afternoon: 122 last_known, only 3 map-eligible under the old 8m rule.
+    // Restamping the same coord with t=now must not count as the boat moving.
+    name: 'last_known flood same-coord is not live progress (Thu afternoon 122 last_known)',
+    pass: (() => {
+      const flood = [];
+      for (let i = 0; i < 24; i++) {
+        flood.push({ t: now + i * 1000, ...ORIGIN, acc: 8 });
+      }
+      return (
+        trackDistanceKm(flood) === 0
+        && flood.every(() => isGpsFixForMapPosition('last_known') === true)
+        && flood.every((p) => pickEffectiveSampleTimeMs(p.t, stale, now + 25_000, 'last_known', { spd: 0 }) === stale)
+      );
+    })(),
   },
 ];
 
@@ -975,6 +1034,88 @@ const lastKnownCases = [];
         { sampleSource: 'manager_watch', fixMs: gpsFix, t: now },
         now,
       ) === false,
+  });
+}
+{
+  // empty John 30 Oct 05:38 Hamilton drive: fused still ticking every ~6s with
+  // 80s+ stale fixMs while GPS/network had already moved ~1–2 km (Karapiro→Hamilton).
+  const nowMs = Date.now();
+  const fusedFix = nowMs - 100_000;
+  const gpsFix = nowMs - 1_500;
+  const start = { lat: KARAPIRO.lat, lon: KARAPIRO.lon };
+  const moved = {
+    lat: KARAPIRO.lat + 1500 / 111320,
+    lon: KARAPIRO.lon,
+  };
+  const movedM = distanceMeters(start.lat, start.lon, moved.lat, moved.lon);
+  lastKnownCases.push({
+    name: 'fused ticking 100s-old fixMs after ~1.5 km GPS move: keep manager_watch (empty John 30 Oct 05:38 Hamilton drive)',
+    pass:
+      movedM > 1000
+      && movedM < 2000
+      && shouldKeepManagerWatchLivePin(
+        { sampleSource: 'manager_watch', fixMs: gpsFix, t: nowMs, lat: moved.lat, lon: moved.lon },
+        { sampleSource: 'window_avg', fixMs: fusedFix, t: nowMs, lat: start.lat, lon: start.lon },
+        nowMs,
+      ) === true,
+  });
+  const clientFusedAge = {
+    gpsSampleSource: 'window_avg',
+    gpsFixAgeSec: 95,
+    fixAgeSec: 2,
+    ingestAgoSec: 2,
+    lastSeenAgoSec: 2,
+    uploadLagSec: 93,
+    speed: 18,
+  };
+  const coachWatchAge = {
+    gpsSampleSource: 'manager_watch',
+    gpsFixAgeSec: 8,
+    fixAgeSec: 2,
+    ingestAgoSec: 2,
+    lastSeenAgoSec: 2,
+    uploadLagSec: 6,
+    speed: 18,
+  };
+  lastKnownCases.push({
+    name: 'manager vs client at same wall time: client fused not live while concurrent manager_watch is (Thu afternoon + Fri morning)',
+    pass:
+      gpsFixState(clientFusedAge) !== 'live'
+      && gpsFixState(coachWatchAge) === 'live'
+      && mapDisplayAgeSec(clientFusedAge) >= 90
+      && mapDisplayAgeSec(coachWatchAge) <= 30
+      && movedM > 500,
+  });
+}
+{
+  const restampSit = {
+    gpsSampleSource: 'last_known',
+    gpsFixAgeSec: 180,
+    fixAgeSec: 2,
+    ingestAgoSec: 2,
+    lastSeenAgoSec: 2,
+    uploadLagSec: 178,
+    speed: 0,
+  };
+  lastKnownCases.push({
+    name: 'last_known t=now old fixMs is not GPS live (1.0.57 restamp)',
+    store: displayGpsAgeSec(restampSit.fixAgeSec, restampSit.ingestAgoSec, {
+      gpsFixAgeSec: restampSit.gpsFixAgeSec,
+      uploadLagSec: restampSit.uploadLagSec,
+      spd: restampSit.speed,
+      sampleSource: 'last_known',
+    }),
+    dash: mapDisplayAgeSec(restampSit),
+    state: gpsFixState(restampSit),
+    pass:
+      displayGpsAgeSec(restampSit.fixAgeSec, restampSit.ingestAgoSec, {
+        gpsFixAgeSec: restampSit.gpsFixAgeSec,
+        uploadLagSec: restampSit.uploadLagSec,
+        spd: restampSit.speed,
+        sampleSource: 'last_known',
+      }) === 180
+      && mapDisplayAgeSec(restampSit) === 180
+      && gpsFixState(restampSit) === 'amber',
   });
 }
 {
