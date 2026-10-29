@@ -14,6 +14,10 @@
  *     vs Manager 7s on the same GPS chip. Fused must not be registered beside
  *     the live LocationManager listener. Live pin follows manager_watch even
  *     when fused/window_avg samples exist.
+ *   - Fri 30 Oct 2026 11:03 same-phone Melville walk — John manager_watch gaps
+ *     p50 12s and a 24–40s stale tail vs Manager p50 7s and ~2s fix age.
+ *     GPS callbacks upload when they arrive (5s/4m request, network 5s/8m).
+ *     No 8s client upload gate. Fused stays off. Sitting last_known is not restamped.
  *   - Thu 29 Oct 14:36 — fused hole 62s / 2.2 km; live pin must follow GPS intermediates
  *   - 1.0.57 restamp — sitting last_known t=now must not badge "GPS live"
  *   - Thu afternoon last_known flood (122 samples, 3 map-eligible under old 8m rule)
@@ -225,7 +229,7 @@ const explainerHtml = readFileSync(join(ROOT, 'apps/recorder-pwa/public/capsize-
 check('native NetworkCallback onAvailable/onValidated kicks flush', /kickNetworkResume\("available"\)/.test(nativeSrc) && /kickNetworkResume\("validated"\)/.test(nativeSrc) && /onLost/.test(nativeSrc) && /Network lost — buffering ingest locally/.test(nativeSrc));
 check('native pending outbox PENDING_BATCHES_KEY + flushPendingIngest', /PENDING_BATCHES_KEY = "pendingIngestBatches"/.test(nativeSrc) && /flushPendingIngest\(p, MAX_PENDING_FLUSH_PER_CYCLE\)/.test(nativeSrc) && /flushIngestBufferNow\(\)/.test(nativeSrc));
 check('native uploads stale sitting last-known so the map can decide', /Keep stale sitting samples as last_known/.test(nativeSrc) && /source = "last_known"/.test(nativeSrc) && /FUSED_FREEZE_MS = 8_000L/.test(nativeSrc) && /LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L/.test(nativeSrc) && !/Drop stale last-known/.test(nativeSrc));
-check('native GPS listener is the live pin (not gated on beating fused)', /Live pin is the LocationManager GPS listener/.test(nativeSrc) && /"manager_watch"/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && /MANAGER_WATCH_GPS_MIN_M/.test(nativeSrc) && /MANAGER_WATCH_REQUEST_MS = 5_000L/.test(nativeSrc) && /Do not clone/.test(nativeSrc) && !/managerWatchHasFresherGpsClock/.test(nativeSrc));
+check('native GPS listener is the live pin (not gated on beating fused)', /Live pin is the LocationManager GPS listener/.test(nativeSrc) && /"manager_watch"/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && /MANAGER_WATCH_GPS_MIN_M/.test(nativeSrc) && /MANAGER_WATCH_REQUEST_MS = 5_000L/.test(nativeSrc) && /Upload this callback when it arrives/.test(nativeSrc) && /Fri 30 Oct 2026 11:03 Melville walk/.test(nativeSrc) && /p50 12s/.test(nativeSrc) && /24–40s/.test(nativeSrc) && /Do not clone/.test(nativeSrc) && !/MANAGER_WATCH_MIN_UPLOAD_MS/.test(nativeSrc) && !/lastManagerWatchUploadMs/.test(nativeSrc) && !/managerWatchHasFresherGpsClock/.test(nativeSrc));
 check('native live GNSS is LocationManager only (no fused beside the listener)', /Do not register FusedLocationProviderClient beside this live listener/.test(nativeSrc) && /Fri 30 Oct 2026 09:54 same-phone Melville walk/.test(nativeSrc) && /p50 31s/.test(nativeSrc) && /Manager 7s/.test(nativeSrc) && /unregisterLocation\(\);\s*startGpsSatelliteFallback\(\);/.test(nativeSrc) && !/LocationServices\.getFusedLocationProviderClient/.test(nativeSrc) && !/\.getCurrentLocation\(/.test(nativeSrc) && !/fusedClient\s*\.requestLocationUpdates/.test(nativeSrc) && !/registerFusedLocation\(\);/.test(nativeSrc));
 check('native fused stall is GPS clock (fixMs/getTime) not callback silence', /isFusedGpsClockStale/.test(nativeSrc) && /gpsClockAgeMs/.test(nativeSrc) && /lastFusedGpsClockMs/.test(nativeSrc) && /Do not wait for fused to go silent/.test(nativeSrc) && /isFusedGpsClockStale\(\)\) return true/.test(nativeSrc));
 check('native queues capsize ingest while offline', /Capsize ingest queued/.test(nativeSrc));

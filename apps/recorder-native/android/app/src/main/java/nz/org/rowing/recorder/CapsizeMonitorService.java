@@ -140,14 +140,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** Coach-like last-known continuity — never un-aged getLastLocation. */
     private static final long LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L;
     /**
-     * Live pin upload cadence. Coach force-uploads on the listener at most every
-     * min(locationInterval, 8s). CrewSight keeps that 8s cap.
+     * Network stays fallback while the GPS listener fix is still this fresh.
+     * Sitting last-known also will not repeat the same coords faster than this.
+     * Not a live-upload gate.
      */
-    private static final long MANAGER_WATCH_MIN_UPLOAD_MS = 8_000L;
+    private static final long GPS_LISTENER_FRESH_MS = 8_000L;
     /**
-     * CoachMonitorService locationIntervalMs floor is max(5s, pref); the default
-     * pref is 20s, which is slower. Match Coach's most aggressive live request:
-     * 5s, GPS 4 m, network 8 m. Do not also request FusedLocationProviderClient.
+     * CoachMonitorService locationIntervalMs floor is max(5s, pref); the saved
+     * default is 20s. The 11:03 same-phone walk still delivered Manager about
+     * every 7s, which is this 5s floor (GPS 4 m, network 8 m) with no slower
+     * client throttle on top. Do not also request FusedLocationProviderClient.
      * Fri 30 Oct 2026 09:54 same-phone Melville walk: fused held the GNSS chip
      * and this listener's gaps were p50 31s while Manager on the same phone
      * was p50 7s.
@@ -271,7 +273,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private LocationListener liveGpsListener;
     /** Last GPS/network listener fix. Not a getLastKnownLocation snapshot. */
     private Location latestManagerWatchLocation;
-    private long lastManagerWatchUploadMs;
     /** First live fused fix seen this session — unlocks 4s maxAge + 15s last-known. */
     private boolean fusedSawLiveFix;
     private boolean fusedLiveMaxAgeArmed;
@@ -3300,7 +3301,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (sameCoords(loc, lastUploadedLat, lastUploadedLon)
                 && lastGpsSampleOfferedMs > 0L
                 && System.currentTimeMillis() - lastGpsSampleOfferedMs
-                        < MANAGER_WATCH_MIN_UPLOAD_MS) {
+                        < GPS_LISTENER_FRESH_MS) {
             return;
         }
         if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
@@ -3309,17 +3310,26 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 () -> enqueueGpsSample(aged, ingestTimeMs(aged), true, "last_known"));
     }
 
-    /** GPS listener fix is newer than this network callback — network is fallback only. */
+    /**
+     * GPS listener fix is still fresh — network is fallback only.
+     * Not an upload throttle. GPS callbacks upload when they arrive.
+     */
     private boolean hasFresherGpsListenerFix() {
         Location gps = latestManagerWatchLocation;
         if (gps == null || !LocationManager.GPS_PROVIDER.equals(gps.getProvider())) return false;
-        return rawFixAgeMs(gps) <= MANAGER_WATCH_MIN_UPLOAD_MS;
+        return rawFixAgeMs(gps) <= GPS_LISTENER_FRESH_MS;
     }
 
     /**
      * Live pin is the LocationManager GPS listener (network fallback), same as
-     * Coach. Listener callbacks forward as manager_watch. Not gated on beating
-     * fused fixMs. Do not clone a stale getLastKnownLocation snapshot.
+     * Coach. Upload this callback when it arrives. Coach force-uploads with
+     * min(savedInterval, 8s); the interval that produced ~7s callbacks is the
+     * 5s floor, so do not drop a GPS callback because the previous upload was
+     * under 8s ago. Not gated on beating fused fixMs.
+     * Fri 30 Oct 2026 11:03 Melville walk: John manager_watch gaps p50 12s
+     * (seven gaps 31–60s, fixes already 24–40s old) vs Manager p50 7s and ~2s
+     * fix age, both apps on the same phone.
+     * Do not clone a stale getLastKnownLocation snapshot.
      * Do not clone the fused last_known pin.
      */
     private void maybeOfferManagerWatchLive(Location location) {
@@ -3329,13 +3339,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 && hasFresherGpsListenerFix()) {
             return;
         }
-        long now = System.currentTimeMillis();
-        if (lastManagerWatchUploadMs > 0L
-                && now - lastManagerWatchUploadMs < MANAGER_WATCH_MIN_UPLOAD_MS) {
-            return;
-        }
         if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
-        lastManagerWatchUploadMs = now;
+        long now = System.currentTimeMillis();
         lastUploadedLat = location.getLatitude();
         lastUploadedLon = location.getLongitude();
         lastUploadedFixTimeMs = now;
@@ -3506,7 +3511,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         gpsSatelliteFallbackActive = false;
         latestManagerWatchLocation = null;
-        lastManagerWatchUploadMs = 0L;
         lastFusedGpsClockMs = 0L;
         clearFusedFreeze();
         clearRawGpsStill();
