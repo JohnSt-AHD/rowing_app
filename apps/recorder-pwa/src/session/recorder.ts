@@ -856,6 +856,8 @@ export async function startRecorder(
   if (settings.enableGps) {
     if (IS_NATIVE && nativeCapsizeMonitorOn) {
       // Native foreground service owns motion/GPS ingest — avoid duplicate WebView uploads.
+      // The landscape map reads this pulse's lastGps: the same copied listener
+      // fix the sample interval uploads.
       const pulseMs = Math.max(500, settings.gpsIntervalMs);
       const nativeGpsUiTimer = setInterval(() => {
         if (stopped) return;

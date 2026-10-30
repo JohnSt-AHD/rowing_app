@@ -140,9 +140,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** Coach-like last-known continuity — never un-aged getLastLocation. */
     private static final long LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L;
     /**
-     * Network stays fallback while the GPS listener fix is still this fresh.
-     * Sitting last-known also will not repeat the same coords faster than this.
-     * Not a live-upload gate.
+     * Satellite-time line (location.getTime(), not elapsedRealtimeNanos).
+     * Network stays fallback while the GPS listener's getTime() is younger
+     * than this. A listener fix older than this is not a live moving
+     * manager_watch — it is sent as last_known with that real getTime() so
+     * the pin can sit with an honest age. This does not drop the sample.
+     * Do not use elapsedRealtimeNanos to decide the fix is fresh.
      */
     private static final long GPS_LISTENER_FRESH_MS = 8_000L;
     /**
@@ -278,12 +281,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** Last GPS/network listener fix. Not a getLastKnownLocation snapshot. */
     private Location latestManagerWatchLocation;
     /**
-     * Newest listener callback not yet sent. Sample interval uploads this once,
-     * then clears it. A quiet window must not invent a point from this cache.
-     * fixMs is this location's getTime(), not a restamped now.
+     * The one copied listener fix (new Location inside the listener). The
+     * landscape map prefs and the sample-interval upload both read this
+     * object. Not a second pending slot.
      * 1 s request, Sample interval throttles upload, newest fix in the window.
+     * fixMs is this location's getTime(). Do not rewrite t to now when the
+     * satellite time is old.
      */
-    private Location pendingLiveUpload;
+    private Location mapLiveFix;
+    /** True after a newer callback replaced mapLiveFix and it has not been sent. */
+    private boolean mapLiveFixUnsent;
     /** First live fused fix seen this session — unlocks 4s maxAge + 15s last-known. */
     private boolean fusedSawLiveFix;
     private boolean fusedLiveMaxAgeArmed;
@@ -645,7 +652,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     @Override
     public void onLocationChanged(Location location) {
-        deliverLocation(location);
+        if (location == null) return;
+        // Copy once so Android cannot recycle the callback object.
+        deliverLocation(new Location(location));
     }
 
     private static boolean isRawGpsProvider(Location location) {
@@ -1237,7 +1246,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastUploadedLat = uploadLoc.getLatitude();
         lastUploadedLon = uploadLoc.getLongitude();
         nativeGpsCount++;
-        saveLastGpsToPrefs(uploadLoc, ingestT, nativeGpsCount);
+        // The landscape map already has mapLiveFix in prefs with satellite time.
+        // Do not overwrite that with t=now.
+        if (mapLiveFix == null) {
+            saveLastGpsToPrefs(uploadLoc, ingestT, nativeGpsCount);
+        }
         gpsWindowBuffer.clear();
         final Location averagedLoc = uploadLoc;
         final long sampleT = ingestT;
@@ -1352,33 +1365,54 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Sample-interval send. At most one live location per gpsIntervalMs.
-     * Sends the newest listener callback received since the last send.
-     * If none arrived, does not invent a point and does not restamp sitting
-     * last_known t to now. A 0.5 s interval cannot outrun the 1 s GPS request.
+     * Sample-interval send of the landscape map fix. At most one upload per
+     * gpsIntervalMs. Sends mapLiveFix — the same copied callback the map
+     * prefs were written from. If several callbacks arrived during the
+     * window, that object is already the newest. A quiet window does not
+     * invent a point.
+     * Sample interval throttles send of the map fix.
      * 1 s request, Sample interval throttles upload, newest fix in the window.
      * Do not upload every callback. Do not re-read getLastKnownLocation on a timer.
+     * Do not rewrite t to now when the satellite time is old.
+     * Do not use elapsedRealtimeNanos to decide the fix is fresh.
+     * Fri 30 Oct 2026 15:50 drive: interval 3s, 181/205 fix steps were +3000ms,
+     * John fix age p50 58s vs Manager 3s, because a late +3s satellite grid
+     * was stored with t=now and tagged manager_watch. A +3s satellite grid
+     * delivered late must not become a fresh manager_watch. Old getTime()
+     * must not be stored with t=now.
      */
     private void tickScheduledGpsUpload() {
         if (recordingHalted || !enableGps || standbyMode) return;
-        Location pending = pendingLiveUpload;
-        if (pending == null || !isGpsFixUsable(pending)) return;
+        Location shown = mapLiveFix;
+        if (shown == null || !isGpsFixUsable(shown) || !mapLiveFixUnsent) return;
         if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
-        pendingLiveUpload = null;
+        mapLiveFixUnsent = false;
         long now = System.currentTimeMillis();
-        long fixMs = pending.getTime();
-        long sampleT = fixMs > 0L && fixMs <= now + 5_000L ? fixMs : now;
-        lastUploadedLat = pending.getLatitude();
-        lastUploadedLon = pending.getLongitude();
+        long fixMs = shown.getTime();
+        if (fixMs <= 0L || fixMs > now + 5_000L) {
+            Log.i(TAG, "Map fix has no satellite time — not sent as manager_watch");
+            return;
+        }
+        long age = now - fixMs;
+        // Older than ~8s: last_known with the real getTime(), not a fresh watch.
+        final String source =
+                age > GPS_LISTENER_FRESH_MS ? "last_known" : "manager_watch";
+        lastUploadedLat = shown.getLatitude();
+        lastUploadedLon = shown.getLongitude();
         lastUploadedFixTimeMs = now;
-        final Location live = copyLocationForUpload(pending);
+        final Location live = shown;
+        final long sampleT = fixMs;
         Log.i(
                 TAG,
-                "Manager-watch live "
+                "Map fix send "
                         + live.getProvider()
+                        + " "
+                        + source
+                        + " fixAgeMs="
+                        + age
                         + " newest fix in sample interval");
         uploadExecutor.execute(
-                () -> enqueueGpsSample(live, sampleT, true, "manager_watch"));
+                () -> enqueueGpsSample(live, sampleT, true, source, true));
     }
 
     private void requestGpsFlush() {
@@ -1768,6 +1802,19 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void enqueueGpsSample(Location location, long t, boolean flushNow, String sampleSource) {
+        enqueueGpsSample(location, t, flushNow, sampleSource, false);
+    }
+
+    /**
+     * @param keepSatelliteTime map/upload fix: t and fixMs stay location.getTime().
+     *     Do not rewrite t to now when the satellite time is old.
+     */
+    private void enqueueGpsSample(
+            Location location,
+            long t,
+            boolean flushNow,
+            String sampleSource,
+            boolean keepSatelliteTime) {
         loadEconomyFromPrefs();
         if (recordingHalted || !enableGps) return;
         if (suppressRecordingActive) {
@@ -1782,15 +1829,33 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             // than a tagged last_known — the map rule decides whether to draw.
             source = "last_known";
         }
+        if (keepSatelliteTime
+                && isLiveGpsSampleSource(source)
+                && gpsClockAgeMs(location) > GPS_LISTENER_FRESH_MS) {
+            // Late satellite grid (getTime more than ~8s behind). Not a fresh
+            // manager_watch, even when speed says the phone is moving.
+            source = "last_known";
+        }
         try {
             JSONObject sample = new JSONObject();
             long now = System.currentTimeMillis();
             long locFix = location.getTime();
             long sittingFix =
                     locFix > 0L && locFix <= now + 5_000L ? locFix : latestGpsRawFixClockMs;
-            long offeredT = sitting && sittingFix > 0L ? sittingFix : t;
-            long sampleT =
-                    pickEffectiveSampleTimeMs(offeredT, sittingFix, now, sitting);
+            final long sampleT;
+            if (keepSatelliteTime) {
+                // Old getTime() must not be stored with t=now.
+                if (locFix > 0L && locFix <= now + 5_000L) {
+                    sampleT = locFix;
+                } else if (t > 0L) {
+                    sampleT = t;
+                } else {
+                    return;
+                }
+            } else {
+                long offeredT = sitting && sittingFix > 0L ? sittingFix : t;
+                sampleT = pickEffectiveSampleTimeMs(offeredT, sittingFix, now, sitting);
+            }
             sample.put("t", sampleT);
             sample.put("gps", buildGpsJson(location, source));
             if (enableMotion && (lastAx != 0f || lastAy != 0f || lastAz != 0f)) {
@@ -1815,7 +1880,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             if (appendEconomyDerived(derived)) hasDerived = true;
             if (hasDerived) sample.put("derived", derived);
             offerIngestSample(sample, flushNow);
-            markGpsSampleOffered(sampleT);
+            // Pulse "uploaded ago" is wall clock. Sample t stays satellite time
+            // so a late fix is not recorded as just-fresh.
+            markGpsSampleOffered(keepSatelliteTime ? now : sampleT);
         } catch (Exception e) {
             recordUploadResult(-1, 1, false);
             Log.e(TAG, "GPS sample enqueue failed", e);
@@ -3202,8 +3269,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * Prefer wall clock or GPS fix clock — whichever is closer to now.
-     * If both are 20s+ behind on a *moving* fix, use now so live map timestamps
-     * stay current. Do not rewrite t for a sitting last-known.
+     * Moving fixes more than 20s behind used to be rewritten to now. The live
+     * map fix does not call this — it stores t from location.getTime().
+     * Do not rewrite t to now when the satellite time is old.
+     * Do not rewrite t for a sitting last-known.
      */
     private static long pickEffectiveSampleTimeMs(
             long sampleT, long gpsFixMs, long now, boolean sittingLastKnown) {
@@ -3347,21 +3416,25 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * GPS listener fix is still fresh — network is fallback only.
+     * GPS listener satellite time is still younger than ~8s — network is
+     * fallback only. Uses getTime(), not elapsedRealtimeNanos (a late
+     * delivery restamps elapsed time and still looks just-arrived).
+     * Do not use elapsedRealtimeNanos to decide the fix is fresh.
      * Not the sample-interval upload throttle. Do not upload every callback.
      */
     private boolean hasFresherGpsListenerFix() {
         Location gps = latestManagerWatchLocation;
         if (gps == null || !LocationManager.GPS_PROVIDER.equals(gps.getProvider())) return false;
-        return rawFixAgeMs(gps) <= GPS_LISTENER_FRESH_MS;
+        return gpsClockAgeMs(gps) <= GPS_LISTENER_FRESH_MS;
     }
 
     /**
      * Live pin is the LocationManager GPS listener (network fallback).
      * Remember this callback only. Do not upload every callback.
      * 1 s request, Sample interval throttles upload, newest fix in the window.
-     * tickScheduledGpsUpload sends at most one live point per gpsIntervalMs,
-     * and only if a newer callback arrived. fixMs stays location.getTime().
+     * tickScheduledGpsUpload sends at most one point per gpsIntervalMs, and
+     * only if a newer callback arrived. It sends mapLiveFix, the same object
+     * the landscape map reads. fixMs stays location.getTime().
      * Not gated on beating fused fixMs.
      * Fri 30 Oct 2026 11:03 Melville walk: John manager_watch gaps p50 12s
      * (seven gaps 31–60s, fixes already 24–40s old) vs Manager p50 7s and ~2s
@@ -3380,15 +3453,17 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         // Sitting (≤0.75 m/s, within 5 m, held 8 s) is judged on every kept
         // callback, including ones waiting for the sample-interval send.
         noteSittingLock(location);
-        // Newest callback since the last send. Several fixes in one window
-        // collapse to this one. A tick with nothing new does not upload.
-        pendingLiveUpload = copyLocationForUpload(location);
+        // Newest callback since the last send. cacheManagerWatchOnly already
+        // stored this same instance as mapLiveFix. Do not keep a second copy.
     }
 
     /**
-     * Remember the listener fix for geofence, standby, and session history.
+     * Remember the listener fix for the landscape map, geofence, and standby.
+     * location is already new Location(location) from the listener — do not
+     * copy again. The map prefs and the upload both read this instance.
      * Capsize itself stays on the accelerometer. Do not keep a separate fused
      * provider for those paths.
+     * Sample interval throttles send of the map fix.
      */
     private void cacheManagerWatchOnly(Location location) {
         if (location == null || !isGpsFixUsable(location)) return;
@@ -3396,8 +3471,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 && hasFresherGpsListenerFix()) {
             return;
         }
-        latestManagerWatchLocation = copyLocationForUpload(location);
-        latestGpsLocation = latestManagerWatchLocation;
+        mapLiveFix = location;
+        mapLiveFixUnsent = true;
+        latestManagerWatchLocation = location;
+        latestGpsLocation = location;
         latestGpsCachedWallMs = System.currentTimeMillis();
         String provider = location.getProvider();
         if (provider != null && !provider.isEmpty()) {
@@ -3408,6 +3485,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (rawFix > 0L && rawFix <= now + 5_000L) {
             latestGpsRawFixClockMs = rawFix;
         }
+        // Map t is satellite time. Do not rewrite t to now when getTime() is old.
         long stamp = rawFix > 0L ? rawFix : now;
         saveLastGpsToPrefs(location, stamp, nativeGpsCount);
         savePulseDiagnostics();
@@ -3415,11 +3493,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     private void ensureLiveGpsListener() {
         if (liveGpsListener != null) return;
-        liveGpsListener =
+                liveGpsListener =
                 new LocationListener() {
                     @Override
                     public void onLocationChanged(Location location) {
-                        deliverLocation(location);
+                        if (location == null) return;
+                        // One copied GPS fix. Android must not recycle it.
+                        // The landscape map and the upload both read this object.
+                        Location copied = new Location(location);
+                        deliverLocation(copied);
                     }
 
                     @Override
@@ -3490,7 +3572,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         gpsSatelliteFallbackActive = true;
         Location seed = agedLastKnownFromProviders();
         if (seed != null && latestManagerWatchLocation == null) {
-            deliverLocation(seed);
+            deliverLocation(new Location(seed));
         }
         Log.i(TAG, "GPS+network manager-watch listener registered (" + minTime + "ms)");
     }
@@ -3522,9 +3604,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 last = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
             }
             if (last != null && isGpsFixFresh(last)) {
-                deliverLocation(last);
+                deliverLocation(new Location(last));
             } else if (last != null) {
-                cacheGpsLocation(last);
+                cacheGpsLocation(new Location(last));
             }
             Log.i(TAG, "Legacy location updates registered (" + minTime + "ms)");
         } catch (SecurityException e) {
@@ -3546,7 +3628,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         gpsSatelliteFallbackActive = false;
         latestManagerWatchLocation = null;
-        pendingLiveUpload = null;
+        mapLiveFix = null;
+        mapLiveFixUnsent = false;
         lastFusedGpsClockMs = 0L;
         clearFusedFreeze();
         clearRawGpsStill();

@@ -22,6 +22,11 @@
  *     1 s request, Sample interval throttles upload, newest fix in the window.
  *     Do not upload every callback. Do not hold fixes behind an 8s client gate.
  *     Fused stays off.
+ *   - Fri 30 Oct 2026 15:50 same-phone drive — interval 3s, +3000ms satellite
+ *     grid delivered ~58s late, stored with t=now as manager_watch (p50 291m).
+ *     Sample interval throttles send of the map fix. Old getTime() must not
+ *     be stored with t=now. A late +3s grid is last_known, not a fresh
+ *     manager_watch. Do not use elapsedRealtimeNanos to decide it is fresh.
  *   - Thu 29 Oct 14:36 — fused hole 62s / 2.2 km while GPS+network had intermediates
  *   - 1.0.57 restamp — sitting last_known t=now, old fixMs must not badge "GPS live"
  *   - Thu afternoon last_known flood (122 samples, 3 map-eligible under old 8m rule)
@@ -600,6 +605,11 @@ const restampCases = [
     name: 'last_known with t=now still keeps satellite fixMs',
     pass: pickEffectiveSampleTimeMs(now, stale, now, 'last_known', { spd: 0 }) === stale,
   },
+  expectEq(
+    'moving last_known keeps satellite time (not t=now)',
+    pickEffectiveSampleTimeMs(stale, stale, now, 'last_known', { spd: 12 }),
+    stale,
+  ),
   {
     name: 'same-coord last_known is map-eligible (manager-like live pin)',
     pass:
@@ -822,7 +832,7 @@ const sourceChecks = [
       && /startGpsSatelliteFallback\(\)/.test(nativeSrc)
       && /1 s request, Sample interval throttles upload, newest fix in the window/.test(nativeSrc)
       && /Do not upload every callback/.test(nativeSrc)
-      && /pendingLiveUpload/.test(nativeSrc)
+      && /mapLiveFix/.test(nativeSrc)
       && /Fri 30 Oct 2026 11:03 Melville walk/.test(nativeSrc)
       && /p50 12s/.test(nativeSrc)
       && /24–40s/.test(nativeSrc)
@@ -836,6 +846,24 @@ const sourceChecks = [
       && !/MANAGER_WATCH_MIN_UPLOAD_MS/.test(nativeSrc)
       && !/lastManagerWatchUploadMs/.test(nativeSrc)
       && !/managerWatchHasFresherGpsClock/.test(nativeSrc),
+  },
+  {
+    name: 'sample interval sends the map fix; old getTime is not t=now; late +3s grid is not a fresh manager_watch',
+    pass: /Sample interval throttles send of the map fix/.test(nativeSrc)
+      && /Location copied = new Location\(location\)/.test(nativeSrc)
+      && /mapLiveFix = location/.test(nativeSrc)
+      && /age > GPS_LISTENER_FRESH_MS \? "last_known" : "manager_watch"/.test(nativeSrc)
+      && /Do not rewrite t to now when the satellite time is old/.test(nativeSrc)
+      && /Old getTime\(\) must not be stored with t=now/.test(nativeSrc)
+      && /must not become a fresh manager_watch/.test(nativeSrc)
+      && /\+3000ms/.test(nativeSrc)
+      && /Fri 30 Oct 2026 15:50/.test(nativeSrc)
+      && /return gpsClockAgeMs\(gps\) <= GPS_LISTENER_FRESH_MS/.test(nativeSrc)
+      && /Do not use elapsedRealtimeNanos to decide the fix is fresh/.test(nativeSrc)
+      && /how often the location on the map is sent/.test(
+        readFileSync(join(ROOT, 'apps', 'recorder-pwa', 'src', 'ui', 'app.ts'), 'utf8'),
+      )
+      && !/pendingLiveUpload/.test(nativeSrc),
   },
   {
     name: 'native live GNSS is LocationManager only (no fused beside the listener)',
