@@ -146,18 +146,22 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      */
     private static final long GPS_LISTENER_FRESH_MS = 8_000L;
     /**
-     * CoachMonitorService locationIntervalMs floor is max(5s, pref); the saved
-     * default is 20s. The 11:03 same-phone walk still delivered Manager about
-     * every 7s, which is this 5s floor (GPS 4 m, network 8 m) with no slower
-     * client throttle on top. Do not also request FusedLocationProviderClient.
+     * Ask Android every 1 s with minDistance 0 so a slow walk still gets ~1 Hz.
+     * A 4 m filter blocks 1-second callbacks (4 m is ~3 s at 1.3 m/s). Network
+     * uses the same 1 s / 0 m request and stays a fallback while the latest GPS
+     * fix is younger than GPS_LISTENER_FRESH_MS. Do not also request
+     * FusedLocationProviderClient.
+     * 1 s request, Sample interval throttles upload, newest fix in the window.
+     * Do not upload every callback. gpsIntervalMs (Sample interval, default 10 s)
+     * is how often the latest listener fix is sent.
      * Fri 30 Oct 2026 09:54 same-phone Melville walk: fused held the GNSS chip
      * and this listener's gaps were p50 31s while Manager on the same phone
      * was p50 7s.
      */
-    private static final long MANAGER_WATCH_REQUEST_MS = 5_000L;
-    /** Same min-distance as CoachMonitorService GPS / network watches. */
-    private static final float MANAGER_WATCH_GPS_MIN_M = 4f;
-    private static final float MANAGER_WATCH_NETWORK_MIN_M = 8f;
+    private static final long MANAGER_WATCH_REQUEST_MS = 1_000L;
+    /** 0 m so a walk is not held back by distance. Sample interval throttles upload. */
+    private static final float MANAGER_WATCH_GPS_MIN_M = 0f;
+    private static final float MANAGER_WATCH_NETWORK_MIN_M = 0f;
     private static final float FUSED_FREEZE_M = 15f;
     /** Near-zero displacement this long while timestamps advance = restamped lock. */
     private static final long RAW_GPS_STILL_MS = 8_000L;
@@ -273,6 +277,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private LocationListener liveGpsListener;
     /** Last GPS/network listener fix. Not a getLastKnownLocation snapshot. */
     private Location latestManagerWatchLocation;
+    /**
+     * Newest listener callback not yet sent. Sample interval uploads this once,
+     * then clears it. A quiet window must not invent a point from this cache.
+     * fixMs is this location's getTime(), not a restamped now.
+     * 1 s request, Sample interval throttles upload, newest fix in the window.
+     */
+    private Location pendingLiveUpload;
     /** First live fused fix seen this session — unlocks 4s maxAge + 15s last-known. */
     private boolean fusedSawLiveFix;
     private boolean fusedLiveMaxAgeArmed;
@@ -819,6 +830,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (isManagerWatchProvider(location)) {
             // Live pin is this listener fix. Do not drop it because fused is
             // still ticking, and do not wait until its clock beats fused.
+            // Drop a network fix while the latest GPS fix is younger than 8 s
+            // so geofence and the upload window stay on the GPS callback.
+            if (LocationManager.NETWORK_PROVIDER.equals(location.getProvider())
+                    && hasFresherGpsListenerFix()) {
+                return;
+            }
             noteRawGpsMovement(location);
             cacheManagerWatchOnly(location);
             maybeOfferManagerWatchLive(location);
@@ -1335,14 +1352,33 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Live pin and session log come from the LocationManager listener
-     * (manager_watch). Do not poll getLastKnownLocation and do not call fused
-     * getCurrentLocation — that request owns GNSS. Fri 30 Oct 2026 09:54
-     * same-phone Melville walk: fused held the chip and GPS gaps were p50 31s
-     * vs Manager p50 7s.
+     * Sample-interval send. At most one live location per gpsIntervalMs.
+     * Sends the newest listener callback received since the last send.
+     * If none arrived, does not invent a point and does not restamp sitting
+     * last_known t to now. A 0.5 s interval cannot outrun the 1 s GPS request.
+     * 1 s request, Sample interval throttles upload, newest fix in the window.
+     * Do not upload every callback. Do not re-read getLastKnownLocation on a timer.
      */
     private void tickScheduledGpsUpload() {
-        if (recordingHalted || !enableGps) return;
+        if (recordingHalted || !enableGps || standbyMode) return;
+        Location pending = pendingLiveUpload;
+        if (pending == null || !isGpsFixUsable(pending)) return;
+        if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
+        pendingLiveUpload = null;
+        long now = System.currentTimeMillis();
+        long fixMs = pending.getTime();
+        long sampleT = fixMs > 0L && fixMs <= now + 5_000L ? fixMs : now;
+        lastUploadedLat = pending.getLatitude();
+        lastUploadedLon = pending.getLongitude();
+        lastUploadedFixTimeMs = now;
+        final Location live = copyLocationForUpload(pending);
+        Log.i(
+                TAG,
+                "Manager-watch live "
+                        + live.getProvider()
+                        + " newest fix in sample interval");
+        uploadExecutor.execute(
+                () -> enqueueGpsSample(live, sampleT, true, "manager_watch"));
     }
 
     private void requestGpsFlush() {
@@ -3207,8 +3243,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Live GNSS is LocationManager GPS_PROVIDER + NETWORK_PROVIDER only — the
-     * same request as CoachMonitorService (5s floor, 4 m GPS, 8 m network).
+     * Live GNSS is LocationManager GPS_PROVIDER + NETWORK_PROVIDER only.
+     * Request every 1 s, minDistance 0. Sample interval throttles upload.
      * Do not register FusedLocationProviderClient beside this live listener.
      * Fri 30 Oct 2026 09:54 same-phone Melville walk: CrewSight manager_watch
      * gaps were p50 31s vs Manager 7s because fused held GNSS and the GPS
@@ -3312,7 +3348,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * GPS listener fix is still fresh — network is fallback only.
-     * Not an upload throttle. GPS callbacks upload when they arrive.
+     * Not the sample-interval upload throttle. Do not upload every callback.
      */
     private boolean hasFresherGpsListenerFix() {
         Location gps = latestManagerWatchLocation;
@@ -3321,16 +3357,18 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Live pin is the LocationManager GPS listener (network fallback), same as
-     * Coach. Upload this callback when it arrives. Coach force-uploads with
-     * min(savedInterval, 8s); the interval that produced ~7s callbacks is the
-     * 5s floor, so do not drop a GPS callback because the previous upload was
-     * under 8s ago. Not gated on beating fused fixMs.
+     * Live pin is the LocationManager GPS listener (network fallback).
+     * Remember this callback only. Do not upload every callback.
+     * 1 s request, Sample interval throttles upload, newest fix in the window.
+     * tickScheduledGpsUpload sends at most one live point per gpsIntervalMs,
+     * and only if a newer callback arrived. fixMs stays location.getTime().
+     * Not gated on beating fused fixMs.
      * Fri 30 Oct 2026 11:03 Melville walk: John manager_watch gaps p50 12s
      * (seven gaps 31–60s, fixes already 24–40s old) vs Manager p50 7s and ~2s
      * fix age, both apps on the same phone.
      * Do not clone a stale getLastKnownLocation snapshot.
      * Do not clone the fused last_known pin.
+     * Do not re-read getLastKnownLocation on a timer.
      */
     private void maybeOfferManagerWatchLive(Location location) {
         if (!enableGps || recordingHalted || standbyMode) return;
@@ -3339,16 +3377,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 && hasFresherGpsListenerFix()) {
             return;
         }
-        if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
-        long now = System.currentTimeMillis();
-        lastUploadedLat = location.getLatitude();
-        lastUploadedLon = location.getLongitude();
-        lastUploadedFixTimeMs = now;
-        final Location live = copyLocationForUpload(location);
-        final long sampleT = now;
-        Log.i(TAG, "Manager-watch live " + live.getProvider() + " listener fix");
-        uploadExecutor.execute(
-                () -> enqueueGpsSample(live, sampleT, true, "manager_watch"));
+        // Sitting (≤0.75 m/s, within 5 m, held 8 s) is judged on every kept
+        // callback, including ones waiting for the sample-interval send.
+        noteSittingLock(location);
+        // Newest callback since the last send. Several fixes in one window
+        // collapse to this one. A tick with nothing new does not upload.
+        pendingLiveUpload = copyLocationForUpload(location);
     }
 
     /**
@@ -3408,12 +3442,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Sole live GNSS subscription. Matches CoachMonitorService: GPS_PROVIDER
-     * at the 5s floor with 4 m min distance, NETWORK_PROVIDER at 5s / 8 m.
-     * Capsize stays on the accelerometer. Geofence and the session log use
-     * these listener fixes. One last-known seed (same as Coach at start), then
-     * listener callbacks only — do not re-read getLastKnownLocation on a timer,
-     * and do not register fused beside this listener.
+     * Sole live GNSS subscription. GPS_PROVIDER and NETWORK_PROVIDER every
+     * 1 s with minDistance 0. Sample interval throttles upload; this request
+     * does not. Capsize stays on the accelerometer. Geofence and the session
+     * log use these listener fixes. One last-known seed (same as Coach at
+     * start), then listener callbacks only — do not re-read getLastKnownLocation
+     * on a timer, and do not register fused beside this listener.
+     * 1 s request, Sample interval throttles upload, newest fix in the window.
      */
     private void startGpsSatelliteFallback() {
         if (gpsSatelliteFallbackActive) return;
@@ -3511,6 +3546,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         gpsSatelliteFallbackActive = false;
         latestManagerWatchLocation = null;
+        pendingLiveUpload = null;
         lastFusedGpsClockMs = 0L;
         clearFusedFreeze();
         clearRawGpsStill();

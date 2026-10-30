@@ -1931,7 +1931,7 @@ export function mountApp(root: HTMLElement): void {
             )}
             ${settingsField(
               'Sample interval',
-              'How often GPS and sensors are sampled, in seconds. Lower values use more battery but give finer tracks (e.g. 1 = once per second).',
+              'Android is asked for a GPS fix every 1 second. This interval is how often the latest fix is sent. A higher value sends less often and uses less data (for example 10 sends about every 10 seconds). It cannot send faster than GPS updates arrive.',
               `<input class="form-input-light" name="sampleRateSec" type="number" min="0.5" step="0.5" value="${sampleSec}" inputmode="decimal" />`,
             )}
             <fieldset class="fieldset checks">

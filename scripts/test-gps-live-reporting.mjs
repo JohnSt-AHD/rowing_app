@@ -19,8 +19,9 @@
  *     Do not register FusedLocationProviderClient beside that listener.
  *   - Fri 30 Oct 2026 11:03 same-phone Melville walk — John manager_watch gaps
  *     p50 12s and a 24–40s stale tail vs Manager p50 7s and ~2s fix age.
- *     Upload the GPS listener callback when it arrives (5s/4m, network 5s/8m).
- *     Do not hold it behind an 8s client gate. Fused stays off.
+ *     1 s request, Sample interval throttles upload, newest fix in the window.
+ *     Do not upload every callback. Do not hold fixes behind an 8s client gate.
+ *     Fused stays off.
  *   - Thu 29 Oct 14:36 — fused hole 62s / 2.2 km while GPS+network had intermediates
  *   - 1.0.57 restamp — sitting last_known t=now, old fixMs must not badge "GPS live"
  *   - Thu afternoon last_known flood (122 samples, 3 map-eligible under old 8m rule)
@@ -819,14 +820,19 @@ const sourceChecks = [
     name: 'native GPS listener is the live pin (not gated on beating fused)',
     pass: /manager_watch/.test(nativeSrc)
       && /startGpsSatelliteFallback\(\)/.test(nativeSrc)
-      && /Upload this callback when it arrives/.test(nativeSrc)
+      && /1 s request, Sample interval throttles upload, newest fix in the window/.test(nativeSrc)
+      && /Do not upload every callback/.test(nativeSrc)
+      && /pendingLiveUpload/.test(nativeSrc)
       && /Fri 30 Oct 2026 11:03 Melville walk/.test(nativeSrc)
       && /p50 12s/.test(nativeSrc)
       && /24–40s/.test(nativeSrc)
       && /Live pin is the LocationManager GPS listener/.test(nativeSrc)
-      && /MANAGER_WATCH_REQUEST_MS = 5_000L/.test(nativeSrc)
-      && /MANAGER_WATCH_GPS_MIN_M/.test(nativeSrc)
+      && /MANAGER_WATCH_REQUEST_MS = 1_000L/.test(nativeSrc)
+      && /MANAGER_WATCH_GPS_MIN_M = 0f/.test(nativeSrc)
+      && /MANAGER_WATCH_NETWORK_MIN_M = 0f/.test(nativeSrc)
       && /GPS_LISTENER_FRESH_MS/.test(nativeSrc)
+      && !/Upload this callback when it arrives/.test(nativeSrc)
+      && !/MANAGER_WATCH_REQUEST_MS = 5_000L/.test(nativeSrc)
       && !/MANAGER_WATCH_MIN_UPLOAD_MS/.test(nativeSrc)
       && !/lastManagerWatchUploadMs/.test(nativeSrc)
       && !/managerWatchHasFresherGpsClock/.test(nativeSrc),
