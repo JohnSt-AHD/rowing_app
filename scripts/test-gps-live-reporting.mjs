@@ -19,18 +19,18 @@
  *     Do not register FusedLocationProviderClient beside that listener.
  *   - Fri 30 Oct 2026 11:03 same-phone Melville walk — John manager_watch gaps
  *     p50 12s and a 24–40s stale tail vs Manager p50 7s and ~2s fix age.
- *     1 s request, Sample interval throttles upload, newest fix in the window.
- *     Do not upload every callback. Do not hold fixes behind an 8s client gate.
- *     Fused stays off.
- *   - Fri 30 Oct 2026 15:50 same-phone drive — interval 3s, +3000ms satellite
- *     grid delivered ~58s late, stored with t=now as manager_watch (p50 291m).
- *     Sample interval throttles send of the map fix. Old getTime() must not
- *     be stored with t=now. A late +3s grid is last_known, not a fresh
- *     manager_watch. Do not use elapsedRealtimeNanos to decide it is fresh.
+ *     5 s minimum request, GPS 4 m, network 8 m. Callback upload floor is
+ *     min(interval, 8 s). The poll repeats the held fix only after the full
+ *     interval. Live samples are manager_watch: t is the upload clock, fixMs
+ *     is location.getTime(). Network replaces a fresh GPS fix. Fused stays off.
+ *   - Fri 30 Oct 2026 15:50 same-phone drive — historical 1.0.67 restamp. The
+ *     live path now copies Manager, so t is the upload clock on purpose.
  *   - Thu 29 Oct 14:36 — fused hole 62s / 2.2 km while GPS+network had intermediates
  *   - 1.0.57 restamp — sitting last_known t=now, old fixMs must not badge "GPS live"
  *   - Thu afternoon last_known flood (122 samples, 3 map-eligible under old 8m rule)
  *   - empty org predictMode=car — John 13–31 m/s highway must not hit 7.5 m/s rowing cap
+ *   - Fri 30 Oct 2026 19:35 bike — 162s quiet listener. The poll still repeats
+ *     the held fix after the full interval. It does not adopt getLastKnownLocation.
  *
  * Usage:
  *   node scripts/test-gps-live-reporting.mjs           # + production John/rnz replays
@@ -827,43 +827,65 @@ const sourceChecks = [
     pass: /gpsSampleSource === 'last_known' \|\| p\.gpsSampleSource === 'manager_watch'/.test(dashSrc),
   },
   {
-    name: 'native GPS listener is the live pin (not gated on beating fused)',
+    name: 'native GPS listener matches Manager request floors',
     pass: /manager_watch/.test(nativeSrc)
       && /startGpsSatelliteFallback\(\)/.test(nativeSrc)
-      && /1 s request, Sample interval throttles upload, newest fix in the window/.test(nativeSrc)
       && /Do not upload every callback/.test(nativeSrc)
       && /mapLiveFix/.test(nativeSrc)
       && /Fri 30 Oct 2026 11:03 Melville walk/.test(nativeSrc)
       && /p50 12s/.test(nativeSrc)
       && /24–40s/.test(nativeSrc)
       && /Live pin is the LocationManager GPS listener/.test(nativeSrc)
-      && /MANAGER_WATCH_REQUEST_MS = 1_000L/.test(nativeSrc)
-      && /MANAGER_WATCH_GPS_MIN_M = 0f/.test(nativeSrc)
-      && /MANAGER_WATCH_NETWORK_MIN_M = 0f/.test(nativeSrc)
-      && /GPS_LISTENER_FRESH_MS/.test(nativeSrc)
+      && /MANAGER_LOCATION_MIN_MS = 5_000L/.test(nativeSrc)
+      && /MANAGER_LOCATION_MAX_MS = 120_000L/.test(nativeSrc)
+      && /MANAGER_CALLBACK_UPLOAD_CAP_MS = 8_000L/.test(nativeSrc)
+      && /MANAGER_GPS_MIN_M = 4f/.test(nativeSrc)
+      && /MANAGER_NETWORK_MIN_M = 8f/.test(nativeSrc)
+      && /Math\.min\(due, MANAGER_CALLBACK_UPLOAD_CAP_MS\)/.test(nativeSrc)
+      && /now - lastMapLiveUploadWallMs < due/.test(nativeSrc)
+      && !/hasFresherGpsListenerFix/.test(nativeSrc)
       && !/Upload this callback when it arrives/.test(nativeSrc)
-      && !/MANAGER_WATCH_REQUEST_MS = 5_000L/.test(nativeSrc)
+      && !/MANAGER_WATCH_REQUEST_MS = 1_000L/.test(nativeSrc)
+      && !/MANAGER_WATCH_GPS_MIN_M = 0f/.test(nativeSrc)
       && !/MANAGER_WATCH_MIN_UPLOAD_MS/.test(nativeSrc)
       && !/lastManagerWatchUploadMs/.test(nativeSrc)
       && !/managerWatchHasFresherGpsClock/.test(nativeSrc),
   },
   {
-    name: 'sample interval sends the map fix; old getTime is not t=now; late +3s grid is not a fresh manager_watch',
+    name: 'live sample is manager_watch with t at upload time and fixMs at getTime',
     pass: /Sample interval throttles send of the map fix/.test(nativeSrc)
       && /Location copied = new Location\(location\)/.test(nativeSrc)
       && /mapLiveFix = location/.test(nativeSrc)
-      && /age > GPS_LISTENER_FRESH_MS \? "last_known" : "manager_watch"/.test(nativeSrc)
-      && /Do not rewrite t to now when the satellite time is old/.test(nativeSrc)
-      && /Old getTime\(\) must not be stored with t=now/.test(nativeSrc)
-      && /must not become a fresh manager_watch/.test(nativeSrc)
-      && /\+3000ms/.test(nativeSrc)
-      && /Fri 30 Oct 2026 15:50/.test(nativeSrc)
-      && /return gpsClockAgeMs\(gps\) <= GPS_LISTENER_FRESH_MS/.test(nativeSrc)
-      && /Do not use elapsedRealtimeNanos to decide the fix is fresh/.test(nativeSrc)
+      && /t is the upload clock/.test(nativeSrc)
+      && /fixMs stays location\.getTime\(\)/.test(nativeSrc)
+      && /source = "manager_watch"/.test(nativeSrc)
+      && /gps\.put\("sampleSource", "manager_watch"\)/.test(nativeSrc)
+      && /location\.getTime\(\) > 0L \? location\.getTime\(\) : sampleT/.test(nativeSrc)
+      && /if \(managerLive\)/.test(nativeSrc)
+      && /Values under 5 seconds are sent every 5 seconds/.test(
+        readFileSync(join(ROOT, 'apps', 'recorder-pwa', 'src', 'ui', 'app.ts'), 'utf8'),
+      )
       && /how often the location on the map is sent/.test(
         readFileSync(join(ROOT, 'apps', 'recorder-pwa', 'src', 'ui', 'app.ts'), 'utf8'),
       )
-      && !/pendingLiveUpload/.test(nativeSrc),
+      && !/pendingLiveUpload/.test(nativeSrc)
+      && !/hasFresherGpsListenerFix/.test(nativeSrc),
+  },
+  {
+    name: 'poll repeats the held fix after the full interval; network is not dropped',
+    pass: /uploadLiveFixIfDue\(false\)/.test(nativeSrc)
+      && /uploadLiveFixIfDue\(true\)/.test(nativeSrc)
+      && /Repeats the held fix only after the full location interval/.test(nativeSrc)
+      && /GPS and network both replace the held fix/.test(nativeSrc)
+      && /enqueueGpsSample\(live, uploadNow, true, "manager_watch", false, true\)/.test(nativeSrc)
+      && /getLastKnownLocation\(LocationManager\.GPS_PROVIDER\)/.test(nativeSrc)
+      && !/adoptNewerSystemLastKnown/.test(nativeSrc)
+      && !/sendHeldFixIfIntervalElapsed/.test(nativeSrc)
+      && !/mapLiveFixUnsent/.test(nativeSrc)
+      && !/maybeOfferAgedLastKnownFallback/.test(nativeSrc)
+      && !/A quiet window does not invent a point/.test(nativeSrc)
+      && /if \(managerLive\) \{\s*source = "manager_watch";/.test(nativeSrc)
+      && !/if \(managerLive\) \{\s*noteSittingLock/.test(nativeSrc),
   },
   {
     name: 'native live GNSS is LocationManager only (no fused beside the listener)',
@@ -1312,12 +1334,153 @@ const out = {
 
 writeFileSync(join(HERE, '_tmp-gps-live-reporting.out.json'), JSON.stringify(out, null, 2));
 
+/** Mirrors Manager clamp + uploadCoachLocationIfDue. t is now; fixMs is getTime(). */
+function clampManagerIntervalMs(intervalMs) {
+  const n = Number(intervalMs);
+  if (!Number.isFinite(n)) return 5000;
+  return Math.min(120_000, Math.max(5_000, Math.round(n)));
+}
+
+function liveUploadDecision({ now, intervalMs, lastSendWallMs, held, incoming, fromCallback }) {
+  const due = clampManagerIntervalMs(intervalMs);
+  const loc = incoming && Number.isFinite(incoming.lat) ? incoming : held;
+  const replaced = Boolean(incoming && Number.isFinite(incoming.lat));
+  if (!loc || !Number.isFinite(loc.lat)) {
+    return { send: false, replaced, due, t: null, fixMs: null, source: null };
+  }
+  const fixMs = loc.fixMs > 0 ? loc.fixMs : now;
+  const gap = fromCallback ? Math.min(due, 8_000) : due;
+  if (lastSendWallMs > 0 && now - lastSendWallMs < gap) {
+    return { send: false, replaced, due, t: now, fixMs, source: 'manager_watch', lat: loc.lat };
+  }
+  return {
+    send: true,
+    replaced,
+    due,
+    t: now,
+    fixMs,
+    source: 'manager_watch',
+    lat: loc.lat,
+  };
+}
+
+const quietNow = Date.parse('2026-10-30T06:38:02.000Z');
+const heldFresh = { lat: -37.91926, lon: 175.54075, fixMs: quietNow - 2000 };
+const heldStale = { lat: -37.91926, lon: 175.54075, fixMs: quietNow - 58_000 };
+const networkFix = { lat: -37.9189, lon: 175.5411, fixMs: quietNow - 1500, provider: 'network' };
+const liveUploadCases = [
+  {
+    name: 'typed 3s is Manager minimum 5s; poll sends the held fix with t=now',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 3000,
+        lastSendWallMs: quietNow - 5000,
+        held: heldFresh,
+        fromCallback: false,
+      });
+      return d.send && d.due === 5000 && d.t === quietNow && d.fixMs === heldFresh.fixMs
+        && d.source === 'manager_watch' && d.lat === heldFresh.lat;
+    })(),
+  },
+  {
+    name: 'poll does not repeat the held fix before the full interval',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 3000,
+        lastSendWallMs: quietNow - 4999,
+        held: heldFresh,
+        fromCallback: false,
+      });
+      return d.send === false && d.due === 5000 && d.source === 'manager_watch';
+    })(),
+  },
+  {
+    name: 'callback upload waits min(interval, 8s), not the full 20s',
+    pass: (() => {
+      const early = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 20_000,
+        lastSendWallMs: quietNow - 7999,
+        held: heldFresh,
+        fromCallback: true,
+      });
+      const due = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 20_000,
+        lastSendWallMs: quietNow - 8000,
+        held: heldFresh,
+        fromCallback: true,
+      });
+      return early.send === false && early.due === 20_000 && due.send && due.t === quietNow
+        && due.fixMs === heldFresh.fixMs && due.source === 'manager_watch';
+    })(),
+  },
+  {
+    name: 'poll waits the full 20s even when 8s have passed',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 20_000,
+        lastSendWallMs: quietNow - 8000,
+        held: heldFresh,
+        fromCallback: false,
+      });
+      return d.send === false && d.due === 20_000;
+    })(),
+  },
+  {
+    name: 'network replaces a fresh GPS fix and stays manager_watch',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 10_000,
+        lastSendWallMs: quietNow - 8000,
+        held: heldFresh,
+        incoming: networkFix,
+        fromCallback: true,
+      });
+      return d.send && d.replaced && d.lat === networkFix.lat && d.t === quietNow
+        && d.fixMs === networkFix.fixMs && d.source === 'manager_watch';
+    })(),
+  },
+  {
+    name: 'old satellite time is still manager_watch with t at upload time',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 10_000,
+        lastSendWallMs: quietNow - 10_000,
+        held: heldStale,
+        fromCallback: false,
+      });
+      return d.send && d.t === quietNow && d.fixMs === heldStale.fixMs
+        && d.source === 'manager_watch' && d.t !== d.fixMs;
+    })(),
+  },
+  {
+    name: 'interval above 120s clamps to 120s',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 130_000,
+        lastSendWallMs: 0,
+        held: heldFresh,
+        fromCallback: false,
+      });
+      return d.send && d.due === 120_000 && d.source === 'manager_watch';
+    })(),
+  },
+];
+
 const fail = [
   ...cases.filter((c) => !c.pass).map((c) => c.name),
   ...restampCases.filter((c) => !c.pass).map((c) => c.name),
   ...synthTrails.filter((t) => !t.pass).map((t) => t.label),
   ...sourceChecks.filter((c) => !c.pass).map((c) => c.name),
   ...lastKnownCases.filter((c) => !c.pass).map((c) => c.name),
+  ...liveUploadCases.filter((c) => !c.pass).map((c) => c.name),
 ];
 if (june.found && !june.pass) fail.push('4 Jun 1 Hz drive chopped in car mode');
 

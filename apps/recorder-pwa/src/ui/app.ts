@@ -1931,8 +1931,8 @@ export function mountApp(root: HTMLElement): void {
             )}
             ${settingsField(
               'Sample interval',
-              'This interval is how often the location on the map is sent. Android is still asked for a GPS fix every 1 second; if several fixes arrive during the interval, only the newest map location is sent. A higher value sends less often and uses less data (for example 10 sends about every 10 seconds).',
-              `<input class="form-input-light" name="sampleRateSec" type="number" min="0.5" step="0.5" value="${sampleSec}" inputmode="decimal" />`,
+              'This interval is how often the location on the map is sent. Values under 5 seconds are sent every 5 seconds, and values over 120 seconds every 120 seconds, the same limits as Manager. Android is asked on that interval, at least 4 m on GPS or 8 m on network. A new fix can be sent once that wait has passed, and not more often than every 8 seconds. If no new fix arrives, the last location is sent again only after the full interval. A higher value sends less often and uses less data (for example 10 sends about every 10 seconds).',
+              `<input class="form-input-light" name="sampleRateSec" type="number" min="5" max="120" step="0.5" value="${sampleSec}" inputmode="decimal" />`,
             )}
             <fieldset class="fieldset checks">
               <legend>Sensors</legend>
