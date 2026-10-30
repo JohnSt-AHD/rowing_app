@@ -95,14 +95,14 @@ export function saveSettings(settings: RecorderSettings): void {
   localStorage.setItem(LS_KEY, JSON.stringify(settings));
 }
 
-/** GPS / upload interval shown as one field in Settings (seconds). Manager floor is 5 s, cap 120 s. */
+/** GPS / upload interval shown as one field in Settings (seconds). Floor is 1 s, cap 120 s. */
 export function sampleRateSecFromSettings(s: RecorderSettings): number {
   const sec = Math.round((s.gpsIntervalMs / 1000) * 10) / 10;
-  return Math.min(120, Math.max(5, sec));
+  return Math.min(120, Math.max(1, sec));
 }
 
 function intervalsFromSampleRateSec(sec: number) {
-  const sampleSec = Math.min(120, Math.max(5, sec));
+  const sampleSec = Math.min(120, Math.max(1, sec));
   const ms = Math.round(sampleSec * 1000);
   return {
     gpsIntervalMs: ms,

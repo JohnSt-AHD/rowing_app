@@ -827,7 +827,7 @@ const sourceChecks = [
     pass: /gpsSampleSource === 'last_known' \|\| p\.gpsSampleSource === 'manager_watch'/.test(dashSrc),
   },
   {
-    name: 'native GPS listener matches Manager request floors',
+    name: 'native GPS request floor is 1s with no min distance',
     pass: /manager_watch/.test(nativeSrc)
       && /startGpsSatelliteFallback\(\)/.test(nativeSrc)
       && /Do not upload every callback/.test(nativeSrc)
@@ -836,33 +836,32 @@ const sourceChecks = [
       && /p50 12s/.test(nativeSrc)
       && /24–40s/.test(nativeSrc)
       && /Live pin is the LocationManager GPS listener/.test(nativeSrc)
-      && /MANAGER_LOCATION_MIN_MS = 5_000L/.test(nativeSrc)
+      && /MANAGER_LOCATION_MIN_MS = 1_000L/.test(nativeSrc)
       && /MANAGER_LOCATION_MAX_MS = 120_000L/.test(nativeSrc)
-      && /MANAGER_CALLBACK_UPLOAD_CAP_MS = 8_000L/.test(nativeSrc)
-      && /MANAGER_GPS_MIN_M = 4f/.test(nativeSrc)
-      && /MANAGER_NETWORK_MIN_M = 8f/.test(nativeSrc)
-      && /Math\.min\(due, MANAGER_CALLBACK_UPLOAD_CAP_MS\)/.test(nativeSrc)
+      && /MANAGER_GPS_MIN_M = 0f/.test(nativeSrc)
+      && /MANAGER_NETWORK_MIN_M = 0f/.test(nativeSrc)
+      && /A typed 3 s stays 3 s/.test(nativeSrc)
       && /now - lastMapLiveUploadWallMs < due/.test(nativeSrc)
+      && !/MANAGER_CALLBACK_UPLOAD_CAP_MS/.test(nativeSrc)
+      && !/MANAGER_LOCATION_MIN_MS = 5_000L/.test(nativeSrc)
       && !/hasFresherGpsListenerFix/.test(nativeSrc)
       && !/Upload this callback when it arrives/.test(nativeSrc)
-      && !/MANAGER_WATCH_REQUEST_MS = 1_000L/.test(nativeSrc)
-      && !/MANAGER_WATCH_GPS_MIN_M = 0f/.test(nativeSrc)
       && !/MANAGER_WATCH_MIN_UPLOAD_MS/.test(nativeSrc)
       && !/lastManagerWatchUploadMs/.test(nativeSrc)
       && !/managerWatchHasFresherGpsClock/.test(nativeSrc),
   },
   {
-    name: 'live sample is manager_watch with t at upload time and fixMs at getTime',
+    name: 'fresh fix is manager_watch; a fix older than 8s is last_known with t = fixMs',
     pass: /Sample interval throttles send of the map fix/.test(nativeSrc)
       && /Location copied = new Location\(location\)/.test(nativeSrc)
       && /mapLiveFix = location/.test(nativeSrc)
       && /t is the upload clock/.test(nativeSrc)
       && /fixMs stays location\.getTime\(\)/.test(nativeSrc)
-      && /source = "manager_watch"/.test(nativeSrc)
-      && /gps\.put\("sampleSource", "manager_watch"\)/.test(nativeSrc)
-      && /location\.getTime\(\) > 0L \? location\.getTime\(\) : sampleT/.test(nativeSrc)
-      && /if \(managerLive\)/.test(nativeSrc)
-      && /Values under 5 seconds are sent every 5 seconds/.test(
+      && /source = liveFresh \? "manager_watch" : "last_known"/.test(nativeSrc)
+      && /sampleT = locFix/.test(nativeSrc)
+      && /now - locFix <= GPS_LISTENER_FRESH_MS/.test(nativeSrc)
+      && /Do not set t=now/.test(nativeSrc)
+      && /The shortest is 1 second/.test(
         readFileSync(join(ROOT, 'apps', 'recorder-pwa', 'src', 'ui', 'app.ts'), 'utf8'),
       )
       && /how often the location on the map is sent/.test(
@@ -872,20 +871,20 @@ const sourceChecks = [
       && !/hasFresherGpsListenerFix/.test(nativeSrc),
   },
   {
-    name: 'poll repeats the held fix after the full interval; network is not dropped',
-    pass: /uploadLiveFixIfDue\(false\)/.test(nativeSrc)
+    name: 'quiet listener re-registers and adopts a newer last known; stale_piggyback does not fill the pin',
+    pass: /recoverQuietLiveListener/.test(nativeSrc)
+      && /adoptNewerLastKnownFix/.test(nativeSrc)
+      && /uploadLiveFixIfDue\(false\)/.test(nativeSrc)
       && /uploadLiveFixIfDue\(true\)/.test(nativeSrc)
-      && /Repeats the held fix only after the full location interval/.test(nativeSrc)
       && /GPS and network both replace the held fix/.test(nativeSrc)
       && /enqueueGpsSample\(live, uploadNow, true, "manager_watch", false, true\)/.test(nativeSrc)
       && /getLastKnownLocation\(LocationManager\.GPS_PROVIDER\)/.test(nativeSrc)
-      && !/adoptNewerSystemLastKnown/.test(nativeSrc)
-      && !/sendHeldFixIfIntervalElapsed/.test(nativeSrc)
+      && /Does not set t=now/.test(nativeSrc)
+      && /Do not send stale_piggyback/.test(nativeSrc)
+      && !/uploadWindowAverageGps\(true, "stale_piggyback"\)/.test(nativeSrc)
+      && !/buildGpsJson\(loc, "heartbeat_cache"\)/.test(nativeSrc)
       && !/mapLiveFixUnsent/.test(nativeSrc)
-      && !/maybeOfferAgedLastKnownFallback/.test(nativeSrc)
-      && !/A quiet window does not invent a point/.test(nativeSrc)
-      && /if \(managerLive\) \{\s*source = "manager_watch";/.test(nativeSrc)
-      && !/if \(managerLive\) \{\s*noteSittingLock/.test(nativeSrc),
+      && !/maybeOfferAgedLastKnownFallback/.test(nativeSrc),
   },
   {
     name: 'native live GNSS is LocationManager only (no fused beside the listener)',
@@ -1334,100 +1333,172 @@ const out = {
 
 writeFileSync(join(HERE, '_tmp-gps-live-reporting.out.json'), JSON.stringify(out, null, 2));
 
-/** Mirrors Manager clamp + uploadCoachLocationIfDue. t is now; fixMs is getTime(). */
-function clampManagerIntervalMs(intervalMs) {
+/** Interval floor 1s. Fresh fixes: t is now. Older than 8s: last_known, t = fixMs. */
+function clampSampleIntervalMs(intervalMs) {
   const n = Number(intervalMs);
-  if (!Number.isFinite(n)) return 5000;
-  return Math.min(120_000, Math.max(5_000, Math.round(n)));
+  if (!Number.isFinite(n)) return 1000;
+  return Math.min(120_000, Math.max(1_000, Math.round(n)));
 }
 
-function liveUploadDecision({ now, intervalMs, lastSendWallMs, held, incoming, fromCallback }) {
-  const due = clampManagerIntervalMs(intervalMs);
-  const loc = incoming && Number.isFinite(incoming.lat) ? incoming : held;
-  const replaced = Boolean(incoming && Number.isFinite(incoming.lat));
+function liveUploadDecision({
+  now,
+  intervalMs,
+  lastSendWallMs,
+  held,
+  incoming,
+  lastCallbackWallMs,
+  systemLastKnown,
+}) {
+  const due = clampSampleIntervalMs(intervalMs);
+  const quiet = lastCallbackWallMs > 0 && now - lastCallbackWallMs >= due;
+  let loc = held;
+  let adopted = false;
+  if (quiet && systemLastKnown && systemLastKnown.fixMs > 0 && (!held || systemLastKnown.fixMs > held.fixMs)) {
+    loc = systemLastKnown;
+    adopted = true;
+  } else if (!quiet && incoming && Number.isFinite(incoming.lat)) {
+    loc = incoming;
+  }
   if (!loc || !Number.isFinite(loc.lat)) {
-    return { send: false, replaced, due, t: null, fixMs: null, source: null };
+    return { send: false, due, adopted, reregistered: quiet, t: null, fixMs: null, source: null };
   }
-  const fixMs = loc.fixMs > 0 ? loc.fixMs : now;
-  const gap = fromCallback ? Math.min(due, 8_000) : due;
-  if (lastSendWallMs > 0 && now - lastSendWallMs < gap) {
-    return { send: false, replaced, due, t: now, fixMs, source: 'manager_watch', lat: loc.lat };
+  const fixMs = loc.fixMs > 0 ? loc.fixMs : null;
+  const age = fixMs != null ? now - fixMs : Infinity;
+  const fresh = fixMs != null && age <= 8_000 && fixMs <= now + 5_000;
+  const source = fresh ? 'manager_watch' : 'last_known';
+  const t = fresh ? now : fixMs;
+  if (!fresh && fixMs == null) {
+    return { send: false, due, adopted, reregistered: quiet, t: null, fixMs: null, source: null, lat: loc.lat };
   }
-  return {
-    send: true,
-    replaced,
-    due,
-    t: now,
-    fixMs,
-    source: 'manager_watch',
-    lat: loc.lat,
-  };
+  if (lastSendWallMs > 0 && now - lastSendWallMs < due) {
+    return { send: false, due, adopted, reregistered: quiet, t, fixMs, source, lat: loc.lat };
+  }
+  return { send: true, due, adopted, reregistered: quiet, t, fixMs, source, lat: loc.lat };
 }
 
 const quietNow = Date.parse('2026-10-30T06:38:02.000Z');
 const heldFresh = { lat: -37.91926, lon: 175.54075, fixMs: quietNow - 2000 };
 const heldStale = { lat: -37.91926, lon: 175.54075, fixMs: quietNow - 58_000 };
 const networkFix = { lat: -37.9189, lon: 175.5411, fixMs: quietNow - 1500, provider: 'network' };
+const newerQuiet = { lat: -37.91831, lon: 175.53772, fixMs: quietNow - 2000 };
+const olderQuiet = { lat: -37.919, lon: 175.541, fixMs: quietNow - 39_000 };
 const liveUploadCases = [
   {
-    name: 'typed 3s is Manager minimum 5s; poll sends the held fix with t=now',
+    name: 'typed 3s stays 3s and a fresh fix is manager_watch',
     pass: (() => {
       const d = liveUploadDecision({
         now: quietNow,
         intervalMs: 3000,
-        lastSendWallMs: quietNow - 5000,
+        lastSendWallMs: quietNow - 3000,
         held: heldFresh,
-        fromCallback: false,
+        lastCallbackWallMs: quietNow - 1000,
       });
-      return d.send && d.due === 5000 && d.t === quietNow && d.fixMs === heldFresh.fixMs
-        && d.source === 'manager_watch' && d.lat === heldFresh.lat;
+      return d.send && d.due === 3000 && d.t === quietNow && d.fixMs === heldFresh.fixMs
+        && d.source === 'manager_watch' && !d.reregistered;
     })(),
   },
   {
-    name: 'poll does not repeat the held fix before the full interval',
+    name: 'typed 1s is not raised to 5s',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 1000,
+        lastSendWallMs: quietNow - 1000,
+        held: heldFresh,
+        lastCallbackWallMs: quietNow - 500,
+      });
+      return d.send && d.due === 1000 && d.source === 'manager_watch' && d.t === quietNow;
+    })(),
+  },
+  {
+    name: 'a 3s interval does not send before 3s',
     pass: (() => {
       const d = liveUploadDecision({
         now: quietNow,
         intervalMs: 3000,
-        lastSendWallMs: quietNow - 4999,
+        lastSendWallMs: quietNow - 2999,
         held: heldFresh,
-        fromCallback: false,
+        lastCallbackWallMs: quietNow - 1000,
       });
-      return d.send === false && d.due === 5000 && d.source === 'manager_watch';
+      return d.send === false && d.due === 3000;
     })(),
   },
   {
-    name: 'callback upload waits min(interval, 8s), not the full 20s',
+    name: 'a 20s interval is not pulled down to 8s',
     pass: (() => {
       const early = liveUploadDecision({
         now: quietNow,
         intervalMs: 20_000,
-        lastSendWallMs: quietNow - 7999,
+        lastSendWallMs: quietNow - 8000,
         held: heldFresh,
-        fromCallback: true,
+        lastCallbackWallMs: quietNow - 1000,
       });
       const due = liveUploadDecision({
         now: quietNow,
         intervalMs: 20_000,
-        lastSendWallMs: quietNow - 8000,
+        lastSendWallMs: quietNow - 20_000,
         held: heldFresh,
-        fromCallback: true,
+        lastCallbackWallMs: quietNow - 1000,
       });
-      return early.send === false && early.due === 20_000 && due.send && due.t === quietNow
-        && due.fixMs === heldFresh.fixMs && due.source === 'manager_watch';
+      return early.send === false && due.send && due.due === 20_000 && due.source === 'manager_watch';
     })(),
   },
   {
-    name: 'poll waits the full 20s even when 8s have passed',
+    name: 'a fix older than 8s is last_known with t equal to fixMs',
     pass: (() => {
       const d = liveUploadDecision({
         now: quietNow,
-        intervalMs: 20_000,
-        lastSendWallMs: quietNow - 8000,
-        held: heldFresh,
-        fromCallback: false,
+        intervalMs: 3000,
+        lastSendWallMs: quietNow - 3000,
+        held: heldStale,
+        lastCallbackWallMs: quietNow - 1000,
       });
-      return d.send === false && d.due === 20_000;
+      return d.send && d.source === 'last_known' && d.t === heldStale.fixMs
+        && d.fixMs === heldStale.fixMs && d.t !== quietNow;
+    })(),
+  },
+  {
+    name: 'quiet listener re-registers and adopts a newer last known without t=now when that fix is old',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 3000,
+        lastSendWallMs: quietNow - 3000,
+        held: heldStale,
+        lastCallbackWallMs: quietNow - 3000,
+        systemLastKnown: olderQuiet,
+      });
+      return d.reregistered && d.adopted && d.lat === olderQuiet.lat
+        && d.source === 'last_known' && d.t === olderQuiet.fixMs && d.t !== quietNow;
+    })(),
+  },
+  {
+    name: 'quiet listener adopts a fresh last known as manager_watch',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 3000,
+        lastSendWallMs: quietNow - 3000,
+        held: heldStale,
+        lastCallbackWallMs: quietNow - 4000,
+        systemLastKnown: newerQuiet,
+      });
+      return d.reregistered && d.adopted && d.lat === newerQuiet.lat
+        && d.source === 'manager_watch' && d.t === quietNow && d.fixMs === newerQuiet.fixMs;
+    })(),
+  },
+  {
+    name: 'an older system fix does not replace the held callback',
+    pass: (() => {
+      const d = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 3000,
+        lastSendWallMs: quietNow - 3000,
+        held: heldFresh,
+        lastCallbackWallMs: quietNow - 3000,
+        systemLastKnown: heldStale,
+      });
+      return d.reregistered && !d.adopted && d.lat === heldFresh.lat && d.source === 'manager_watch';
     })(),
   },
   {
@@ -1435,41 +1506,14 @@ const liveUploadCases = [
     pass: (() => {
       const d = liveUploadDecision({
         now: quietNow,
-        intervalMs: 10_000,
-        lastSendWallMs: quietNow - 8000,
+        intervalMs: 3000,
+        lastSendWallMs: quietNow - 3000,
         held: heldFresh,
         incoming: networkFix,
-        fromCallback: true,
+        lastCallbackWallMs: quietNow - 500,
       });
-      return d.send && d.replaced && d.lat === networkFix.lat && d.t === quietNow
-        && d.fixMs === networkFix.fixMs && d.source === 'manager_watch';
-    })(),
-  },
-  {
-    name: 'old satellite time is still manager_watch with t at upload time',
-    pass: (() => {
-      const d = liveUploadDecision({
-        now: quietNow,
-        intervalMs: 10_000,
-        lastSendWallMs: quietNow - 10_000,
-        held: heldStale,
-        fromCallback: false,
-      });
-      return d.send && d.t === quietNow && d.fixMs === heldStale.fixMs
-        && d.source === 'manager_watch' && d.t !== d.fixMs;
-    })(),
-  },
-  {
-    name: 'interval above 120s clamps to 120s',
-    pass: (() => {
-      const d = liveUploadDecision({
-        now: quietNow,
-        intervalMs: 130_000,
-        lastSendWallMs: 0,
-        held: heldFresh,
-        fromCallback: false,
-      });
-      return d.send && d.due === 120_000 && d.source === 'manager_watch';
+      return d.send && d.lat === networkFix.lat && d.t === quietNow
+        && d.fixMs === networkFix.fixMs && d.source === 'manager_watch' && !d.reregistered;
     })(),
   },
 ];

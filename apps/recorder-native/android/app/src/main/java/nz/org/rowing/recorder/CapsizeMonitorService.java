@@ -146,23 +146,22 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      */
     private static final long GPS_LISTENER_FRESH_MS = 8_000L;
     /**
-     * Same location request as CoachMonitorService. Sample interval is clamped
-     * to 5–120 s (Manager's saved setting). GPS min distance 4 m, network 8 m.
-     * A callback cannot upload again until min(interval, 8 s). The poll repeats
-     * the held fix only after the full interval. Do not upload every callback.
+     * Sample interval is 1–120 s. A typed 1 s or 3 s is requested as 1 s or 3 s.
+     * GPS and network min distance are 0 so a 1 s interval can be delivered.
+     * Uploads wait the full interval. Do not upload every callback.
      * Do not also request FusedLocationProviderClient.
+     * A fix older than GPS_LISTENER_FRESH_MS is last_known with t = getTime().
+     * Do not set t=now on an old coordinate.
      * Fri 30 Oct 2026 09:54 same-phone Melville walk: fused held the GNSS chip
      * and this listener's gaps were p50 31s while Manager on the same phone
      * was p50 7s.
+     * Sat 31 Oct 2026 09:05 drive: listener quiet 45 s, held fix 39 s old,
+     * t=now made it look live and the pin sat 662 m behind.
      */
-    private static final long MANAGER_LOCATION_MIN_MS = 5_000L;
+    private static final long MANAGER_LOCATION_MIN_MS = 1_000L;
     private static final long MANAGER_LOCATION_MAX_MS = 120_000L;
-    /** Callback upload floor. Poll still waits the full interval. */
-    private static final long MANAGER_CALLBACK_UPLOAD_CAP_MS = 8_000L;
-    /** CoachMonitorService DEFAULT_POLL_MS. The poll checks the full-interval gate. */
-    private static final long MANAGER_POLL_MS = 3_000L;
-    private static final float MANAGER_GPS_MIN_M = 4f;
-    private static final float MANAGER_NETWORK_MIN_M = 8f;
+    private static final float MANAGER_GPS_MIN_M = 0f;
+    private static final float MANAGER_NETWORK_MIN_M = 0f;
     private static final float FUSED_FREEZE_M = 15f;
     /** Near-zero displacement this long while timestamps advance = restamped lock. */
     private static final long RAW_GPS_STILL_MS = 8_000L;
@@ -289,6 +288,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private Location mapLiveFix;
     /** Wall clock of the last sample-interval map send. 0 until the first. */
     private long lastMapLiveUploadWallMs;
+    /** Wall clock of the last onLocationChanged. Quiet recovery uses this. */
+    private long lastLiveCallbackWallMs;
     /** First live fused fix seen this session — unlocks 4s maxAge + 15s last-known. */
     private boolean fusedSawLiveFix;
     private boolean fusedLiveMaxAgeArmed;
@@ -476,6 +477,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         fusedLiveMaxAgeArmed = false;
         lastUploadedFixTimeMs = 0L;
         lastMapLiveUploadWallMs = 0L;
+        lastLiveCallbackWallMs = 0L;
         lastUploadedGpsBucket = -1L;
         lastStaleGpsPiggybackWallMs = 0L;
         gpsWindowBuffer.clear();
@@ -1360,19 +1362,91 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Poll. Repeats the held fix only after the full location interval, same
-     * as uploadCoachLocationIfDue(false). Does not read getLastKnownLocation.
+     * Foreground poll. One sample interval since the last callback: re-register
+     * GPS and network, and copy a newer getLastKnownLocation into the map fix.
+     * Then send the held fix if the interval has elapsed. An old coordinate is
+     * not stamped with t=now.
      */
     private void tickScheduledGpsUpload() {
         if (recordingHalted || !enableGps) return;
+        if (standbyMode) return;
+        recoverQuietLiveListener();
         uploadLiveFixIfDue(false);
     }
 
     /**
-     * Live upload matches CoachMonitorService.uploadCoachLocationIfDue.
-     * fromCallback true: wait min(interval, 8 s). false: wait the full interval.
-     * t is the upload clock. fixMs stays location.getTime(). Tag is always
-     * manager_watch. The sent fix is mapLiveFix, the metrics-map dot.
+     * No onLocationChanged within one sample interval. Remove and re-register
+     * the same GPS+network request. A later getTime() from getLastKnownLocation
+     * replaces the held fix. Does not set t=now.
+     */
+    private void recoverQuietLiveListener() {
+        if (standbyMode || recordingHalted || !enableGps) return;
+        if (locationManager == null || !gpsSatelliteFallbackActive) return;
+        long now = System.currentTimeMillis();
+        long due = managerLocationIntervalMs();
+        if (lastLiveCallbackWallMs <= 0L) {
+            lastLiveCallbackWallMs = now;
+            return;
+        }
+        if (now - lastLiveCallbackWallMs < due) return;
+        Log.i(
+                TAG,
+                "Live listener quiet "
+                        + (now - lastLiveCallbackWallMs)
+                        + "ms — re-register");
+        removeLiveGpsUpdates();
+        gpsSatelliteFallbackActive = false;
+        if (!requestLiveLocationUpdates()) return;
+        Location before = mapLiveFix;
+        adoptNewerLastKnownFix();
+        if (mapLiveFix != null && mapLiveFix != before) {
+            maybeApplyGeofenceEconomy(mapLiveFix.getLatitude(), mapLiveFix.getLongitude());
+            maybeNotifyZoneEntry(mapLiveFix.getLatitude(), mapLiveFix.getLongitude());
+        }
+    }
+
+    /**
+     * Later location.getTime() wins. A missing satellite clock does not win.
+     * Copied into mapLiveFix. Does not set t=now.
+     */
+    private void adoptNewerLastKnownFix() {
+        if (locationManager == null) return;
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        Location gps = null;
+        Location net = null;
+        try {
+            gps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+            net = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+        } catch (SecurityException e) {
+            return;
+        }
+        Location best = newerBySatelliteTime(gps, net);
+        if (best == null || !isGpsFixUsable(best)) return;
+        long bestFix = best.getTime();
+        if (bestFix <= 0L) return;
+        if (mapLiveFix != null && bestFix <= mapLiveFix.getTime()) return;
+        cacheManagerWatchOnly(new Location(best));
+    }
+
+    /** Later location.getTime() wins. A missing satellite clock does not win. */
+    private static Location newerBySatelliteTime(Location a, Location b) {
+        long aT = a != null ? a.getTime() : 0L;
+        long bT = b != null ? b.getTime() : 0L;
+        if (aT <= 0L) return bT > 0L ? b : null;
+        if (bT <= 0L) return a;
+        return bT > aT ? b : a;
+    }
+
+    /**
+     * Live upload. Callback and poll both wait the full sample interval.
+     * A fresh fix (satellite age within GPS_LISTENER_FRESH_MS) is manager_watch
+     * and t is the upload clock. fixMs stays location.getTime().
+     * Older than that is last_known with t equal to getTime(). Do not set t=now.
+     * Repeats the held fix only after the full interval when nothing newer exists.
+     * The sent fix is mapLiveFix, the metrics-map dot.
      * Sample interval throttles send of the map fix. Do not upload every callback.
      */
     private void uploadLiveFixIfDue(boolean fromCallback) {
@@ -1382,12 +1456,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
         long now = System.currentTimeMillis();
         long due = managerLocationIntervalMs();
-        if (!fromCallback && lastMapLiveUploadWallMs > 0L && now - lastMapLiveUploadWallMs < due) {
-            return;
-        }
-        if (fromCallback
-                && lastMapLiveUploadWallMs > 0L
-                && now - lastMapLiveUploadWallMs < Math.min(due, MANAGER_CALLBACK_UPLOAD_CAP_MS)) {
+        if (lastMapLiveUploadWallMs > 0L && now - lastMapLiveUploadWallMs < due) {
             return;
         }
         lastMapLiveUploadWallMs = now;
@@ -1400,7 +1469,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 TAG,
                 "Map fix send "
                         + live.getProvider()
-                        + " manager_watch dueMs="
+                        + " dueMs="
                         + due
                         + (fromCallback ? " callback" : " poll"));
         uploadExecutor.execute(
@@ -1420,7 +1489,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void scheduleGpsFlush() {
         mainHandler.removeCallbacks(gpsFlushRunnable);
         if (!enableGps) return;
-        mainHandler.postDelayed(gpsFlushRunnable, MANAGER_POLL_MS);
+        mainHandler.postDelayed(gpsFlushRunnable, managerLocationIntervalMs());
     }
 
     @Override
@@ -1728,63 +1797,18 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return gps;
     }
 
-    /** Cached coords on heartbeat when the 1s GPS timer stalls (heartbeats fire ~every 10s). */
+    /** Heartbeats stay. Do not attach heartbeat_cache as a live position. */
     private boolean appendCachedGpsToSample(JSONObject sample) {
-        if (!enableGps) return false;
-        Location loc = resolveCachedUploadLocation();
-        if (loc == null || !isGpsFixUsable(loc)) return false;
-        if (latestGpsCachedWallMs <= 0L
-                || System.currentTimeMillis() - latestGpsCachedWallMs
-                        > GPS_MAX_SCHEDULED_CACHE_AGE_MS) {
-            return false;
-        }
-        try {
-            sample.put("gps", buildGpsJson(loc, "heartbeat_cache"));
-            return true;
-        } catch (Exception e) {
-            Log.w(TAG, "Heartbeat GPS attach failed", e);
-            return false;
-        }
+        if (sample == null) return false;
+        return false;
     }
 
     /**
-     * Push cached GPS when the timer path stops enqueueing but HTTP ingest still succeeds
-     * (heartbeats suppressed). Uses lastGpsSampleOfferedMs — not timer intent alone.
+     * A quiet listener is re-registered by recoverQuietLiveListener.
+     * Do not send stale_piggyback, heartbeat_cache, or scheduled_cache as a position.
      */
     private void maybeRefreshStaleGpsUpload() {
-        if (!enableGps) return;
-        long interval = Math.max(500L, effectiveGpsIntervalMs());
-        long now = System.currentTimeMillis();
-        long sinceOffered =
-                lastGpsSampleOfferedMs > 0L ? now - lastGpsSampleOfferedMs : Long.MAX_VALUE;
-        if (sinceOffered < interval * 2L) return;
-
-        long minGap = Math.max(effectiveUploadFlushMs(), interval);
-        if (lastStaleGpsPiggybackWallMs > 0L && now - lastStaleGpsPiggybackWallMs < minGap) {
-            return;
-        }
-
-        Location loc = resolveCachedUploadLocation();
-        if (loc == null || !isGpsFixUsable(loc)) return;
-        if (latestGpsLocation != null) {
-            addFixToGpsWindow(latestGpsLocation);
-        }
-        if (!canUploadGpsFix(loc, true)) return;
-
-        lastStaleGpsPiggybackWallMs = now;
-
-        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
-        int fallback = p.getInt(HEARTBEAT_GPS_COUNT_KEY, 0) + 1;
-        p.edit().putInt(HEARTBEAT_GPS_COUNT_KEY, fallback).apply();
-        Log.i(
-                TAG,
-                "Stale GPS fallback (#"
-                        + fallback
-                        + ") — last offered "
-                        + sinceOffered
-                        + "ms ago, ingest still active");
-
-        uploadWindowAverageGps(true, "stale_piggyback");
+        return;
     }
 
     private void markGpsSampleOffered(long t) {
@@ -1799,8 +1823,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * @param keepSatelliteTime non-live path: t and fixMs stay location.getTime().
-     * @param managerLive live pin: t is the upload clock, fixMs is getTime(),
-     *     sampleSource is always manager_watch. No sitting retag.
+     * @param managerLive live pin. Fresh (age within GPS_LISTENER_FRESH_MS) is
+     *     manager_watch and t is the upload clock. Older is last_known with
+     *     t equal to location.getTime(). Do not set t=now on an old coordinate.
      */
     private void enqueueGpsSample(
             Location location,
@@ -1815,10 +1840,18 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             // Keep location cache for geofence checks; do not upload while in suppress zone.
             return;
         }
+        long now = System.currentTimeMillis();
+        long locFix = location.getTime();
+        boolean liveFresh =
+                managerLive
+                        && locFix > 0L
+                        && locFix <= now + 5_000L
+                        && now - locFix <= GPS_LISTENER_FRESH_MS;
         boolean sitting = false;
         String source = sampleSource;
         if (managerLive) {
-            source = "manager_watch";
+            if (!liveFresh && locFix <= 0L) return;
+            source = liveFresh ? "manager_watch" : "last_known";
         } else {
             noteSittingLock(location);
             sitting = isSittingLastKnownFix(location);
@@ -1837,13 +1870,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         try {
             JSONObject sample = new JSONObject();
-            long now = System.currentTimeMillis();
-            long locFix = location.getTime();
             long sittingFix =
                     locFix > 0L && locFix <= now + 5_000L ? locFix : latestGpsRawFixClockMs;
             final long sampleT;
-            if (managerLive) {
-                // Upload clock. fixMs is written from location.getTime() below.
+            if (managerLive && !liveFresh) {
+                // Old getTime() must not be stored with t=now.
+                sampleT = locFix;
+            } else if (managerLive) {
                 sampleT = t > 0L ? t : now;
             } else if (keepSatelliteTime) {
                 // Old getTime() must not be stored with t=now.
@@ -1860,9 +1893,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             }
             JSONObject gps = buildGpsJson(location, source);
             if (managerLive) {
-                long fixMs = location.getTime() > 0L ? location.getTime() : sampleT;
+                long fixMs = locFix > 0L ? locFix : sampleT;
                 gps.put("fixMs", fixMs);
-                gps.put("sampleSource", "manager_watch");
+                gps.put("sampleSource", liveFresh ? "manager_watch" : "last_known");
             }
             sample.put("t", sampleT);
             sample.put("gps", gps);
@@ -2306,8 +2339,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Manager clampLocationIntervalMs / locationIntervalMs: at least 5 s, at
-     * most 120 s. A typed 3 s sample interval is 5 s here.
+     * Sample interval clamp: at least 1 s, at most 120 s. A typed 3 s stays 3 s.
      */
     private long managerLocationIntervalMs() {
         long raw = effectiveGpsIntervalMs();
@@ -3461,6 +3493,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                     @Override
                     public void onLocationChanged(Location location) {
                         if (location == null) return;
+                        lastLiveCallbackWallMs = System.currentTimeMillis();
                         // One copied GPS fix. Android must not recycle it.
                         // The landscape map and the upload both read this object.
                         Location copied = new Location(location);
@@ -3487,18 +3520,36 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Sole live GNSS subscription. Same request as CoachMonitorService:
-     * interval at least 5 s, GPS min distance 4 m, network min distance 8 m.
-     * Capsize stays on the accelerometer. Geofence and the session log use
-     * these listener fixes. One last-known seed prefers GPS, else network.
-     * Do not register fused beside this listener.
+     * Sole live GNSS subscription. Interval is the sample interval (floor 1 s).
+     * GPS and network min distance 0. Capsize stays on the accelerometer.
+     * Geofence and the session log use these listener fixes. One last-known
+     * seed prefers GPS, else network. Do not register fused beside this listener.
      */
     private void startGpsSatelliteFallback() {
-        if (gpsSatelliteFallbackActive) return;
-        if (locationManager == null) return;
+        if (!requestLiveLocationUpdates()) return;
+        Location seed = null;
+        try {
+            seed = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+        } catch (SecurityException ignored) {
+        }
+        if (seed == null) {
+            try {
+                seed = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+            } catch (SecurityException ignored) {
+            }
+        }
+        if (seed != null) {
+            deliverLocation(new Location(seed));
+        }
+    }
+
+    /** Register GPS and network. Returns false when already registered or denied. */
+    private boolean requestLiveLocationUpdates() {
+        if (gpsSatelliteFallbackActive) return false;
+        if (locationManager == null) return false;
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
-            return;
+            return false;
         }
         ensureLiveGpsListener();
         long minTime = managerLocationIntervalMs();
@@ -3524,28 +3575,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             }
         } catch (SecurityException e) {
             Log.e(TAG, "GPS/network live listener permission error", e);
-            return;
+            return false;
         }
         if (!any) {
             Log.w(TAG, "GPS and network providers disabled");
-            return;
+            return false;
         }
         gpsSatelliteFallbackActive = true;
-        Location seed = null;
-        try {
-            seed = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-        } catch (SecurityException ignored) {
-        }
-        if (seed == null) {
-            try {
-                seed = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-            } catch (SecurityException ignored) {
-            }
-        }
-        if (seed != null) {
-            deliverLocation(new Location(seed));
-        }
-        Log.i(TAG, "GPS+network manager-watch listener registered (" + minTime + "ms)");
+        lastLiveCallbackWallMs = System.currentTimeMillis();
+        Log.i(TAG, "GPS+network manager-watch listener registered (" + minTime + "ms, minDistance 0)");
+        return true;
     }
 
     private void stopGpsSatelliteFallback() {
@@ -3601,6 +3640,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         latestManagerWatchLocation = null;
         mapLiveFix = null;
         lastMapLiveUploadWallMs = 0L;
+        lastLiveCallbackWallMs = 0L;
         lastFusedGpsClockMs = 0L;
         clearFusedFreeze();
         clearRawGpsStill();
@@ -3808,6 +3848,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         fusedLiveMaxAgeArmed = false;
         lastUploadedFixTimeMs = 0L;
         lastMapLiveUploadWallMs = 0L;
+        lastLiveCallbackWallMs = 0L;
         lastUploadedGpsBucket = -1L;
         lastStaleGpsPiggybackWallMs = 0L;
         gpsWindowBuffer.clear();
