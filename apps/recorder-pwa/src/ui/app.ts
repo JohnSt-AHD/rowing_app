@@ -1931,7 +1931,7 @@ export function mountApp(root: HTMLElement): void {
             )}
             ${settingsField(
               'Sample interval',
-              'This interval is how often the location on the map is sent. The shortest is 1 second and the longest is 120 seconds. A typed 1 second or 3 second interval is used as 1 second or 3 seconds. Android is asked on that interval with no minimum distance. If no fix arrives for one interval, the listener is asked again and a newer fix the phone already has is used. A fix whose satellite time is more than about 8 seconds old is sent with that satellite time, not the send time. A higher value sends less often and uses less data (for example 10 sends about every 10 seconds).',
+              'This interval is how often the location on the map is sent. The phone is asked about every second, with no minimum distance. The shortest is 1 second and the longest is 120 seconds. A typed 1 second or 3 second interval is used as 1 second or 3 seconds for sending. A typed 10 seconds still asks the phone every second and sends about every 10 seconds, using the newest fix. If no fix arrives for about 2–3 seconds, the listener is asked again and a newer fix the phone already has is used. A fix whose satellite time is more than about 8 seconds old is sent with that satellite time, not the send time. A higher value sends less often and uses less data.',
               `<input class="form-input-light" name="sampleRateSec" type="number" min="1" max="120" step="0.5" value="${sampleSec}" inputmode="decimal" />`,
             )}
             <fieldset class="fieldset checks">

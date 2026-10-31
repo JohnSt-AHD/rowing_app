@@ -27,6 +27,7 @@ import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -146,18 +147,23 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      */
     private static final long GPS_LISTENER_FRESH_MS = 8_000L;
     /**
-     * Sample interval is 1–120 s. A typed 1 s or 3 s is requested as 1 s or 3 s.
-     * GPS and network min distance are 0 so a 1 s interval can be delivered.
-     * Uploads wait the full interval. Do not upload every callback.
+     * The phone is asked about every 1 s. The sample interval only controls the upload.
+     * A typed 3 s or 10 s still requests GPS and network every GPS_REQUEST_INTERVAL_MS.
+     * GPS and network min distance are 0. Do not upload every callback.
      * Do not also request FusedLocationProviderClient.
      * A fix older than GPS_LISTENER_FRESH_MS is last_known with t = getTime().
      * Do not set t=now on an old coordinate.
+     * If no callback arrives for GPS_LISTENER_QUIET_MS (about 2–3 s, not the
+     * upload interval), re-register the 1 s request.
      * Fri 30 Oct 2026 09:54 same-phone Melville walk: fused held the GNSS chip
      * and this listener's gaps were p50 31s while Manager on the same phone
      * was p50 7s.
      * Sat 31 Oct 2026 09:05 drive: listener quiet 45 s, held fix 39 s old,
      * t=now made it look live and the pin sat 662 m behind.
      */
+    private static final long GPS_REQUEST_INTERVAL_MS = 1_000L;
+    /** Re-ask after about 2–3 s of silence. Not the sample-interval upload rate. */
+    private static final long GPS_LISTENER_QUIET_MS = 3_000L;
     private static final long MANAGER_LOCATION_MIN_MS = 1_000L;
     private static final long MANAGER_LOCATION_MAX_MS = 120_000L;
     private static final float MANAGER_GPS_MIN_M = 0f;
@@ -215,6 +221,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private PowerManager.WakeLock wakeLock;
     private ExecutorService uploadExecutor;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    /**
+     * Location callbacks and quiet re-register run here, not on the UI thread.
+     * The WebView shares the main looper; a busy page was stalling onLocationChanged
+     * while Manager (its own process, main looper, no wake lock) kept firing.
+     */
+    private HandlerThread locationThread;
+    private Handler locationHandler;
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
     private long lastNetworkResumeKickMs;
@@ -565,10 +578,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         mainHandler.removeCallbacks(ingestFlushRunnable);
         mainHandler.removeCallbacks(heartbeatRunnable);
         mainHandler.removeCallbacks(pendingFlushRunnable);
-        mainHandler.removeCallbacks(gpsFlushRunnable);
+        cancelScheduledGpsFlush();
         unregisterNetworkCallback();
         unregisterSensor();
         unregisterLocation();
+        shutdownLocationDeliveryThread();
         releaseWakeLock();
         if (uploadExecutor != null) {
             uploadExecutor.execute(this::flushIngestBufferNow);
@@ -844,13 +858,18 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             noteRawGpsMovement(location);
             cacheManagerWatchOnly(location);
             if (standbyMode) {
-                handleStandbyLocation(mapLiveFix != null ? mapLiveFix : location);
+                Location standbyFix = mapLiveFix != null ? mapLiveFix : location;
+                mainHandler.post(() -> handleStandbyLocation(standbyFix));
                 return;
             }
             uploadLiveFixIfDue(true);
             Location shown = mapLiveFix != null ? mapLiveFix : location;
-            maybeApplyGeofenceEconomy(shown.getLatitude(), shown.getLongitude());
-            maybeNotifyZoneEntry(shown.getLatitude(), shown.getLongitude());
+            // Geofence dwell also runs on the main handler. Keep that decision there.
+            mainHandler.post(
+                    () -> {
+                        maybeApplyGeofenceEconomy(shown.getLatitude(), shown.getLongitude());
+                        maybeNotifyZoneEntry(shown.getLatitude(), shown.getLongitude());
+                    });
             return;
         }
         if (shouldIgnoreFused(location) || shouldIgnoreRawGps(location)) {
@@ -1362,12 +1381,17 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Foreground poll. One sample interval since the last callback: re-register
-     * GPS and network, and copy a newer getLastKnownLocation into the map fix.
-     * Then send the held fix if the interval has elapsed. An old coordinate is
-     * not stamped with t=now.
+     * Foreground poll, about every 1 s. If no callback for about 2–3 s,
+     * re-register GPS and network on the CrewSightLocation thread and copy a
+     * newer getLastKnownLocation into the map fix. Then send the held fix if
+     * the sample interval has elapsed. An old coordinate is not stamped with t=now.
      */
     private void tickScheduledGpsUpload() {
+        ensureLocationDeliveryThread();
+        if (!onLocationThread()) {
+            locationHandler.post(this::tickScheduledGpsUpload);
+            return;
+        }
         if (recordingHalted || !enableGps) return;
         if (standbyMode) return;
         recoverQuietLiveListener();
@@ -1375,20 +1399,20 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * No onLocationChanged within one sample interval. Remove and re-register
-     * the same GPS+network request. A later getTime() from getLastKnownLocation
-     * replaces the held fix. Does not set t=now.
+     * No onLocationChanged for about 2–3 s. Remove and re-register the 1 s
+     * GPS+network request on the CrewSightLocation thread, not the UI thread.
+     * Do not wait for the upload interval. A later getTime() from
+     * getLastKnownLocation replaces the held fix. Does not set t=now.
      */
     private void recoverQuietLiveListener() {
         if (standbyMode || recordingHalted || !enableGps) return;
         if (locationManager == null || !gpsSatelliteFallbackActive) return;
         long now = System.currentTimeMillis();
-        long due = managerLocationIntervalMs();
         if (lastLiveCallbackWallMs <= 0L) {
             lastLiveCallbackWallMs = now;
             return;
         }
-        if (now - lastLiveCallbackWallMs < due) return;
+        if (now - lastLiveCallbackWallMs < GPS_LISTENER_QUIET_MS) return;
         Log.i(
                 TAG,
                 "Live listener quiet "
@@ -1400,8 +1424,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         Location before = mapLiveFix;
         adoptNewerLastKnownFix();
         if (mapLiveFix != null && mapLiveFix != before) {
-            maybeApplyGeofenceEconomy(mapLiveFix.getLatitude(), mapLiveFix.getLongitude());
-            maybeNotifyZoneEntry(mapLiveFix.getLatitude(), mapLiveFix.getLongitude());
+            Location adopted = mapLiveFix;
+            mainHandler.post(
+                    () -> {
+                        maybeApplyGeofenceEconomy(adopted.getLatitude(), adopted.getLongitude());
+                        maybeNotifyZoneEntry(adopted.getLatitude(), adopted.getLongitude());
+                    });
         }
     }
 
@@ -1487,9 +1515,17 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void scheduleGpsFlush() {
+        ensureLocationDeliveryThread();
+        locationHandler.removeCallbacks(gpsFlushRunnable);
+        if (!enableGps || standbyMode || recordingHalted) return;
+        locationHandler.postDelayed(gpsFlushRunnable, GPS_REQUEST_INTERVAL_MS);
+    }
+
+    private void cancelScheduledGpsFlush() {
         mainHandler.removeCallbacks(gpsFlushRunnable);
-        if (!enableGps) return;
-        mainHandler.postDelayed(gpsFlushRunnable, managerLocationIntervalMs());
+        if (locationHandler != null) {
+            locationHandler.removeCallbacks(gpsFlushRunnable);
+        }
     }
 
     @Override
@@ -2339,7 +2375,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Sample interval clamp: at least 1 s, at most 120 s. A typed 3 s stays 3 s.
+     * Upload clamp: at least 1 s, at most 120 s. A typed 3 s stays 3 s.
+     * This is not the LocationManager request. The phone is asked every 1 s.
+     * A typed 10 s sends about every 10 s.
      */
     private long managerLocationIntervalMs() {
         long raw = effectiveGpsIntervalMs();
@@ -2512,10 +2550,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void haltGpsUploads() {
         recordingHalted = true;
         enableGps = false;
-        mainHandler.removeCallbacks(gpsFlushRunnable);
+        cancelScheduledGpsFlush();
         mainHandler.removeCallbacks(heartbeatRunnable);
         mainHandler.removeCallbacks(ingestFlushRunnable);
         unregisterLocation();
+        releaseWakeLock();
         gpsWindowBuffer.clear();
         stripGpsFromIngestBuffer();
         Log.i(TAG, "GPS uploads halted — session stopping");
@@ -3377,6 +3416,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             Log.e(TAG, "ACCESS_FINE_LOCATION not granted — native GPS disabled");
             return;
         }
+        ensureLocationDeliveryThread();
+        if (!onLocationThread()) {
+            locationHandler.post(this::registerLocation);
+            return;
+        }
         unregisterLocation();
         startGpsSatelliteFallback();
     }
@@ -3520,12 +3564,18 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
-     * Sole live GNSS subscription. Interval is the sample interval (floor 1 s).
-     * GPS and network min distance 0. Capsize stays on the accelerometer.
+     * Sole live GNSS subscription. Android is asked about every 1 s.
+     * GPS and network min distance 0. The sample interval only throttles upload.
+     * Capsize stays on the accelerometer.
      * Geofence and the session log use these listener fixes. One last-known
      * seed prefers GPS, else network. Do not register fused beside this listener.
      */
     private void startGpsSatelliteFallback() {
+        ensureLocationDeliveryThread();
+        if (!onLocationThread()) {
+            locationHandler.post(this::startGpsSatelliteFallback);
+            return;
+        }
         if (!requestLiveLocationUpdates()) return;
         Location seed = null;
         try {
@@ -3543,8 +3593,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
-    /** Register GPS and network. Returns false when already registered or denied. */
+    /** Register GPS and network on the CrewSightLocation looper. Returns false when already registered or denied. */
     private boolean requestLiveLocationUpdates() {
+        ensureLocationDeliveryThread();
         if (gpsSatelliteFallbackActive) return false;
         if (locationManager == null) return false;
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -3552,7 +3603,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return false;
         }
         ensureLiveGpsListener();
-        long minTime = managerLocationIntervalMs();
+        long minTime = GPS_REQUEST_INTERVAL_MS;
         boolean any = false;
         try {
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
@@ -3561,7 +3612,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         minTime,
                         MANAGER_GPS_MIN_M,
                         liveGpsListener,
-                        mainHandler.getLooper());
+                        locationHandler.getLooper());
                 any = true;
             }
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
@@ -3570,7 +3621,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         minTime,
                         MANAGER_NETWORK_MIN_M,
                         liveGpsListener,
-                        mainHandler.getLooper());
+                        locationHandler.getLooper());
                 any = true;
             }
         } catch (SecurityException e) {
@@ -3600,14 +3651,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return;
         }
         long minTime = locationTrackingIntervalMs();
+        ensureLocationDeliveryThread();
         try {
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                 locationManager.requestLocationUpdates(
-                        LocationManager.GPS_PROVIDER, minTime, 0f, this, mainHandler.getLooper());
+                        LocationManager.GPS_PROVIDER, minTime, 0f, this, locationHandler.getLooper());
             }
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
                 locationManager.requestLocationUpdates(
-                        LocationManager.NETWORK_PROVIDER, minTime, 0f, this, mainHandler.getLooper());
+                        LocationManager.NETWORK_PROVIDER, minTime, 0f, this, locationHandler.getLooper());
             }
             Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
             if (last == null) {
@@ -3648,15 +3700,51 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void acquireWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) return;
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         if (pm == null) return;
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CrewSight::SessionRecorder");
-        wakeLock.acquire(4 * 60 * 60 * 1000L);
+        wakeLock.setReferenceCounted(false);
+        // Held for the whole recording. Released in haltGpsUploads and onDestroy.
+        wakeLock.acquire();
     }
 
     private void releaseWakeLock() {
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         wakeLock = null;
+    }
+
+    /** Background looper so a busy WebView cannot block location delivery. */
+    private void ensureLocationDeliveryThread() {
+        if (locationThread != null && locationThread.isAlive() && locationHandler != null) return;
+        synchronized (this) {
+            if (locationThread != null && locationThread.isAlive() && locationHandler != null) return;
+            HandlerThread thread = new HandlerThread("CrewSightLocation");
+            thread.start();
+            locationThread = thread;
+            locationHandler = new Handler(thread.getLooper());
+        }
+    }
+
+    private boolean onLocationThread() {
+        return locationHandler != null && Looper.myLooper() == locationHandler.getLooper();
+    }
+
+    private void shutdownLocationDeliveryThread() {
+        Handler handler;
+        HandlerThread thread;
+        synchronized (this) {
+            handler = locationHandler;
+            thread = locationThread;
+            locationHandler = null;
+            locationThread = null;
+        }
+        if (handler != null) {
+            handler.removeCallbacksAndMessages(null);
+        }
+        if (thread != null) {
+            thread.quitSafely();
+        }
     }
 
     private void createNotificationChannel() {
@@ -3884,13 +3972,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                     () -> postSessionEnd(p, sid, did, System.currentTimeMillis()));
         }
         uploadExecutor.execute(this::flushIngestBufferNow);
+        standbyMode = true;
         mainHandler.removeCallbacks(heartbeatRunnable);
         mainHandler.removeCallbacks(ingestFlushRunnable);
         mainHandler.removeCallbacks(pendingFlushRunnable);
-        mainHandler.removeCallbacks(gpsFlushRunnable);
+        cancelScheduledGpsFlush();
         unregisterNetworkCallback();
         unregisterSensor();
-        standbyMode = true;
         standbyAutoStartTriggered = false;
         standbyOutsideSinceMs = 0L;
         standbyInsideZoneName = "";

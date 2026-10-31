@@ -887,6 +887,31 @@ const sourceChecks = [
       && !/maybeOfferAgedLastKnownFallback/.test(nativeSrc),
   },
   {
+    name: 'GPS is requested every 1s; the sample interval only controls upload',
+    pass: /GPS_REQUEST_INTERVAL_MS = 1_000L/.test(nativeSrc)
+      && /long minTime = GPS_REQUEST_INTERVAL_MS/.test(nativeSrc)
+      && /GPS_LISTENER_QUIET_MS = 3_000L/.test(nativeSrc)
+      && /now - lastLiveCallbackWallMs < GPS_LISTENER_QUIET_MS/.test(nativeSrc)
+      && /postDelayed\(gpsFlushRunnable, GPS_REQUEST_INTERVAL_MS\)/.test(nativeSrc)
+      && /The phone is asked about every second/.test(
+        readFileSync(join(ROOT, 'apps', 'recorder-pwa', 'src', 'ui', 'app.ts'), 'utf8'),
+      )
+      && /A typed 10 s sends about every 10 s/.test(nativeSrc)
+      && !/long minTime = managerLocationIntervalMs\(\)/.test(nativeSrc),
+  },
+  {
+    name: 'location delivery is a service thread with a partial wake lock for the whole recording',
+    pass: /new HandlerThread\("CrewSightLocation"\)/.test(nativeSrc)
+      && /locationHandler\.getLooper\(\)/.test(nativeSrc)
+      && /PARTIAL_WAKE_LOCK/.test(nativeSrc)
+      && /wakeLock\.setReferenceCounted\(false\)/.test(nativeSrc)
+      && /wakeLock\.acquire\(\)/.test(nativeSrc)
+      && /releaseWakeLock\(\)/.test(nativeSrc)
+      && /re-register[\s\S]{0,180}CrewSightLocation thread/.test(nativeSrc)
+      && !/mainHandler\.getLooper\(\)/.test(nativeSrc)
+      && !/wakeLock\.acquire\(4 \* 60 \* 60/.test(nativeSrc),
+  },
+  {
     name: 'native live GNSS is LocationManager only (no fused beside the listener)',
     pass: /Do not register FusedLocationProviderClient beside this live listener/.test(nativeSrc)
       && /Fri 30 Oct 2026 09:54 same-phone Melville walk/.test(nativeSrc)
@@ -1333,12 +1358,15 @@ const out = {
 
 writeFileSync(join(HERE, '_tmp-gps-live-reporting.out.json'), JSON.stringify(out, null, 2));
 
-/** Interval floor 1s. Fresh fixes: t is now. Older than 8s: last_known, t = fixMs. */
+/** Upload interval floor 1s. The GPS request is always 1s. Fresh fixes: t is now. Older than 8s: last_known, t = fixMs. */
 function clampSampleIntervalMs(intervalMs) {
   const n = Number(intervalMs);
   if (!Number.isFinite(n)) return 1000;
   return Math.min(120_000, Math.max(1_000, Math.round(n)));
 }
+
+const GPS_REQUEST_MS = 1000;
+const GPS_QUIET_MS = 3000;
 
 function liveUploadDecision({
   now,
@@ -1350,7 +1378,8 @@ function liveUploadDecision({
   systemLastKnown,
 }) {
   const due = clampSampleIntervalMs(intervalMs);
-  const quiet = lastCallbackWallMs > 0 && now - lastCallbackWallMs >= due;
+  const requestMs = GPS_REQUEST_MS;
+  const quiet = lastCallbackWallMs > 0 && now - lastCallbackWallMs >= GPS_QUIET_MS;
   let loc = held;
   let adopted = false;
   if (quiet && systemLastKnown && systemLastKnown.fixMs > 0 && (!held || systemLastKnown.fixMs > held.fixMs)) {
@@ -1360,7 +1389,7 @@ function liveUploadDecision({
     loc = incoming;
   }
   if (!loc || !Number.isFinite(loc.lat)) {
-    return { send: false, due, adopted, reregistered: quiet, t: null, fixMs: null, source: null };
+    return { send: false, due, requestMs, adopted, reregistered: quiet, t: null, fixMs: null, source: null };
   }
   const fixMs = loc.fixMs > 0 ? loc.fixMs : null;
   const age = fixMs != null ? now - fixMs : Infinity;
@@ -1368,12 +1397,12 @@ function liveUploadDecision({
   const source = fresh ? 'manager_watch' : 'last_known';
   const t = fresh ? now : fixMs;
   if (!fresh && fixMs == null) {
-    return { send: false, due, adopted, reregistered: quiet, t: null, fixMs: null, source: null, lat: loc.lat };
+    return { send: false, due, requestMs, adopted, reregistered: quiet, t: null, fixMs: null, source: null, lat: loc.lat };
   }
   if (lastSendWallMs > 0 && now - lastSendWallMs < due) {
-    return { send: false, due, adopted, reregistered: quiet, t, fixMs, source, lat: loc.lat };
+    return { send: false, due, requestMs, adopted, reregistered: quiet, t, fixMs, source, lat: loc.lat };
   }
-  return { send: true, due, adopted, reregistered: quiet, t, fixMs, source, lat: loc.lat };
+  return { send: true, due, requestMs, adopted, reregistered: quiet, t, fixMs, source, lat: loc.lat };
 }
 
 const quietNow = Date.parse('2026-10-30T06:38:02.000Z');
@@ -1393,7 +1422,7 @@ const liveUploadCases = [
         held: heldFresh,
         lastCallbackWallMs: quietNow - 1000,
       });
-      return d.send && d.due === 3000 && d.t === quietNow && d.fixMs === heldFresh.fixMs
+      return d.send && d.due === 3000 && d.requestMs === 1000 && d.t === quietNow && d.fixMs === heldFresh.fixMs
         && d.source === 'manager_watch' && !d.reregistered;
     })(),
   },
@@ -1440,7 +1469,8 @@ const liveUploadCases = [
         held: heldFresh,
         lastCallbackWallMs: quietNow - 1000,
       });
-      return early.send === false && due.send && due.due === 20_000 && due.source === 'manager_watch';
+      return early.send === false && early.requestMs === 1000
+        && due.send && due.due === 20_000 && due.requestMs === 1000 && due.source === 'manager_watch';
     })(),
   },
   {
@@ -1514,6 +1544,53 @@ const liveUploadCases = [
       });
       return d.send && d.lat === networkFix.lat && d.t === quietNow
         && d.fixMs === networkFix.fixMs && d.source === 'manager_watch' && !d.reregistered;
+    })(),
+  },
+  {
+    name: 'a 10s interval still requests GPS every 1s and uploads the newest fix',
+    pass: (() => {
+      const early = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 10_000,
+        lastSendWallMs: quietNow - 3000,
+        held: { lat: heldFresh.lat, lon: heldFresh.lon, fixMs: quietNow - 1000 },
+        lastCallbackWallMs: quietNow - 1000,
+      });
+      const due = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 10_000,
+        lastSendWallMs: quietNow - 10_000,
+        held: { lat: heldFresh.lat, lon: heldFresh.lon, fixMs: quietNow - 1000 },
+        lastCallbackWallMs: quietNow - 1000,
+      });
+      return early.send === false && early.requestMs === 1000 && early.due === 10_000
+        && !early.reregistered
+        && due.send && due.requestMs === 1000 && due.fixMs === quietNow - 1000
+        && due.source === 'manager_watch' && due.t === quietNow;
+    })(),
+  },
+  {
+    name: 'a 10s upload interval re-requests within 3s, not after 10s',
+    pass: (() => {
+      const still = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 10_000,
+        lastSendWallMs: quietNow - 2000,
+        held: heldFresh,
+        lastCallbackWallMs: quietNow - 2000,
+        systemLastKnown: olderQuiet,
+      });
+      const quiet = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 10_000,
+        lastSendWallMs: quietNow - 3000,
+        held: heldStale,
+        lastCallbackWallMs: quietNow - 3000,
+        systemLastKnown: olderQuiet,
+      });
+      return still.reregistered === false && still.requestMs === 1000
+        && quiet.reregistered && quiet.adopted && quiet.send === false
+        && quiet.source === 'last_known' && quiet.t === olderQuiet.fixMs && quiet.t !== quietNow;
     })(),
   },
 ];
