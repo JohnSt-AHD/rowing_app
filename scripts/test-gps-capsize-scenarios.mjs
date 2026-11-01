@@ -236,8 +236,41 @@ check('native uploads stale sitting last-known so the map can decide', /Keep sta
 check('native GPS listener is the live pin (not gated on beating fused)', /Live pin is the LocationManager GPS listener/.test(nativeSrc) && /"manager_watch"/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && /MANAGER_LOCATION_MIN_MS = 1_000L/.test(nativeSrc) && /MANAGER_GPS_MIN_M = 0f/.test(nativeSrc) && /MANAGER_NETWORK_MIN_M = 0f/.test(nativeSrc) && /Do not upload every callback/.test(nativeSrc) && /mapLiveFix/.test(nativeSrc) && /Fri 30 Oct 2026 11:03 Melville walk/.test(nativeSrc) && /p50 12s/.test(nativeSrc) && /24–40s/.test(nativeSrc) && /Do not clone/.test(nativeSrc) && !/Upload this callback when it arrives/.test(nativeSrc) && !/MANAGER_CALLBACK_UPLOAD_CAP_MS/.test(nativeSrc) && !/MANAGER_LOCATION_MIN_MS = 5_000L/.test(nativeSrc) && !/MANAGER_WATCH_MIN_UPLOAD_MS/.test(nativeSrc) && !/lastManagerWatchUploadMs/.test(nativeSrc) && !/managerWatchHasFresherGpsClock/.test(nativeSrc) && !/hasFresherGpsListenerFix/.test(nativeSrc));
 check('live sample is recorder_track with acceptance time; a step over 120 km/h is dropped on the phone', /Sample interval throttles send of the map fix/.test(nativeSrc) && /Location copied = new Location\(location\)/.test(nativeSrc) && /t is the wall-clock acceptance time/.test(nativeSrc) && /fixMs stays location\.getTime\(\)/.test(nativeSrc) && /sampleT = t > 0L \? t : locFix/.test(nativeSrc) && /mapLiveAcceptedWallMs/.test(nativeSrc) && /A resend reuses that acceptance time/.test(nativeSrc) && /Do not set t=now on a resend/.test(nativeSrc) && /recorder_track/.test(nativeSrc) && /A step over 120 km\/h is dropped/.test(nativeSrc) && !/Send t and fixMs from location\.getTime\(\)/.test(nativeSrc) && !/pendingLiveUpload/.test(nativeSrc) && !/hasFresherGpsListenerFix/.test(nativeSrc) && !/uploadWindowAverageGps\(true, "stale_piggyback"\)/.test(nativeSrc) && !/source = liveFresh \? "manager_watch" : "last_known"/.test(nativeSrc));
 check('native live GNSS is LocationManager only (no fused beside the listener)', /Do not register FusedLocationProviderClient beside this live listener/.test(nativeSrc) && /Fri 30 Oct 2026 09:54 same-phone Melville walk/.test(nativeSrc) && /p50 31s/.test(nativeSrc) && /Manager 7s/.test(nativeSrc) && /without clearing the last accepted fix/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && !/LocationServices\.getFusedLocationProviderClient/.test(nativeSrc) && !/\.getCurrentLocation\(/.test(nativeSrc) && !/fusedClient\s*\.requestLocationUpdates/.test(nativeSrc) && !/registerFusedLocation\(\);/.test(nativeSrc));
+check('live GPS PendingIntent wakes the service and keeps the 120 km/h acceptance clock', /ACTION_LIVE_LOCATION/.test(nativeSrc) && /PendingIntent\.getForegroundService\(/.test(nativeSrc) && /FLAG_MUTABLE/.test(nativeSrc) && /LocationManager\.KEY_LOCATION_CHANGED/.test(nativeSrc) && /requestLocationUpdates\(\s*LocationManager\.GPS_PROVIDER,\s*minTime,\s*MANAGER_GPS_MIN_M,\s*pi\)/.test(nativeSrc) && /requestLocationUpdates\(\s*LocationManager\.NETWORK_PROVIDER,\s*minTime,\s*MANAGER_NETWORK_MIN_M,\s*pi\)/.test(nativeSrc) && /handleWokenFix/.test(nativeSrc) && /A step over 120 km\/h is dropped/.test(nativeSrc) && /mapLiveAcceptedWallMs/.test(nativeSrc) && /A resend reuses that acceptance time/.test(nativeSrc) && /Does not set t=now/.test(nativeSrc) && /newer than the held fix/.test(nativeSrc) && /FOREGROUND_SERVICE_TYPE_LOCATION/.test(nativeSrc) && !/liveGpsListener/.test(nativeSrc));
 check('native fused stall is GPS clock (fixMs/getTime) not callback silence', /isFusedGpsClockStale/.test(nativeSrc) && /gpsClockAgeMs/.test(nativeSrc) && /lastFusedGpsClockMs/.test(nativeSrc) && /Do not wait for fused to go silent/.test(nativeSrc) && /isFusedGpsClockStale\(\)\) return true/.test(nativeSrc));
 check('native queues capsize ingest while offline', /Capsize ingest queued/.test(nativeSrc));
+const manifestSrc = readFileSync(
+  join(ROOT, 'apps/recorder-native/android/app/src/main/AndroidManifest.xml'),
+  'utf8',
+);
+check(
+  'screen-off capsize wake polls a fresh accelerometer sample about once a second',
+  /ACTION_CAPSIZE_WAKE = "nz.org.rowing.recorder.CAPSIZE_WAKE"/.test(nativeSrc)
+    && /ACTION_LIVE_LOCATION = "nz.org.rowing.recorder.LIVE_LOCATION"/.test(nativeSrc)
+    && /CAPSIZE_WAKE_INTERVAL_MS = 1_000L/.test(nativeSrc)
+    && /setExactAndAllowWhileIdle\(/.test(nativeSrc)
+    && /setAlarmClock\(/.test(nativeSrc)
+    && /setAndAllowWhileIdle\(/.test(nativeSrc)
+    && /PendingIntent\.getForegroundService\(/.test(nativeSrc)
+    && /scheduleCapsizeWake\(\)/.test(nativeSrc)
+    && /cancelCapsizeWake\(\)/.test(nativeSrc)
+    && /pollFreshCapsizeSample\(\)/.test(nativeSrc)
+    && /isAccelSampleFresh\(/.test(nativeSrc)
+    && /Do not invent a tip/.test(nativeSrc)
+    && /lastAx\/lastAy\/lastAz/.test(nativeSrc)
+    && /CapsizeMonitorService\.this\.onSensorChanged\(event\)/.test(nativeSrc)
+    && /void handleWokenFix\(Location location\) \{[\s\S]{0,500}pollFreshCapsizeSample\(\)/.test(nativeSrc)
+    && /isCapsizeWakeIntent\(intent\) && recordingServiceActive[\s\S]{0,900}pollFreshCapsizeSample\(\)/.test(nativeSrc)
+    && !/isCapsizeWakeIntent\(intent\) && recordingServiceActive\) \{[\s\S]{0,900}capsizeSinceMs\s*=\s*0/.test(nativeSrc)
+    && /recordingServiceActive = true;\s*scheduleCapsizeWake\(\)/.test(nativeSrc)
+    && /void haltGpsUploads\(\) \{[\s\S]{0,400}cancelCapsizeWake\(\)/.test(nativeSrc)
+    && /void onDestroy\(\) \{[\s\S]{0,400}cancelCapsizeWake\(\)/.test(nativeSrc)
+    && /void enterStandbyModeFromRecording\(\) \{[\s\S]{0,2200}cancelCapsizeWake\(\)/.test(nativeSrc)
+    && /showAlertNotification\(\);[\s\S]{0,250}enqueueCapsizeSample\(/.test(nativeSrc)
+    && /requestLocationUpdates\(\s*LocationManager\.GPS_PROVIDER,\s*minTime,\s*MANAGER_GPS_MIN_M,\s*pi\)/.test(nativeSrc)
+    && /USE_EXACT_ALARM/.test(manifestSrc)
+    && /SCHEDULE_EXACT_ALARM/.test(manifestSrc),
+);
 check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
 check('explainer has no GPS-regain scenario', !/gps-regain|last-known|GPS live/.test(explainerSrc) && !/GPS regain/.test(explainerHtml));
 

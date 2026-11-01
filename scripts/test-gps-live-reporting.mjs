@@ -949,6 +949,35 @@ const sourceChecks = [
       && !/wakeLock\.acquire\(4 \* 60 \* 60/.test(nativeSrc),
   },
   {
+    name: 'live GPS PendingIntent wakes the service and keeps the 120 km/h acceptance clock',
+    pass: /ACTION_LIVE_LOCATION/.test(nativeSrc)
+      && /PendingIntent\.getForegroundService\(/.test(nativeSrc)
+      && /FLAG_MUTABLE/.test(nativeSrc)
+      && /LocationManager\.KEY_LOCATION_CHANGED/.test(nativeSrc)
+      && /requestLocationUpdates\(\s*LocationManager\.GPS_PROVIDER,\s*minTime,\s*MANAGER_GPS_MIN_M,\s*pi\)/.test(nativeSrc)
+      && /requestLocationUpdates\(\s*LocationManager\.NETWORK_PROVIDER,\s*minTime,\s*MANAGER_NETWORK_MIN_M,\s*pi\)/.test(nativeSrc)
+      && /GPS_REQUEST_INTERVAL_MS = 1_000L/.test(nativeSrc)
+      && /MANAGER_GPS_MIN_M = 0f/.test(nativeSrc)
+      && /MANAGER_NETWORK_MIN_M = 0f/.test(nativeSrc)
+      && /handleWokenFix/.test(nativeSrc)
+      && /acceptLiveFix\(/.test(nativeSrc)
+      && /A step over 120 km\/h is dropped/.test(nativeSrc)
+      && /mapLiveAcceptedWallMs/.test(nativeSrc)
+      && /A resend reuses that acceptance time/.test(nativeSrc)
+      && /Does not set t=now/.test(nativeSrc)
+      && /newer than the held fix/.test(nativeSrc)
+      && /FOREGROUND_SERVICE_TYPE_LOCATION/.test(nativeSrc)
+      && /Android 14\+ type argument/.test(nativeSrc)
+      && /Location foreground service for the whole recording/.test(nativeSrc)
+      && /foregroundServiceType="location/.test(
+        readFileSync(
+          join(ROOT, 'apps', 'recorder-native', 'android', 'app', 'src', 'main', 'AndroidManifest.xml'),
+          'utf8',
+        ),
+      )
+      && !/liveGpsListener/.test(nativeSrc),
+  },
+  {
     name: 'native live GNSS is LocationManager only (no fused beside the listener)',
     pass: /Do not register FusedLocationProviderClient beside this live listener/.test(nativeSrc)
       && /Fri 30 Oct 2026 09:54 same-phone Melville walk/.test(nativeSrc)

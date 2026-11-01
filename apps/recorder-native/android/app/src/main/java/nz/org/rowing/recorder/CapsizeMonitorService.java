@@ -74,6 +74,24 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final int NOTIF_ID_CREW_MESSAGE = 9105;
     private static final int NOTIF_ID_ZONE_WARNING = 9106;
     private static final int BOOT_RESUME_ALARM_REQUEST = 9104;
+    /**
+     * LocationManager delivers fixes here. Explicit service intent, mutable so
+     * the system can attach the location extra. Not a LocationListener.
+     */
+    public static final String ACTION_LIVE_LOCATION = "nz.org.rowing.recorder.LIVE_LOCATION";
+    private static final int LIVE_LOCATION_PI_REQUEST = 9107;
+    /**
+     * AlarmManager starts this service about once a second while capsize
+     * monitoring is on. Not ACTION_LIVE_LOCATION: this wake must not reset the
+     * session or upload another GPS fix. A frozen process does not get
+     * SensorEventListener callbacks; this pending intent still runs.
+     */
+    public static final String ACTION_CAPSIZE_WAKE = "nz.org.rowing.recorder.CAPSIZE_WAKE";
+    private static final int CAPSIZE_WAKE_PI_REQUEST = 9108;
+    /** One-shot exact alarm. Rescheduled from the wake. Not slower than 2s. */
+    private static final long CAPSIZE_WAKE_INTERVAL_MS = 1_000L;
+    /** No fresh accelerometer sample inside this bound: do not invent a tip. */
+    private static final long CAPSIZE_SAMPLE_TIMEOUT_MS = 800L;
     private static final String BOOT_RETRY_COUNT_KEY = "bootRetryCount";
     private static final int MAX_BOOT_RESUME_RETRIES = 20;
     /** Keep trying after fast retries exhaust — user may unlock phone later. */
@@ -156,6 +174,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      * Do not set t=now on an old coordinate.
      * If no callback arrives for GPS_LISTENER_QUIET_MS (about 2–3 s, not the
      * upload interval), re-register the 1 s request.
+     * The live request is a PendingIntent (ACTION_LIVE_LOCATION). A
+     * LocationListener only runs while this process is scheduled, and leaving
+     * the metrics screen was freezing it. LocationManager starts this service
+     * with the fix. min time stays 1000 ms and min distance stays 0.
      * Fri 30 Oct 2026 09:54 same-phone Melville walk: fused held the GNSS chip
      * and this listener's gaps were p50 31s while Manager on the same phone
      * was p50 7s.
@@ -263,6 +285,26 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** After athlete recall, do not re-raise until the boat is upright again. */
     private boolean capsizeRecalledHold;
     private long capsizeSinceMs;
+    /** One-shot accel read after a wake. The continuous listener stays registered. */
+    private SensorEventListener capsizePollListener;
+    private boolean capsizePollInFlight;
+    private boolean capsizePollGotFresh;
+    /** Drops a second delivery of the same accel event (continuous listener plus wake poll). */
+    private long lastAccelEventNs;
+    private final Runnable capsizePollTimeout =
+            () -> {
+                SensorEventListener listener = capsizePollListener;
+                boolean gotFresh = capsizePollGotFresh;
+                capsizePollListener = null;
+                capsizePollInFlight = false;
+                capsizePollGotFresh = false;
+                if (sensorManager != null && listener != null) {
+                    sensorManager.unregisterListener(listener);
+                }
+                if (gotFresh) return;
+                // No fresh sample. Do not invent a tip from lastAx/lastAy/lastAz.
+                Log.w(TAG, "Capsize wake — no fresh accel sample");
+            };
     private long lastCapsizeUploadMs;
     private long lastCapsizeAlertSoundMs;
     private long lastBatteryReportMs;
@@ -291,8 +333,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      */
     private long lastFusedGpsClockMs;
     private boolean gpsSatelliteFallbackActive;
-    /** LocationManager GPS/network listener. This is the live map pin, same as Coach. */
-    private LocationListener liveGpsListener;
     /** Last GPS/network listener fix. Not a getLastKnownLocation snapshot. */
     private Location latestManagerWatchLocation;
     /**
@@ -331,6 +371,12 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private double sittingLockLon = Double.NaN;
     /** Stop() sets this immediately so START_STICKY cannot keep ingesting. */
     private volatile boolean recordingHalted;
+    /**
+     * True after this process has called startForeground for the current
+     * recording or standby. A live-location PendingIntent must not run the
+     * session-start reset while this is set.
+     */
+    private boolean recordingServiceActive;
     private final ArrayList<GpsWindowFix> gpsWindowBuffer = new ArrayList<>();
     private long lastWindowCollectWallMs;
     private int nativeGpsCount;
@@ -461,11 +507,40 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // A fix can start this service while the activity is gone. Do not
+        // reset the held fix, its acceptance time, or the session.
+        if (isLiveLocationIntent(intent) && recordingServiceActive) {
+            if (recordingHalted) {
+                return START_NOT_STICKY;
+            }
+            acquireWakeLock();
+            startForegroundWithTypes(false);
+            enqueueWokenLocation(intent);
+            return START_STICKY;
+        }
+        if (isCapsizeWakeIntent(intent) && recordingServiceActive) {
+            // Thaw only. Do not reset the session, the hold timer, or the WebView.
+            if (recordingHalted) {
+                cancelCapsizeWake();
+                return START_NOT_STICKY;
+            }
+            if (!capsizeMonitoringActive()) {
+                cancelCapsizeWake();
+                return START_STICKY;
+            }
+            acquireWakeLock();
+            startForegroundWithTypes(false);
+            scheduleCapsizeWake();
+            pollFreshCapsizeSample();
+            return START_STICKY;
+        }
         promoteDeviceProtectedSessionPrefs();
+        boolean liveLocation = isLiveLocationIntent(intent);
+        boolean capsizeWake = isCapsizeWakeIntent(intent);
         boolean bootResume = intent != null && intent.getBooleanExtra("bootResume", false);
         boolean standbyResume =
                 intent != null && intent.getBooleanExtra("standbyResume", false);
-        if (intent != null && !bootResume && !standbyResume) {
+        if (intent != null && !bootResume && !standbyResume && !liveLocation && !capsizeWake) {
             saveConfigFromIntent(intent);
             lastNativeGeofenceSignature = "";
         }
@@ -484,7 +559,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
         boolean recordingActive = prefs.getBoolean("recordingActive", false);
         if (standbyMode && !recordingActive) {
-            return startStandbyCommand(bootResume || standbyResume);
+            int started = startStandbyCommand(bootResume || standbyResume);
+            if (started == START_STICKY && liveLocation) {
+                enqueueWokenLocation(intent);
+            }
+            return started;
         }
 
         recordingHalted = false;
@@ -533,6 +612,14 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         scheduleIngestFlush();
         uploadExecutor.execute(() -> enqueueSessionStartSample(System.currentTimeMillis()));
         scheduleHeartbeat();
+        recordingServiceActive = true;
+        scheduleCapsizeWake();
+        if (capsizeWake) {
+            pollFreshCapsizeSample();
+        }
+        if (liveLocation) {
+            enqueueWokenLocation(intent);
+        }
         Log.i(
             TAG,
             (bootResume ? "Boot-resumed " : "")
@@ -577,11 +664,15 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 (resumed ? "Boot-resumed " : "")
                         + "Native geofence standby armed gpsIntervalMs="
                         + STANDBY_GPS_INTERVAL_MS);
+        recordingServiceActive = true;
+        cancelCapsizeWake();
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
+        recordingServiceActive = false;
+        cancelCapsizeWake();
         mainHandler.removeCallbacks(standbyDwellRunnable);
         if (runningInstance != null && runningInstance.get() == this) {
             runningInstance.clear();
@@ -647,6 +738,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return;
         }
         if (type != Sensor.TYPE_ACCELEROMETER) return;
+        if (event.timestamp > 0L && event.timestamp == lastAccelEventNs) return;
+        if (event.timestamp > 0L) lastAccelEventNs = event.timestamp;
         float ax = event.values[0];
         float ay = event.values[1];
         float az = event.values[2];
@@ -678,8 +771,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     @Override
     public void onLocationChanged(Location location) {
+        // Not registered. Live GPS is the ACTION_LIVE_LOCATION PendingIntent.
         if (location == null) return;
-        // Copy once so Android cannot recycle the callback object.
         deliverLocation(new Location(location));
     }
 
@@ -1415,7 +1508,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      * No onLocationChanged for about 2–3 s. Remove and re-register the 1 s
      * GPS+network request on the CrewSightLocation thread, not the UI thread.
      * Do not wait for the upload interval. A later getTime() from
-     * getLastKnownLocation replaces the held fix. Does not set t=now.
+     * getLastKnownLocation replaces the held fix and stores this wake as the
+     * acceptance time. Does not set t=now on a later quiet resend.
      */
     private void recoverQuietLiveListener() {
         if (standbyMode || recordingHalted || !enableGps) return;
@@ -1448,7 +1542,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * Later location.getTime() wins. A missing satellite clock does not win.
-     * Copied into mapLiveFix. Does not set t=now.
+     * On wake, accept getLastKnownLocation only when it is newer than the held fix
+     * and the 120 km/h step passes. Acceptance time is this wake.
+     * Does not set t=now on an older coordinate or on a later quiet resend.
      */
     private void adoptNewerLastKnownFix() {
         if (locationManager == null) return;
@@ -1467,6 +1563,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         Location best = newerBySatelliteTime(gps, net);
         if (best == null || !isGpsFixUsable(best)) return;
         Location copy = new Location(best);
+        if (mapLiveFix != null && mapLiveFix.getTime() > 0L && copy.getTime() <= mapLiveFix.getTime()) {
+            return;
+        }
         if (!acceptLiveFix(copy)) return;
         noteLiveFixAccepted(copy);
         cacheManagerWatchOnly(copy);
@@ -2557,6 +2656,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void haltGpsUploads() {
         recordingHalted = true;
         enableGps = false;
+        cancelCapsizeWake();
         cancelScheduledGpsFlush();
         mainHandler.removeCallbacks(heartbeatRunnable);
         mainHandler.removeCallbacks(ingestFlushRunnable);
@@ -2862,6 +2962,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private boolean startForegroundWithTypes() {
+        return startForegroundWithTypes(true);
+    }
+
+    /**
+     * Location foreground service for the whole recording, including after the
+     * activity leaves the metrics screen. API 29+ passes
+     * FOREGROUND_SERVICE_TYPE_LOCATION. Android 14+ type argument also passes
+     * SPECIAL_USE for capsize monitoring.
+     */
+    private boolean startForegroundWithTypes(boolean clearSessionOnFailure) {
         Notification notification = buildForegroundNotification();
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -2876,8 +2986,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return true;
         } catch (Exception e) {
             Log.e(TAG, "startForeground failed: " + e.getMessage());
-            clearRecordingSession(getApplicationContext());
-            stopSelf();
+            if (clearSessionOnFailure) {
+                clearRecordingSession(getApplicationContext());
+                stopSelf();
+            }
             return false;
         }
     }
@@ -3357,6 +3469,159 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         networkCallback = null;
     }
 
+    private static boolean isCapsizeWakeIntent(Intent intent) {
+        return intent != null && ACTION_CAPSIZE_WAKE.equals(intent.getAction());
+    }
+
+    /** Recording is up, motion and capsize are on, and geofence standby is not. */
+    private boolean capsizeMonitoringActive() {
+        if (!recordingServiceActive || recordingHalted || standbyMode || !enableMotion) return false;
+        loadEconomyFromPrefs();
+        return enableCapsizeDetection && sensorManager != null && accelerometer != null;
+    }
+
+    private boolean exactAlarmsAllowed() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true;
+        AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+        return am != null && am.canScheduleExactAlarms();
+    }
+
+    /**
+     * Explicit foreground-service intent. Distinct request code and action from
+     * the live GPS PendingIntent, so this wake does not deliver a location.
+     */
+    private PendingIntent capsizeWakePendingIntent() {
+        Intent intent = new Intent(this, CapsizeMonitorService.class);
+        intent.setAction(ACTION_CAPSIZE_WAKE);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return PendingIntent.getForegroundService(this, CAPSIZE_WAKE_PI_REQUEST, intent, flags);
+        }
+        return PendingIntent.getService(this, CAPSIZE_WAKE_PI_REQUEST, intent, flags);
+    }
+
+    /** Arm the next wake. Cancels it when capsize monitoring is off. */
+    private void scheduleCapsizeWake() {
+        if (!capsizeMonitoringActive()) {
+            cancelCapsizeWake();
+            return;
+        }
+        AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+        if (am == null) return;
+        long triggerElapsed = SystemClock.elapsedRealtime() + CAPSIZE_WAKE_INTERVAL_MS;
+        if (!scheduleExactCapsizeWake(am, triggerElapsed, capsizeWakePendingIntent())) {
+            Log.e(TAG, "Capsize wake alarm was not scheduled");
+        }
+    }
+
+    /**
+     * Prefer setExactAndAllowWhileIdle (fires while idle, no alarm-clock icon).
+     * If that cannot be scheduled, still wake this service: setAlarmClock, then
+     * setAndAllowWhileIdle. Do not no-op.
+     */
+    private boolean scheduleExactCapsizeWake(AlarmManager am, long triggerElapsed, PendingIntent pi) {
+        if (exactAlarmsAllowed()) {
+            try {
+                am.setExactAndAllowWhileIdle(
+                        AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerElapsed, pi);
+                return true;
+            } catch (SecurityException e) {
+                Log.w(TAG, "setExactAndAllowWhileIdle denied for capsize wake", e);
+            }
+        } else {
+            Log.w(TAG, "Exact alarms not allowed — capsize wake uses a fallback");
+        }
+        try {
+            long triggerRtc = System.currentTimeMillis() + CAPSIZE_WAKE_INTERVAL_MS;
+            am.setAlarmClock(new AlarmManager.AlarmClockInfo(triggerRtc, null), pi);
+            Log.w(TAG, "Capsize wake scheduled with setAlarmClock");
+            return true;
+        } catch (SecurityException e) {
+            Log.w(TAG, "setAlarmClock denied for capsize wake", e);
+        }
+        try {
+            am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerElapsed, pi);
+            Log.w(TAG, "Capsize wake scheduled with setAndAllowWhileIdle");
+            return true;
+        } catch (SecurityException e) {
+            Log.e(TAG, "setAndAllowWhileIdle denied for capsize wake", e);
+            return false;
+        }
+    }
+
+    private void cancelCapsizeWake() {
+        mainHandler.removeCallbacks(capsizePollTimeout);
+        SensorEventListener listener = capsizePollListener;
+        capsizePollListener = null;
+        capsizePollInFlight = false;
+        capsizePollGotFresh = false;
+        if (sensorManager != null && listener != null) {
+            sensorManager.unregisterListener(listener);
+        }
+        AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+        if (am == null) return;
+        try {
+            am.cancel(capsizeWakePendingIntent());
+        } catch (Exception e) {
+            Log.w(TAG, "cancel capsize wake failed", e);
+        }
+    }
+
+    /**
+     * Accelerometer read for a wake. Fresh events go through onSensorChanged
+     * (same gravity filter and updateCapsize) until the timeout. The screen-on
+     * listener stays registered. Does not read lastAx/lastAy/lastAz and does
+     * not reset capsizeSinceMs. No sample before the timeout: do not invent a tip.
+     */
+    private void pollFreshCapsizeSample() {
+        if (!capsizeMonitoringActive()) return;
+        if (capsizePollInFlight) return;
+        capsizePollInFlight = true;
+        capsizePollGotFresh = false;
+        final long requestedAtNs = SystemClock.elapsedRealtimeNanos();
+        SensorEventListener listener =
+                new SensorEventListener() {
+                    @Override
+                    public void onSensorChanged(SensorEvent event) {
+                        if (event == null
+                                || event.sensor == null
+                                || event.sensor.getType() != Sensor.TYPE_ACCELEROMETER) {
+                            return;
+                        }
+                        if (this != capsizePollListener) return;
+                        if (!isAccelSampleFresh(event, requestedAtNs)) return;
+                        if (!capsizeMonitoringActive()) return;
+                        capsizePollGotFresh = true;
+                        CapsizeMonitorService.this.onSensorChanged(event);
+                    }
+
+                    @Override
+                    public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+                };
+        capsizePollListener = listener;
+        boolean armed =
+                sensorManager.registerListener(
+                        listener, accelerometer, SensorManager.SENSOR_DELAY_GAME, mainHandler);
+        if (!armed) {
+            capsizePollListener = null;
+            capsizePollInFlight = false;
+            return;
+        }
+        mainHandler.postDelayed(capsizePollTimeout, CAPSIZE_SAMPLE_TIMEOUT_MS);
+    }
+
+    /**
+     * Reject a sample taken well before this wake (pre-freeze cache). A missing
+     * or unrelated sensor clock still counts as a callback after registration.
+     */
+    private static boolean isAccelSampleFresh(SensorEvent event, long requestedElapsedNs) {
+        long ts = event.timestamp;
+        if (ts <= 0L) return true;
+        long skew = ts > requestedElapsedNs ? ts - requestedElapsedNs : requestedElapsedNs - ts;
+        if (skew > 3_600_000_000_000L) return true;
+        return ts + 500_000_000L >= requestedElapsedNs;
+    }
+
     private void registerSensors() {
         if (sensorManager == null) return;
         if (enableMotion && accelerometer != null) {
@@ -3638,35 +3903,102 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         savePulseDiagnostics();
     }
 
-    private void ensureLiveGpsListener() {
-        if (liveGpsListener != null) return;
-                liveGpsListener =
-                new LocationListener() {
-                    @Override
-                    public void onLocationChanged(Location location) {
-                        if (location == null) return;
-                        lastLiveCallbackWallMs = System.currentTimeMillis();
-                        // One copied GPS fix. Android must not recycle it.
-                        // The landscape map and the upload both read this object.
-                        Location copied = new Location(location);
-                        deliverLocation(copied);
-                    }
+    private static boolean isLiveLocationIntent(Intent intent) {
+        return intent != null && ACTION_LIVE_LOCATION.equals(intent.getAction());
+    }
 
-                    @Override
-                    public void onStatusChanged(String provider, int status, Bundle extras) {}
+    /** Location extra LocationManager attaches when it sends the PendingIntent. */
+    private static Location locationFromIntent(Intent intent) {
+        if (!isLiveLocationIntent(intent)) return null;
+        Location loc;
+        if (Build.VERSION.SDK_INT >= 33) {
+            loc = intent.getParcelableExtra(LocationManager.KEY_LOCATION_CHANGED, Location.class);
+        } else {
+            loc = locationExtraBeforeTiramisu(intent);
+        }
+        return loc;
+    }
 
-                    @Override
-                    public void onProviderEnabled(String provider) {}
+    @SuppressWarnings("deprecation")
+    private static Location locationExtraBeforeTiramisu(Intent intent) {
+        Object extra = intent.getParcelableExtra(LocationManager.KEY_LOCATION_CHANGED);
+        return extra instanceof Location ? (Location) extra : null;
+    }
 
-                    @Override
-                    public void onProviderDisabled(String provider) {}
-                };
+    /**
+     * Mutable so LocationManager can write the fix into the intent. Explicit
+     * component, so a frozen process is started even after the activity pauses.
+     * getForegroundService is what Android 8+ allows from a location delivery.
+     */
+    private PendingIntent liveLocationPendingIntent() {
+        Intent intent = new Intent(this, CapsizeMonitorService.class);
+        intent.setAction(ACTION_LIVE_LOCATION);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            flags |= PendingIntent.FLAG_MUTABLE;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return PendingIntent.getForegroundService(this, LIVE_LOCATION_PI_REQUEST, intent, flags);
+        }
+        return PendingIntent.getService(this, LIVE_LOCATION_PI_REQUEST, intent, flags);
+    }
+
+    private void enqueueWokenLocation(Intent intent) {
+        final Location delivered = locationFromIntent(intent);
+        ensureLocationDeliveryThread();
+        locationHandler.post(() -> handleWokenFix(delivered));
+    }
+
+    /**
+     * PendingIntent woke the process, or the newest fix is only in
+     * getLastKnownLocation. One copied fix goes through acceptLiveFix
+     * (real position, 120 km/h, null island, no accuracy cutoff). Acceptance
+     * time is stored once. A resend of the same held fix does not refresh it.
+     * Upload stays on the sample interval. The metrics map reads this same fix.
+     */
+    private void handleWokenFix(Location location) {
+        // Same fresh-sample capsize poll as ACTION_CAPSIZE_WAKE. Do not use lastAx.
+        if (!recordingHalted) {
+            mainHandler.post(() -> pollFreshCapsizeSample());
+        }
+        if (recordingHalted || !enableGps) return;
+        lastLiveCallbackWallMs = System.currentTimeMillis();
+        Location before = mapLiveFix;
+        if (location != null) {
+            // One copied GPS fix. Android must not recycle it.
+            // The landscape map and the upload both read this object.
+            Location copied = new Location(location);
+            deliverLocation(copied);
+        }
+        Location afterDelivery = mapLiveFix;
+        adoptNewerLastKnownFix();
+        if (mapLiveFix != null && mapLiveFix != afterDelivery) {
+            Location adopted = mapLiveFix;
+            mainHandler.post(
+                    () -> {
+                        if (standbyMode) {
+                            handleStandbyLocation(adopted);
+                            return;
+                        }
+                        maybeApplyGeofenceEconomy(adopted.getLatitude(), adopted.getLongitude());
+                        maybeNotifyZoneEntry(adopted.getLatitude(), adopted.getLongitude());
+                    });
+        }
+        if (standbyMode) return;
+        boolean deliveryAccepted = mapLiveFix != before && afterDelivery != before;
+        if (!deliveryAccepted || mapLiveFix != afterDelivery) {
+            uploadLiveFixIfDue(location != null);
+        }
     }
 
     private void removeLiveGpsUpdates() {
-        if (locationManager == null || liveGpsListener == null) return;
+        if (locationManager == null) return;
         try {
-            locationManager.removeUpdates(liveGpsListener);
+            locationManager.removeUpdates(liveLocationPendingIntent());
+        } catch (SecurityException ignored) {
+        }
+        try {
+            locationManager.removeUpdates(this);
         } catch (SecurityException ignored) {
         }
     }
@@ -3674,9 +4006,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /**
      * Sole live GNSS subscription. Android is asked about every 1 s.
      * GPS and network min distance 0. The sample interval only throttles upload.
+     * One PendingIntent owns the request. A LocationListener is not registered
+     * beside it, so the same fix is not uploaded twice.
      * Capsize stays on the accelerometer.
-     * Geofence and the session log use these listener fixes. One last-known
-     * seed prefers GPS, else network. Do not register fused beside this listener.
+     * Geofence and the session log use these fixes. One last-known
+     * seed prefers GPS, else network. Do not register fused beside this request.
      */
     private void startGpsSatelliteFallback() {
         ensureLocationDeliveryThread();
@@ -3697,11 +4031,20 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             }
         }
         if (seed != null) {
-            deliverLocation(new Location(seed));
+            Location copy = new Location(seed);
+            // An older last-known must not replace the held fix or refresh t.
+            if (mapLiveFix == null || mapLiveFix.getTime() <= 0L || copy.getTime() > mapLiveFix.getTime()) {
+                deliverLocation(copy);
+            }
         }
     }
 
-    /** Register GPS and network on the CrewSightLocation looper. Returns false when already registered or denied. */
+    /**
+     * Register GPS and network with a PendingIntent so a fix starts this
+     * service when the process is suspended. Returns false when already
+     * registered or denied. min time 1000 ms, min distance 0.
+     * Do not refresh the acceptance time on re-register.
+     */
     private boolean requestLiveLocationUpdates() {
         ensureLocationDeliveryThread();
         if (gpsSatelliteFallbackActive) return false;
@@ -3710,8 +4053,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 != PackageManager.PERMISSION_GRANTED) {
             return false;
         }
-        ensureLiveGpsListener();
         long minTime = GPS_REQUEST_INTERVAL_MS;
+        PendingIntent pi = liveLocationPendingIntent();
         boolean any = false;
         try {
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
@@ -3719,8 +4062,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         LocationManager.GPS_PROVIDER,
                         minTime,
                         MANAGER_GPS_MIN_M,
-                        liveGpsListener,
-                        locationHandler.getLooper());
+                        pi);
                 any = true;
             }
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
@@ -3728,12 +4070,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         LocationManager.NETWORK_PROVIDER,
                         minTime,
                         MANAGER_NETWORK_MIN_M,
-                        liveGpsListener,
-                        locationHandler.getLooper());
+                        pi);
                 any = true;
             }
         } catch (SecurityException e) {
-            Log.e(TAG, "GPS/network live listener permission error", e);
+            Log.e(TAG, "GPS/network PendingIntent permission error", e);
             return false;
         }
         if (!any) {
@@ -3743,7 +4084,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         gpsSatelliteFallbackActive = true;
         // Quiet-timer only. Do not refresh the acceptance time on re-register.
         lastLiveCallbackWallMs = System.currentTimeMillis();
-        Log.i(TAG, "GPS+network manager-watch listener registered (" + minTime + "ms, minDistance 0)");
+        Log.i(TAG, "GPS+network PendingIntent wake registered (" + minTime + "ms, minDistance 0)");
         return true;
     }
 
@@ -3754,35 +4095,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         Log.i(TAG, "Satellite GPS fallback cleared");
     }
 
+    /** Not the live path. Live GPS is the PendingIntent in requestLiveLocationUpdates. */
     private void registerLegacyLocation() {
-        if (locationManager == null) {
-            Log.e(TAG, "No LocationManager");
-            return;
-        }
-        long minTime = locationTrackingIntervalMs();
-        ensureLocationDeliveryThread();
-        try {
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                        LocationManager.GPS_PROVIDER, minTime, 0f, this, locationHandler.getLooper());
-            }
-            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                        LocationManager.NETWORK_PROVIDER, minTime, 0f, this, locationHandler.getLooper());
-            }
-            Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-            if (last == null) {
-                last = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-            }
-            if (last != null && isGpsFixFresh(last)) {
-                deliverLocation(new Location(last));
-            } else if (last != null) {
-                cacheGpsLocation(new Location(last));
-            }
-            Log.i(TAG, "Legacy location updates registered (" + minTime + "ms)");
-        } catch (SecurityException e) {
-            Log.e(TAG, "Location permission error", e);
-        }
+        startGpsSatelliteFallback();
     }
 
     private void unregisterLocation() {
@@ -4066,6 +4381,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         schedulePendingFlush();
         scheduleIngestFlush();
         scheduleHeartbeat();
+        scheduleCapsizeWake();
     }
 
     private void enterStandbyModeFromRecording() {
@@ -4083,6 +4399,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         uploadExecutor.execute(this::flushIngestBufferNow);
         standbyMode = true;
+        cancelCapsizeWake();
         mainHandler.removeCallbacks(heartbeatRunnable);
         mainHandler.removeCallbacks(ingestFlushRunnable);
         mainHandler.removeCallbacks(pendingFlushRunnable);
