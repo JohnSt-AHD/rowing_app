@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { MotionAnalyzer, analyzeMotionWindow } from '../packages/motion-analysis/index.js';
 
 /**
@@ -109,6 +110,27 @@ function synthStrongFinishDip(spm, seconds, hz) {
 
 expectSpm('Strong finish-dip 22spm', synthStrongFinishDip(22, 12, 25), 22, 3.5);
 expectSpm('Strong finish-dip 28spm', synthStrongFinishDip(28, 12, 25), 28, 3.5);
+
+/**
+ * Sunday 1 Nov 2026 NZ morning pieces (targets 20 / 25 / 30).
+ * The previous detector counted both bumps in a stroke, so these same
+ * excerpts came out near double (about 40 or 46) or near half (about 16).
+ */
+const field = JSON.parse(
+  fs.readFileSync(new URL('./fixtures/stroke-rate-nov1-2026.json', import.meta.url), 'utf8'),
+);
+for (const c of field.cases) {
+  const samples = c.samples.map(([t, ax, ay, az]) => ({
+    t,
+    motion: { ax, ay, az },
+  }));
+  expectSpm(
+    `Nov 1 ${c.id} (old detector ${c.oldDetectorSpm} spm)`,
+    samples,
+    c.target,
+    c.tolerance ?? 3,
+  );
+}
 
 // Capsize uses a slow gravity EMA — hold inverted long enough for gz to flip.
 const capsize = new MotionAnalyzer();

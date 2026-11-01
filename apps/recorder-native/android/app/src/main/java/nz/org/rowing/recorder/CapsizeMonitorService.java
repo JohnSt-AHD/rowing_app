@@ -103,7 +103,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final int STROKE_BUF_CAP = 256;
     private static final long STROKE_BUF_MS = 8000L;
     private static final long STROKE_COMPUTE_MIN_MS = 500L;
-    private static final int STROKE_HP_WINDOW_MS = 450;
+    /** Long enough to smooth a drive double-peak without erasing the stroke cycle. */
+    private static final int STROKE_HP_WINDOW_MS = 550;
     private static final int MAX_PENDING_BATCHES = 60;
     private static final int MAX_PENDING_FLUSH_PER_CYCLE = 8;
     private static final int MAX_PENDING_FLUSH_ON_SUCCESS = 4;
@@ -168,6 +169,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private static final long MANAGER_LOCATION_MAX_MS = 120_000L;
     private static final float MANAGER_GPS_MIN_M = 0f;
     private static final float MANAGER_NETWORK_MIN_M = 0f;
+    /** 120 km/h. A faster step from the last accepted fix is dropped. */
+    private static final double MAX_ACCEPTED_STEP_MPS = 120.0 / 3.6;
+    /** Live upload tag. Server plots this source with no jump filter. Not manager_watch. */
+    private static final String RECORDER_TRACK_SOURCE = "recorder_track";
     private static final float FUSED_FREEZE_M = 15f;
     /** Near-zero displacement this long while timestamps advance = restamped lock. */
     private static final long RAW_GPS_STILL_MS = 8_000L;
@@ -852,9 +857,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void deliverLocation(Location location) {
         if (!enableGps || location == null) return;
         if (isManagerWatchProvider(location)) {
-            // GPS and network both replace the held fix. Same object is the
-            // metrics-map dot and the upload. Capsize stays on the accelerometer.
-            if (!isGpsFixUsable(location)) return;
+            // GPS and network both replace the held fix when the step is at or
+            // under 120 km/h. Same object is the metrics-map dot and the upload.
+            // Capsize stays on the accelerometer.
+            if (!acceptLiveFix(location)) return;
             noteRawGpsMovement(location);
             cacheManagerWatchOnly(location);
             if (standbyMode) {
@@ -1453,10 +1459,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         Location best = newerBySatelliteTime(gps, net);
         if (best == null || !isGpsFixUsable(best)) return;
-        long bestFix = best.getTime();
-        if (bestFix <= 0L) return;
-        if (mapLiveFix != null && bestFix <= mapLiveFix.getTime()) return;
-        cacheManagerWatchOnly(new Location(best));
+        Location copy = new Location(best);
+        if (!acceptLiveFix(copy)) return;
+        cacheManagerWatchOnly(copy);
     }
 
     /** Later location.getTime() wins. A missing satellite clock does not win. */
@@ -1470,9 +1475,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * Live upload. Callback and poll both wait the full sample interval.
-     * A fresh fix (satellite age within GPS_LISTENER_FRESH_MS) is manager_watch
-     * and t is the upload clock. fixMs stays location.getTime().
-     * Older than that is last_known with t equal to getTime(). Do not set t=now.
+     * Send t and fixMs from location.getTime(). fixMs stays location.getTime().
+     * Do not set t=now. A step over 120 km/h is dropped before it is stored.
+     * A step under 120 km/h is kept, including a long gap.
      * Repeats the held fix only after the full interval when nothing newer exists.
      * The sent fix is mapLiveFix, the metrics-map dot.
      * Sample interval throttles send of the map fix. Do not upload every callback.
@@ -1501,7 +1506,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         + due
                         + (fromCallback ? " callback" : " poll"));
         uploadExecutor.execute(
-                () -> enqueueGpsSample(live, uploadNow, true, "manager_watch", false, true));
+                () -> enqueueGpsSample(live, uploadNow, true, RECORDER_TRACK_SOURCE, false, true));
     }
 
     private void requestGpsFlush() {
@@ -1859,9 +1864,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * @param keepSatelliteTime non-live path: t and fixMs stay location.getTime().
-     * @param managerLive live pin. Fresh (age within GPS_LISTENER_FRESH_MS) is
-     *     manager_watch and t is the upload clock. Older is last_known with
-     *     t equal to location.getTime(). Do not set t=now on an old coordinate.
+     * @param managerLive live pin. Send t and fixMs from location.getTime()
+     *     as recorder_track. Do not set t=now. Do not retag sitting or last_known.
      */
     private void enqueueGpsSample(
             Location location,
@@ -1878,16 +1882,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
         long now = System.currentTimeMillis();
         long locFix = location.getTime();
-        boolean liveFresh =
-                managerLive
-                        && locFix > 0L
-                        && locFix <= now + 5_000L
-                        && now - locFix <= GPS_LISTENER_FRESH_MS;
         boolean sitting = false;
         String source = sampleSource;
         if (managerLive) {
-            if (!liveFresh && locFix <= 0L) return;
-            source = liveFresh ? "manager_watch" : "last_known";
+            if (locFix <= 0L) return;
+            source = RECORDER_TRACK_SOURCE;
         } else {
             noteSittingLock(location);
             sitting = isSittingLastKnownFix(location);
@@ -1909,11 +1908,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             long sittingFix =
                     locFix > 0L && locFix <= now + 5_000L ? locFix : latestGpsRawFixClockMs;
             final long sampleT;
-            if (managerLive && !liveFresh) {
-                // Old getTime() must not be stored with t=now.
+            if (managerLive) {
+                // Send t and fixMs from location.getTime(). Do not set t=now.
                 sampleT = locFix;
-            } else if (managerLive) {
-                sampleT = t > 0L ? t : now;
             } else if (keepSatelliteTime) {
                 // Old getTime() must not be stored with t=now.
                 if (locFix > 0L && locFix <= now + 5_000L) {
@@ -1929,9 +1926,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             }
             JSONObject gps = buildGpsJson(location, source);
             if (managerLive) {
-                long fixMs = locFix > 0L ? locFix : sampleT;
-                gps.put("fixMs", fixMs);
-                gps.put("sampleSource", liveFresh ? "manager_watch" : "last_known");
+                gps.put("fixMs", locFix);
+                gps.put("sampleSource", RECORDER_TRACK_SOURCE);
             }
             sample.put("t", sampleT);
             sample.put("gps", gps);
@@ -3070,7 +3066,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         float dt = (t1 - t0) / Math.max(1f, n - 1f);
         int radius = Math.max(2, Math.round(STROKE_HP_WINDOW_MS / Math.max(1f, dt)));
         float[] hp = new float[n];
-        float sumSq = 0f;
         for (int i = 0; i < n; i++) {
             float sum = 0f;
             int count = 0;
@@ -3081,49 +3076,103 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 }
             }
             hp[i] = raw[i] - (count > 0 ? sum / count : raw[i]);
-            sumSq += hp[i] * hp[i];
         }
-        float rms = (float) Math.sqrt(sumSq / n);
-        float minProminence = Math.max(0.08f, rms * 0.35f);
-        float minPeakMs = 60000f / STROKE_RATE_MAX;
-        float maxPeakMs = 60000f / STROKE_RATE_MIN;
-
-        int peakCount = 0;
-        long[] peakT = new long[16];
-        float[] peakV = new float[16];
-        for (int i = 2; i < n - 2; i++) {
-            float v = hp[i];
-            if (v <= hp[i - 1] || v <= hp[i + 1] || v < minProminence) continue;
-            long pt = strokeT[start + i];
-            if (peakCount > 0 && pt - peakT[peakCount - 1] < minPeakMs) {
-                if (v > peakV[peakCount - 1]) {
-                    peakT[peakCount - 1] = pt;
-                    peakV[peakCount - 1] = v;
-                }
-                continue;
-            }
-            if (peakCount < peakT.length) {
-                peakT[peakCount] = pt;
-                peakV[peakCount] = v;
-                peakCount++;
-            }
-        }
-        if (peakCount < 3) return;
-
-        int intervalCount = 0;
-        float[] intervals = new float[peakCount];
-        for (int i = 1; i < peakCount; i++) {
-            float dtMs = peakT[i] - peakT[i - 1];
-            if (dtMs >= minPeakMs && dtMs <= maxPeakMs) {
-                intervals[intervalCount++] = dtMs;
-            }
-        }
-        if (intervalCount < 2) return;
-        java.util.Arrays.sort(intervals, 0, intervalCount);
-        float medianMs = intervals[intervalCount / 2];
-        float spm = Math.round((60000f / medianMs) * 10f) / 10f;
-        if (spm < STROKE_RATE_MIN || spm > STROKE_RATE_MAX) return;
+        float spm = estimateStrokeSpm(hp, n, t0, t1);
+        if (Float.isNaN(spm)) return;
         setStrokeRate(this, spm);
+    }
+
+    /**
+     * One stroke is one full surge cycle. Counting catch and finish (or both
+     * drive peaks) reports about 2× SPM. Autocorrelation measures the repeat
+     * period; a slightly stronger two-stroke peak is not used when the half-lag
+     * peak is itself a real cycle.
+     */
+    private static float estimateStrokeSpm(float[] hp, int n, long tStart, long tEnd) {
+        if (n < 30) return Float.NaN;
+        float dt = (tEnd - tStart) / Math.max(1f, n - 1f);
+        if (dt <= 0f) return Float.NaN;
+        if (tEnd - tStart < 5500L) return Float.NaN;
+
+        float mean = 0f;
+        for (int i = 0; i < n; i++) mean += hp[i];
+        mean /= n;
+
+        float[] x = new float[n];
+        float energy = 0f;
+        for (int i = 0; i < n; i++) {
+            x[i] = hp[i] - mean;
+            energy += x[i] * x[i];
+        }
+        if (energy < 1e-3f) return Float.NaN;
+
+        int minLag = Math.max(2, Math.round(60000f / STROKE_RATE_MAX / dt));
+        int maxLag = Math.min(n - 4, Math.round(60000f / STROKE_RATE_MIN / dt));
+        if (maxLag <= minLag + 2) return Float.NaN;
+
+        float[] corr = new float[maxLag + 1];
+        float gMax = Float.NEGATIVE_INFINITY;
+        int gLag = -1;
+        for (int lag = minLag; lag <= maxLag; lag++) {
+            float c = 0f;
+            int m = n - lag;
+            for (int i = 0; i < m; i++) c += x[i] * x[i + lag];
+            c /= m;
+            corr[lag] = c;
+            if (c > gMax) {
+                gMax = c;
+                gLag = lag;
+            }
+        }
+
+        float denom = energy / n;
+        float gNorm = gMax / denom;
+        if (gNorm < 0.22f) return Float.NaN;
+
+        int chosen = gLag;
+        float halfLo = gLag * 0.42f;
+        float halfHi = gLag * 0.58f;
+        int bestHalf = -1;
+        float bestHalfN = -1f;
+        for (int lag = minLag + 1; lag <= maxLag - 1; lag++) {
+            if (lag < halfLo || lag > halfHi) continue;
+            if (corr[lag] < corr[lag - 1] || corr[lag] < corr[lag + 1]) continue;
+            float nn = corr[lag] / denom;
+            if (nn > bestHalfN) {
+                bestHalfN = nn;
+                bestHalf = lag;
+            }
+        }
+        boolean usedHalf = false;
+        if (bestHalf > 0 && bestHalfN >= 0.35f && bestHalfN >= gNorm - 0.13f) {
+            chosen = bestHalf;
+            usedHalf = true;
+        }
+        if (!usedHalf) {
+            for (int lag = minLag + 1; lag < gLag; lag++) {
+                if (corr[lag] < corr[lag - 1] || corr[lag] < corr[lag + 1]) continue;
+                float nn = corr[lag] / denom;
+                if (nn < 0.30f || nn < gNorm - 0.05f) continue;
+                chosen = lag;
+                break;
+            }
+        }
+
+        float lagF = chosen;
+        if (chosen > minLag && chosen < maxLag) {
+            float y0 = corr[chosen - 1];
+            float y1 = corr[chosen];
+            float y2 = corr[chosen + 1];
+            float d = y0 - 2f * y1 + y2;
+            if (d != 0f) {
+                float delta = 0.5f * (y0 - y2) / d;
+                if (delta > -1f && delta < 1f) lagF = chosen + delta;
+            }
+        }
+
+        float spm = Math.round((60000f / (lagF * dt)) * 10f) / 10f;
+        if (spm < STROKE_RATE_MIN || spm > STROKE_RATE_MAX) return Float.NaN;
+        return spm;
     }
 
     private static float stdDevArray(float[] values, float mean) {
@@ -3347,14 +3396,35 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         compassHeadingDeg = Float.NaN;
     }
 
-    /** Reject null-island / invalid coords only (accuracy filtered server-side for smoothing). */
+    /** Reject null-island (~11 m of 0,0) and invalid coords. No accuracy cutoff. */
     private static boolean isGpsFixUsable(Location location) {
         if (location == null) return false;
         double lat = location.getLatitude();
         double lon = location.getLongitude();
+        if (!Double.isFinite(lat) || !Double.isFinite(lon)) return false;
         if (Math.abs(lat) < 1e-4 && Math.abs(lon) < 1e-4) return false;
         if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
         return true;
+    }
+
+    /**
+     * Real position, and the step from the last accepted fix is at or under 120 km/h.
+     * A step over 120 km/h is dropped. A step under 120 km/h is kept, including a long gap.
+     * The first fix of a session is kept. Time base is location.getTime(), not the upload clock.
+     */
+    private boolean acceptLiveFix(Location location) {
+        if (!isGpsFixUsable(location)) return false;
+        long fixMs = location.getTime();
+        if (fixMs <= 0L) return false;
+        Location prev = mapLiveFix;
+        if (prev == null || prev.getTime() <= 0L) return true;
+        long dtMs = fixMs - prev.getTime();
+        double distM =
+                distanceMeters(
+                        prev.getLatitude(), prev.getLongitude(),
+                        location.getLatitude(), location.getLongitude());
+        if (dtMs <= 0L) return distM <= 0.5;
+        return distM * 3.6 <= (dtMs / 1000.0) * 120.0 + 0.05;
     }
 
     /**
@@ -3421,7 +3491,19 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             locationHandler.post(this::registerLocation);
             return;
         }
-        unregisterLocation();
+        // Re-register the 1 s request without clearing the last accepted fix.
+        removeLiveGpsUpdates();
+        if (locationManager != null) {
+            try {
+                locationManager.removeUpdates(this);
+            } catch (SecurityException ignored) {
+            }
+        }
+        if (fusedClient != null && fusedCallback != null) {
+            fusedClient.removeLocationUpdates(fusedCallback);
+            fusedCallback = null;
+        }
+        gpsSatelliteFallbackActive = false;
         startGpsSatelliteFallback();
     }
 
@@ -3524,7 +3606,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (rawFix > 0L && rawFix <= now + 5_000L) {
             latestGpsRawFixClockMs = rawFix;
         }
-        // Held fix is the uploaded coordinate. Sample t is the upload clock.
+        // Held fix is the uploaded coordinate. Sample t is location.getTime().
         long stamp = rawFix > 0L ? rawFix : now;
         saveLastGpsToPrefs(location, stamp, nativeGpsCount);
         savePulseDiagnostics();

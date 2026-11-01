@@ -1110,6 +1110,7 @@ function gpsFixesFromSamples(samples, windowMs, lastSeenMs) {
       lon,
       acc: s.gps.acc ?? null,
       spd: s.gps.spd ?? null,
+      sampleSource: s.gps.sampleSource ?? null,
     });
   }
   if (!fixes.length) return [];
@@ -3694,6 +3695,7 @@ function rejectOutlierMapPositions(positions, orgId, outlierMode = 'rowing') {
       lat: p.latitude,
       lon: p.longitude,
       acc: p.accuracy ?? null,
+      sampleSource: p.gpsSampleSource ?? null,
     };
     if (!isGpsFixOutlier(prev, fix, outlierOpts)) return p;
     metrics.gpsOutliersRejected++;

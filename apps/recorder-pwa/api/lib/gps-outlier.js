@@ -155,10 +155,15 @@ function isSittingLastKnownFix(opts = {}) {
   return true;
 }
 
+function isRecorderTrackSource(sampleSource) {
+  return String(sampleSource || '').trim() === 'recorder_track';
+}
+
 /**
  * Ingest-time clock: closer of sample t vs GPS fixMs, or server receive time
  * when a *moving* live fix is 20s+ behind (so the map pin can still move).
  * Do not restamp a non-moving last-known — Manager would stay "GPS live".
+ * recorder_track keeps location.getTime() for both t and fixMs. Do not set t=now.
  *
  * @param {number|null|undefined} sampleT
  * @param {number|null|undefined} gpsFixMs
@@ -170,6 +175,13 @@ function pickEffectiveSampleTimeMs(sampleT, gpsFixMs, now = Date.now(), sampleSo
   const nowMs = Number(now);
   const receiveMs = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
   const src = sampleSource != null ? String(sampleSource).trim() : '';
+  if (isRecorderTrackSource(src)) {
+    const fix = Number(gpsFixMs);
+    if (Number.isFinite(fix) && fix > 0) return fix;
+    const sample = Number(sampleT);
+    if (Number.isFinite(sample) && sample > 0) return sample;
+    return receiveMs;
+  }
   // last_known / cache clones keep satellite fixMs even when the client sent t=now.
   // Do not restamp sitting last-known to ingest time (1.0.57 5-min-live bug).
   if (
@@ -259,6 +271,11 @@ function gpsOutlierLimitsForMode(mode) {
  */
 function isGpsFixOutlier(prev, fix, opts = {}) {
   if (!prev || !fix) return false;
+  // Phone already dropped steps over 120 km/h. Do not apply the rowing 40 m /
+  // 7.5 m/s rule or the car 304 m rule to recorder_track. Manager is unchanged.
+  if (isRecorderTrackSource(fix.sampleSource) || isRecorderTrackSource(opts.sampleSource)) {
+    return false;
+  }
   if (
     !Number.isFinite(prev.lat) ||
     !Number.isFinite(prev.lon) ||

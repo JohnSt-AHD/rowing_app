@@ -49,12 +49,6 @@ function stdDev(values) {
   return Math.sqrt(varSum / values.length);
 }
 
-function median(values) {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)];
-}
-
 function movingAverage(values, centerIdx, radius) {
   let sum = 0;
   let n = 0;
@@ -100,100 +94,136 @@ function collectExtrema(hp, times, minProminence, minIntervalMs, kind) {
 }
 
 /**
- * Drop finish-dip / secondary markers that sit at ~half a stroke.
- * When consecutive intervals look like catch→finish→catch, keep the deeper of each pair.
- * @param {{ t: number, v: number }[]} events
- * @param {'peak'|'valley'} kind
- */
-function thinHalfStrokeMarkers(events, kind) {
-  if (events.length < 4) return events;
-  /** @type {number[]} */
-  const dts = [];
-  for (let i = 1; i < events.length; i++) dts.push(events[i].t - events[i - 1].t);
-  const med = median(dts);
-  if (med == null || med <= 0) return events;
-
-  /** @type {number[]} */
-  const paired = [];
-  for (let i = 2; i < events.length; i++) paired.push(events[i].t - events[i - 2].t);
-  const medPair = median(paired);
-  if (medPair == null) return events;
-
-  // Half-stroke pattern: pair gap ≈ 2× consecutive gap.
-  if (!(medPair > med * 1.55 && medPair < med * 2.6)) return events;
-
-  /** @type {{ t: number, v: number }[]} */
-  const out = [];
-  for (let i = 0; i < events.length; ) {
-    if (i + 1 >= events.length) {
-      out.push(events[i]);
-      break;
-    }
-    const a = events[i];
-    const b = events[i + 1];
-    const gap = b.t - a.t;
-    // Only collapse pairs that look like intra-stroke (near the short median).
-    if (gap < med * 1.35) {
-      const deeper = kind === 'valley' ? (a.v <= b.v ? a : b) : a.v >= b.v ? a : b;
-      out.push(deeper);
-      i += 2;
-    } else {
-      out.push(a);
-      i += 1;
-    }
-  }
-  return out.length >= 3 ? out : events;
-}
-
-/**
- * Keep only deep extrema (catch-scale), dropping shallow finish dips.
- * @param {{ t: number, v: number }[]} events
- * @param {'peak'|'valley'} kind
- */
-function filterByRelativeDepth(events, kind) {
-  if (events.length < 3) return events;
-  const depths = events.map((e) => Math.abs(e.v));
-  const maxDepth = Math.max(...depths);
-  if (maxDepth < 1e-6) return events;
-  // Finish dips are typically < ~45% of catch depth on hull surge.
-  const minDepth = maxDepth * 0.5;
-  const kept = events.filter((e) => Math.abs(e.v) >= minDepth);
-  return kept.length >= 3 ? kept : events;
-}
-
-/**
- * Score a candidate stroke-marker series: prefer valid SPM intervals with low spread.
- * Do not reward raw event count — that preferred drive double-peaks / finish dips.
- * @param {{ t: number, v: number }[]} events
- * @param {number} minIntervalMs
- * @param {number} maxIntervalMs
+ * SPM of one full stroke cycle from the autocorrelation of high-pass surge.
+ *
+ * A rowing stroke has two acceleration bumps (catch and finish, or the drive
+ * double-peak). The gap between every other bump is ~2× the neighbor gap for
+ * any steady rhythm, so a half-stroke test cannot tell one bump per stroke
+ * from two. Keeping both bumps reports about 2× SPM; deleting every other
+ * bump reports about half.
+ *
+ * The repeat period of the waveform is one stroke. If a peak at about twice
+ * that period is only slightly stronger, it is two strokes — use the half lag.
+ * A weak half-lag sidelobe (the extra bump inside one stroke) is ignored, so
+ * a 20 spm rhythm is not reported as 40.
+ *
+ * @param {number[]} hp
+ * @param {number[]} times
  * @param {number} minSpm
  * @param {number} maxSpm
- * @returns {{ score: number, spm: number|null, intervals: number[] }}
+ * @returns {number|null}
  */
-function scoreStrokeEvents(events, minIntervalMs, maxIntervalMs, minSpm, maxSpm) {
-  if (events.length < 3) return { score: -1, spm: null, intervals: [] };
-  /** @type {number[]} */
-  const intervals = [];
-  for (let i = 1; i < events.length; i++) {
-    const dtMs = events[i].t - events[i - 1].t;
-    if (dtMs >= minIntervalMs && dtMs <= maxIntervalMs) intervals.push(dtMs);
+function estimateStrokeSpm(hp, times, minSpm, maxSpm) {
+  const n = hp.length;
+  if (n < 30) return null;
+  const dt = (times[n - 1] - times[0]) / (n - 1);
+  if (!(dt > 0)) return null;
+  // Need about two strokes at 20 spm before a half-cycle can outvote the real one.
+  if (times[n - 1] - times[0] < 5500) return null;
+
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += hp[i];
+  mean /= n;
+
+  const x = new Array(n);
+  let energy = 0;
+  for (let i = 0; i < n; i++) {
+    x[i] = hp[i] - mean;
+    energy += x[i] * x[i];
   }
-  if (intervals.length < 2) return { score: -1, spm: null, intervals };
+  if (energy < 1e-3) return null;
 
-  const medianMs = median(intervals);
-  if (medianMs == null) return { score: -1, spm: null, intervals };
-  const spm = Math.round((60000 / medianMs) * 10) / 10;
-  if (spm < minSpm || spm > maxSpm) return { score: -1, spm: null, intervals };
+  const minLag = Math.max(2, Math.round(60000 / maxSpm / dt));
+  const maxLag = Math.min(n - 4, Math.round(60000 / minSpm / dt));
+  if (maxLag <= minLag + 2) return null;
 
-  const mean = intervals.reduce((s, v) => s + v, 0) / intervals.length;
-  const spread =
-    intervals.reduce((s, v) => s + Math.abs(v - mean), 0) / intervals.length / mean;
-  const meanDepth =
-    events.reduce((s, e) => s + Math.abs(e.v), 0) / Math.max(1, events.length);
-  // Depth + consistency; small bonus for having enough intervals (capped).
-  const score = meanDepth * 5 - spread * 12 + Math.min(intervals.length, 5) * 0.4;
-  return { score, spm, intervals };
+  const corr = new Float64Array(maxLag + 1);
+  let gMax = -Infinity;
+  let gLag = -1;
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let c = 0;
+    const m = n - lag;
+    for (let i = 0; i < m; i++) c += x[i] * x[i + lag];
+    c /= m;
+    corr[lag] = c;
+    if (c > gMax) {
+      gMax = c;
+      gLag = lag;
+    }
+  }
+
+  const denom = energy / n;
+  const gNorm = gMax / denom;
+  if (gNorm < 0.22) return null;
+
+  let chosen = gLag;
+  const halfLo = gLag * 0.42;
+  const halfHi = gLag * 0.58;
+  let bestHalf = -1;
+  let bestHalfN = -1;
+  for (let lag = minLag + 1; lag <= maxLag - 1; lag++) {
+    if (lag < halfLo || lag > halfHi) continue;
+    if (corr[lag] < corr[lag - 1] || corr[lag] < corr[lag + 1]) continue;
+    const nn = corr[lag] / denom;
+    if (nn > bestHalfN) {
+      bestHalfN = nn;
+      bestHalf = lag;
+    }
+  }
+  let usedHalf = false;
+  if (bestHalf > 0 && bestHalfN >= 0.35 && bestHalfN >= gNorm - 0.13) {
+    chosen = bestHalf;
+    usedHalf = true;
+  }
+  // Two lags can tie when one is a single stroke and one is a stretched repeat
+  // that is not exactly double. Prefer the shorter real cycle.
+  if (!usedHalf) {
+    for (let lag = minLag + 1; lag < gLag; lag++) {
+      if (corr[lag] < corr[lag - 1] || corr[lag] < corr[lag + 1]) continue;
+      const nn = corr[lag] / denom;
+      if (nn < 0.3 || nn < gNorm - 0.05) continue;
+      chosen = lag;
+      break;
+    }
+  }
+
+  let lagF = chosen;
+  if (chosen > minLag && chosen < maxLag) {
+    const y0 = corr[chosen - 1];
+    const y1 = corr[chosen];
+    const y2 = corr[chosen + 1];
+    const denomLag = y0 - 2 * y1 + y2;
+    if (denomLag !== 0) {
+      const delta = (0.5 * (y0 - y2)) / denomLag;
+      if (delta > -1 && delta < 1) lagF = chosen + delta;
+    }
+  }
+
+  const spm = Math.round((60000 / (lagF * dt)) * 10) / 10;
+  if (spm < minSpm || spm > maxSpm) return null;
+  return spm;
+}
+
+/**
+ * Collapse bumps that belong to the same stroke so a debug plot shows one
+ * marker per cycle.
+ * @param {{ t: number, v: number }[]} events
+ * @param {number} periodMs
+ */
+function keepOneMarkerPerCycle(events, periodMs) {
+  if (!periodMs || events.length < 2) return events;
+  const minGap = periodMs * 0.65;
+  /** @type {{ t: number, v: number }[]} */
+  const out = [];
+  for (const e of events) {
+    const last = out[out.length - 1];
+    if (!last || e.t - last.t >= minGap) {
+      out.push(e);
+      continue;
+    }
+    if (Math.abs(e.v) > Math.abs(last.v)) out[out.length - 1] = e;
+  }
+  return out;
 }
 
 /**
@@ -225,6 +255,8 @@ class MotionAnalyzer {
     this.peaks = [];
 
     this.strokeRate = null;
+    /** @type {number|null} */
+    this._strokeComputedAt = null;
     this.tiltDeg = null;
     this.capsize = false;
     this._capsizeSince = null;
@@ -244,6 +276,7 @@ class MotionAnalyzer {
     this.peaks = [];
     this.lastSample = null;
     this.strokeRate = null;
+    this._strokeComputedAt = null;
     this.tiltDeg = null;
     this.capsize = false;
     this._capsizeSince = null;
@@ -328,23 +361,18 @@ class MotionAnalyzer {
     }
   }
 
-  _prepareMarkers(hp, times, minProminence, kind) {
-    const raw = collectExtrema(
-      hp,
-      times,
-      minProminence,
-      this.minPeakIntervalMs,
-      kind,
-    );
-    const deep = filterByRelativeDepth(raw, kind);
-    return thinHalfStrokeMarkers(deep, kind);
-  }
-
   _updateStrokeRate() {
     if (this.buffer.length < 30) {
       this.strokeRate = null;
+      this._strokeComputedAt = null;
       return;
     }
+
+    const now = this.buffer[this.buffer.length - 1].t;
+    if (this._strokeComputedAt != null && now - this._strokeComputedAt < 500) {
+      return;
+    }
+    this._strokeComputedAt = now;
 
     const linear = this.buffer.map((s) => ({
       t: s.t,
@@ -360,68 +388,50 @@ class MotionAnalyzer {
     if (sy >= sx && sy >= sz) axis = 'ly';
     else if (sz >= sx && sz >= sy) axis = 'lz';
 
-    const raw = linear.map((s) => s[axis]);
+    const raw = linear.map((s) => /** @type {number} */ (s[axis]));
     const times = linear.map((s) => s.t);
     const dt =
       (times[times.length - 1] - times[0]) / Math.max(1, times.length - 1);
     const radius = Math.max(2, Math.round(this.opts.hpWindowMs / Math.max(1, dt)));
     const hp = raw.map((v, i) => v - movingAverage(raw, i, radius));
 
-    const rms = Math.sqrt(hp.reduce((s, v) => s + v * v, 0) / hp.length);
-    // Stronger prominence so shallow finish dips are ignored.
-    const minProminence = Math.max(0.2, rms * 0.55);
-
-    /*
-     * Rowing hull longitudinal accel has ~one catch check per stroke (strong negative
-     * surge at front reversal) plus a drive double-peak and often a finish dip
-     * (Kleshnev 2010; Holt et al. 2021; Accrow). Counting peaks or catch+finish
-     * roughly doubles SPM. Prefer deep catch valleys; peaks only if valleys fail
-     * (flipped phone axis).
-     */
-    const valleys = this._prepareMarkers(hp, times, minProminence, 'valley');
-    const peaks = this._prepareMarkers(hp, times, minProminence, 'peak');
-
-    const valleyScore = scoreStrokeEvents(
-      valleys,
-      this.minPeakIntervalMs,
-      this.maxPeakIntervalMs,
-      this.minSpm,
-      this.maxSpm,
-    );
-    const peakScore = scoreStrokeEvents(
-      peaks,
-      this.minPeakIntervalMs,
-      this.maxPeakIntervalMs,
-      this.minSpm,
-      this.maxSpm,
-    );
-
-    let chosen = valleyScore;
-    let chosenEvents = valleys;
-    // Peaks only as flipped-axis fallback when valleys cannot form a rate,
-    // or when peaks are clearly better and not ~2× the valley rate.
-    if (valleyScore.spm == null && peakScore.spm != null) {
-      chosen = peakScore;
-      chosenEvents = peaks;
-    } else if (
-      valleyScore.spm != null &&
-      peakScore.spm != null &&
-      peakScore.score > valleyScore.score + 3 &&
-      peakScore.spm < valleyScore.spm * 1.35
-    ) {
-      chosen = peakScore;
-      chosenEvents = peaks;
+    // Rate uses the last 8s even when the debug buffer is the whole session.
+    /** @type {number[]} */
+    const rateHp = [];
+    /** @type {number[]} */
+    const rateTimes = [];
+    const newest = times[times.length - 1];
+    for (let i = 0; i < times.length; i++) {
+      if (times[i] >= newest - 8000) {
+        rateHp.push(hp[i]);
+        rateTimes.push(times[i]);
+      }
     }
+    const spm = estimateStrokeSpm(
+      rateHp.length >= 30 ? rateHp : hp,
+      rateTimes.length >= 30 ? rateTimes : times,
+      this.minSpm,
+      this.maxSpm,
+    );
 
-    this.peaks = chosenEvents;
-    this.strokeRate = chosen.spm;
-    const markerMode =
-      chosenEvents === peaks && chosen === peakScore ? 'peak' : 'valley';
+    const rms = Math.sqrt(hp.reduce((s, v) => s + v * v, 0) / hp.length);
+    const minProminence = Math.max(0.2, rms * 0.55);
+    let markers = collectExtrema(
+      hp,
+      times,
+      minProminence,
+      this.minPeakIntervalMs,
+      'valley',
+    );
+    if (spm != null) markers = keepOneMarkerPerCycle(markers, 60000 / spm);
+
+    this.peaks = markers;
+    this.strokeRate = spm;
     this._lastStrokeDebug = {
       axis,
-      markerMode,
-      strokeRate: chosen.spm,
-      markers: chosenEvents.map((e) => ({ t: e.t, v: e.v })),
+      markerMode: 'cycle',
+      strokeRate: spm,
+      markers: markers.map((e) => ({ t: e.t, v: e.v })),
       surge: times.map((t, i) => ({ t, v: hp[i] })),
     };
   }
