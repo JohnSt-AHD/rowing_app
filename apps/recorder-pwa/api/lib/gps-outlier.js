@@ -163,7 +163,8 @@ function isRecorderTrackSource(sampleSource) {
  * Ingest-time clock: closer of sample t vs GPS fixMs, or server receive time
  * when a *moving* live fix is 20s+ behind (so the map pin can still move).
  * Do not restamp a non-moving last-known — Manager would stay "GPS live".
- * recorder_track keeps location.getTime() for both t and fixMs. Do not set t=now.
+ * recorder_track uses the acceptance time (sample t) when that t is valid.
+ * fixMs stays the chip clock. Do not restamp a quiet held fix forward.
  *
  * @param {number|null|undefined} sampleT
  * @param {number|null|undefined} gpsFixMs
@@ -176,9 +177,12 @@ function pickEffectiveSampleTimeMs(sampleT, gpsFixMs, now = Date.now(), sampleSo
   const receiveMs = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
   const src = sampleSource != null ? String(sampleSource).trim() : '';
   if (isRecorderTrackSource(src)) {
+    // Map/ingest clock is the phone acceptance time. Do not prefer fixMs,
+    // and do not restamp a quiet held fix forward to receive time.
+    const sample = Number(sampleT);
+    if (isUsableSampleClockMs(sample, receiveMs)) return sample;
     const fix = Number(gpsFixMs);
     if (Number.isFinite(fix) && fix > 0) return fix;
-    const sample = Number(sampleT);
     if (Number.isFinite(sample) && sample > 0) return sample;
     return receiveMs;
   }

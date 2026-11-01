@@ -234,7 +234,7 @@ check('native NetworkCallback onAvailable/onValidated kicks flush', /kickNetwork
 check('native pending outbox PENDING_BATCHES_KEY + flushPendingIngest', /PENDING_BATCHES_KEY = "pendingIngestBatches"/.test(nativeSrc) && /flushPendingIngest\(p, MAX_PENDING_FLUSH_PER_CYCLE\)/.test(nativeSrc) && /flushIngestBufferNow\(\)/.test(nativeSrc));
 check('native uploads stale sitting last-known so the map can decide', /Keep stale sitting samples as last_known/.test(nativeSrc) && /source = "last_known"/.test(nativeSrc) && /FUSED_FREEZE_MS = 8_000L/.test(nativeSrc) && /LAST_KNOWN_FALLBACK_MAX_AGE_MS = 15_000L/.test(nativeSrc) && !/Drop stale last-known/.test(nativeSrc));
 check('native GPS listener is the live pin (not gated on beating fused)', /Live pin is the LocationManager GPS listener/.test(nativeSrc) && /"manager_watch"/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && /MANAGER_LOCATION_MIN_MS = 1_000L/.test(nativeSrc) && /MANAGER_GPS_MIN_M = 0f/.test(nativeSrc) && /MANAGER_NETWORK_MIN_M = 0f/.test(nativeSrc) && /Do not upload every callback/.test(nativeSrc) && /mapLiveFix/.test(nativeSrc) && /Fri 30 Oct 2026 11:03 Melville walk/.test(nativeSrc) && /p50 12s/.test(nativeSrc) && /24–40s/.test(nativeSrc) && /Do not clone/.test(nativeSrc) && !/Upload this callback when it arrives/.test(nativeSrc) && !/MANAGER_CALLBACK_UPLOAD_CAP_MS/.test(nativeSrc) && !/MANAGER_LOCATION_MIN_MS = 5_000L/.test(nativeSrc) && !/MANAGER_WATCH_MIN_UPLOAD_MS/.test(nativeSrc) && !/lastManagerWatchUploadMs/.test(nativeSrc) && !/managerWatchHasFresherGpsClock/.test(nativeSrc) && !/hasFresherGpsListenerFix/.test(nativeSrc));
-check('live sample is recorder_track with satellite time; a step over 120 km/h is dropped on the phone', /Sample interval throttles send of the map fix/.test(nativeSrc) && /Location copied = new Location\(location\)/.test(nativeSrc) && /Send t and fixMs from location\.getTime\(\)/.test(nativeSrc) && /fixMs stays location\.getTime\(\)/.test(nativeSrc) && /sampleT = locFix/.test(nativeSrc) && /recorder_track/.test(nativeSrc) && /A step over 120 km\/h is dropped/.test(nativeSrc) && !/pendingLiveUpload/.test(nativeSrc) && !/hasFresherGpsListenerFix/.test(nativeSrc) && !/uploadWindowAverageGps\(true, "stale_piggyback"\)/.test(nativeSrc) && !/source = liveFresh \? "manager_watch" : "last_known"/.test(nativeSrc));
+check('live sample is recorder_track with acceptance time; a step over 120 km/h is dropped on the phone', /Sample interval throttles send of the map fix/.test(nativeSrc) && /Location copied = new Location\(location\)/.test(nativeSrc) && /t is the wall-clock acceptance time/.test(nativeSrc) && /fixMs stays location\.getTime\(\)/.test(nativeSrc) && /sampleT = t > 0L \? t : locFix/.test(nativeSrc) && /mapLiveAcceptedWallMs/.test(nativeSrc) && /A resend reuses that acceptance time/.test(nativeSrc) && /Do not set t=now on a resend/.test(nativeSrc) && /recorder_track/.test(nativeSrc) && /A step over 120 km\/h is dropped/.test(nativeSrc) && !/Send t and fixMs from location\.getTime\(\)/.test(nativeSrc) && !/pendingLiveUpload/.test(nativeSrc) && !/hasFresherGpsListenerFix/.test(nativeSrc) && !/uploadWindowAverageGps\(true, "stale_piggyback"\)/.test(nativeSrc) && !/source = liveFresh \? "manager_watch" : "last_known"/.test(nativeSrc));
 check('native live GNSS is LocationManager only (no fused beside the listener)', /Do not register FusedLocationProviderClient beside this live listener/.test(nativeSrc) && /Fri 30 Oct 2026 09:54 same-phone Melville walk/.test(nativeSrc) && /p50 31s/.test(nativeSrc) && /Manager 7s/.test(nativeSrc) && /without clearing the last accepted fix/.test(nativeSrc) && /startGpsSatelliteFallback\(\)/.test(nativeSrc) && !/LocationServices\.getFusedLocationProviderClient/.test(nativeSrc) && !/\.getCurrentLocation\(/.test(nativeSrc) && !/fusedClient\s*\.requestLocationUpdates/.test(nativeSrc) && !/registerFusedLocation\(\);/.test(nativeSrc));
 check('native fused stall is GPS clock (fixMs/getTime) not callback silence', /isFusedGpsClockStale/.test(nativeSrc) && /gpsClockAgeMs/.test(nativeSrc) && /lastFusedGpsClockMs/.test(nativeSrc) && /Do not wait for fused to go silent/.test(nativeSrc) && /isFusedGpsClockStale\(\)\) return true/.test(nativeSrc));
 check('native queues capsize ingest while offline', /Capsize ingest queued/.test(nativeSrc));
@@ -254,6 +254,77 @@ if (!/gps-regain|last-known|GPS live/.test(explainerSrc)) {
 // ---------------------------------------------------------------------------
 // GPS / network
 // ---------------------------------------------------------------------------
+console.log('\n== recorder_track acceptance clock ==');
+{
+  const id = 'track-accept-live';
+  const now = Date.now();
+  const chip = now - 180_000;
+  const accepted = now - 2_000;
+  const pos = offset(40);
+  await ingest(id, [
+    gpsSample(accepted, pos.lat, pos.lon, { spd: 4.2, sampleSource: 'recorder_track', fixMs: chip }),
+  ]);
+  const pin = await mapPin(id);
+  check(
+    'recorder_track live pin ages from acceptance t and keeps chip fixMs',
+    pin
+      && gpsState(pin) === 'live'
+      && pin.gpsSampleSource === 'recorder_track'
+      && Math.abs(pin.fixMs - accepted) < 5_000
+      && pin.gpsFixMs === chip
+      && (pin.displayFixAgeSec ?? pin.fixAgeSec) <= 10
+      && (pin.gpsFixAgeSec ?? 0) >= 150,
+    {
+      detail: JSON.stringify({
+        fixMs: pin?.fixMs,
+        gpsFixMs: pin?.gpsFixMs,
+        age: pin?.displayFixAgeSec,
+        chipAge: pin?.gpsFixAgeSec,
+        src: pin?.gpsSampleSource,
+      }),
+    },
+  );
+}
+{
+  const id = 'track-accept-quiet';
+  const now = Date.now();
+  const chip = now - 400_000;
+  const accepted = now - 150_000;
+  const pos = offset(80);
+  await ingest(id, [
+    gpsSample(accepted, pos.lat, pos.lon, { spd: 4.2, sampleSource: 'recorder_track', fixMs: chip }),
+  ]);
+  const pin = await mapPin(id);
+  const age = pin?.displayFixAgeSec ?? pin?.fixAgeSec;
+  check(
+    'recorder_track quiet held fix is not restamped forward',
+    pin
+      && gpsState(pin) !== 'live'
+      && pin.gpsSampleSource === 'recorder_track'
+      && Math.abs(pin.fixMs - accepted) < 5_000
+      && pin.gpsFixMs === chip
+      && age >= 140
+      && age < 200,
+    {
+      detail: JSON.stringify({
+        fixMs: pin?.fixMs,
+        gpsFixMs: pin?.gpsFixMs,
+        age,
+        chipAge: pin?.gpsFixAgeSec,
+        src: pin?.gpsSampleSource,
+      }),
+    },
+  );
+}
+{
+  const now = 1_700_000_150_000;
+  const accepted = now - 150_000;
+  check(
+    'recorder_track quiet clock stays on acceptance t',
+    pickEffectiveSampleTimeMs(accepted, now - 400_000, now, 'recorder_track', { spd: 12 }) === accepted,
+  );
+}
+
 console.log('\n== GPS / network regain ==');
 
 {

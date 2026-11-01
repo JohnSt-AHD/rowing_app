@@ -619,6 +619,7 @@ const GPS_SAMPLE_SOURCES = new Set([
   'stale_piggyback',
   'last_known',
   'manager_watch',
+  'recorder_track',
   'web',
 ]);
 
@@ -2379,6 +2380,11 @@ function displayGpsAgeSec(fixAgeSec, ingestAgoSec, extra = {}) {
       : fixAgeSec;
   if (trueFixAge == null || !Number.isFinite(Number(trueFixAge))) return null;
   const src = extra.sampleSource != null ? String(extra.sampleSource).trim() : '';
+  // recorder_track ages from the acceptance clock (sample t → fixAgeSec).
+  // Chip lag stays on gpsFixAgeSec so it is still visible.
+  if (src === 'recorder_track') {
+    if (fixAgeSec != null && Number.isFinite(Number(fixAgeSec))) return Number(fixAgeSec);
+  }
   if (src === 'last_known' || src === 'manager_watch') return Number(trueFixAge);
   const ingest = ingestAgoSec != null && Number.isFinite(Number(ingestAgoSec))
     ? Number(ingestAgoSec)

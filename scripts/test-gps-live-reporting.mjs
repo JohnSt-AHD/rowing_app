@@ -308,6 +308,13 @@ function mapDisplayAgeSec(p) {
   const clockGap = trueFix != null && ingest != null ? trueFix - ingest : 0;
   const effectiveLag = Math.max(lag, clockGap);
   if (
+    p.gpsSampleSource === 'recorder_track' &&
+    p.fixAgeSec != null &&
+    Number.isFinite(p.fixAgeSec)
+  ) {
+    return p.fixAgeSec;
+  }
+  if (
     (p.gpsSampleSource === 'last_known' || p.gpsSampleSource === 'manager_watch') &&
     trueFix != null
   ) {
@@ -373,6 +380,9 @@ function displayGpsAgeSec(fixAgeSec, ingestAgoSec, extra = {}) {
     gpsFixAgeSec != null && Number.isFinite(Number(gpsFixAgeSec)) ? Number(gpsFixAgeSec) : fixAgeSec;
   if (trueFixAge == null || !Number.isFinite(Number(trueFixAge))) return null;
   const src = extra.sampleSource != null ? String(extra.sampleSource).trim() : '';
+  if (src === 'recorder_track') {
+    if (fixAgeSec != null && Number.isFinite(Number(fixAgeSec))) return Number(fixAgeSec);
+  }
   if (src === 'last_known' || src === 'manager_watch') return Number(trueFixAge);
   const ingest = ingestAgoSec != null && Number.isFinite(Number(ingestAgoSec)) ? Number(ingestAgoSec) : null;
   const lag =
@@ -642,6 +652,21 @@ const restampCases = [
     pass: isGpsFixForMapPosition('scheduled_cache') === false,
   },
   expectEq('scheduled_cache not restamped', pickEffectiveSampleTimeMs(stale, stale, now, 'scheduled_cache', {}), stale),
+  expectEq(
+    'recorder_track uses acceptance t not chip fixMs',
+    pickEffectiveSampleTimeMs(now - 2_000, now - 180_000, now, 'recorder_track', { spd: 4 }),
+    now - 2_000,
+  ),
+  expectEq(
+    'recorder_track quiet held fix is not restamped',
+    pickEffectiveSampleTimeMs(now - 150_000, now - 400_000, now, 'recorder_track', { spd: 4 }),
+    now - 150_000,
+  ),
+  expectEq(
+    'recorder_track invalid t falls back to fixMs',
+    pickEffectiveSampleTimeMs(0, now - 180_000, now, 'recorder_track', { spd: 4 }),
+    now - 180_000,
+  ),
   {
     name: 'missing speed + stale clock is sitting last-known',
     pass: isSittingLastKnownFix({ sampleSource: 'window_avg' }) === true,
@@ -854,16 +879,20 @@ const sourceChecks = [
       && !/managerWatchHasFresherGpsClock/.test(nativeSrc),
   },
   {
-    name: 'fresh fix is manager_watch; a fix older than 8s is last_known with t = fixMs',
+    name: 'recorder_track t is acceptance time and fixMs is the chip clock',
     pass: /Sample interval throttles send of the map fix/.test(nativeSrc)
       && /Location copied = new Location\(location\)/.test(nativeSrc)
       && /mapLiveFix = location/.test(nativeSrc)
-      && /Send t and fixMs from location\.getTime\(\)/.test(nativeSrc)
+      && /t is the wall-clock acceptance time/.test(nativeSrc)
       && /fixMs stays location\.getTime\(\)/.test(nativeSrc)
-      && /sampleT = locFix/.test(nativeSrc)
+      && /sampleT = t > 0L \? t : locFix/.test(nativeSrc)
+      && /mapLiveAcceptedWallMs/.test(nativeSrc)
+      && /A resend reuses that acceptance time/.test(nativeSrc)
+      && /Do not set t=now on a resend/.test(nativeSrc)
+      && /Do not refresh the acceptance time/.test(nativeSrc)
       && /recorder_track/.test(nativeSrc)
       && /A step over 120 km\/h is dropped/.test(nativeSrc)
-      && /Do not set t=now/.test(nativeSrc)
+      && !/Send t and fixMs from location\.getTime\(\)/.test(nativeSrc)
       && /The shortest is 1 second/.test(
         readFileSync(join(ROOT, 'apps', 'recorder-pwa', 'src', 'ui', 'app.ts'), 'utf8'),
       )
@@ -885,7 +914,7 @@ const sourceChecks = [
       && /uploadLiveFixIfDue\(false\)/.test(nativeSrc)
       && /uploadLiveFixIfDue\(true\)/.test(nativeSrc)
       && /GPS and network both replace the held fix/.test(nativeSrc)
-      && /enqueueGpsSample\(live, uploadNow, true, RECORDER_TRACK_SOURCE, false, true\)/.test(nativeSrc)
+      && /enqueueGpsSample\(live, acceptedT, true, RECORDER_TRACK_SOURCE, false, true\)/.test(nativeSrc)
       && /getLastKnownLocation\(LocationManager\.GPS_PROVIDER\)/.test(nativeSrc)
       && /Does not set t=now/.test(nativeSrc)
       && /Do not send stale_piggyback/.test(nativeSrc)
@@ -940,6 +969,18 @@ const sourceChecks = [
       && /Do not wait for fused to go silent/.test(nativeSrc)
       && /location\.getTime\(\)/.test(nativeSrc)
       && /isFusedGpsClockStale\(\)\) return true/.test(nativeSrc),
+  },
+  {
+    name: 'recorder_track map clock uses acceptance t and does not restamp',
+    pass: /recorder_track uses the acceptance time/.test(outlierSrc)
+      && /Do not restamp a quiet held fix/.test(outlierSrc)
+      && !/recorder_track keeps location\.getTime\(\)/.test(outlierSrc),
+  },
+  {
+    name: 'ingest keeps recorder_track and ages it from the acceptance clock',
+    pass: /'recorder_track'/.test(storeSrc)
+      && /src === 'recorder_track'/.test(storeSrc)
+      && /src === 'last_known' \|\| src === 'manager_watch'/.test(storeSrc),
   },
   {
     name: 'outlier keeps manager_watch live pin over stale-clock fused',
@@ -1128,6 +1169,60 @@ const lastKnownCases = [];
       }) === 12
       && mapDisplayAgeSec(managerWatch) === 12
       && gpsFixState(managerWatch) === 'live',
+  });
+}
+{
+  const trackLive = {
+    gpsSampleSource: 'recorder_track',
+    gpsFixAgeSec: 180,
+    fixAgeSec: 3,
+    ingestAgoSec: 2,
+    lastSeenAgoSec: 2,
+    uploadLagSec: 177,
+    speed: 4.2,
+  };
+  lastKnownCases.push({
+    name: 'recorder_track ages from acceptance time not chip fixMs',
+    store: displayGpsAgeSec(trackLive.fixAgeSec, trackLive.ingestAgoSec, {
+      gpsFixAgeSec: trackLive.gpsFixAgeSec,
+      uploadLagSec: trackLive.uploadLagSec,
+      spd: trackLive.speed,
+      sampleSource: 'recorder_track',
+    }),
+    dash: mapDisplayAgeSec(trackLive),
+    state: gpsFixState(trackLive),
+    pass:
+      displayGpsAgeSec(trackLive.fixAgeSec, trackLive.ingestAgoSec, {
+        gpsFixAgeSec: trackLive.gpsFixAgeSec,
+        uploadLagSec: trackLive.uploadLagSec,
+        spd: trackLive.speed,
+        sampleSource: 'recorder_track',
+      }) === 3
+      && mapDisplayAgeSec(trackLive) === 3
+      && gpsFixState(trackLive) === 'live',
+  });
+}
+{
+  const trackQuiet = {
+    gpsSampleSource: 'recorder_track',
+    gpsFixAgeSec: 400,
+    fixAgeSec: 150,
+    ingestAgoSec: 2,
+    lastSeenAgoSec: 2,
+    uploadLagSec: 250,
+    speed: 4.2,
+  };
+  lastKnownCases.push({
+    name: 'recorder_track quiet resend ages from the old acceptance time',
+    pass:
+      displayGpsAgeSec(trackQuiet.fixAgeSec, trackQuiet.ingestAgoSec, {
+        gpsFixAgeSec: trackQuiet.gpsFixAgeSec,
+        uploadLagSec: trackQuiet.uploadLagSec,
+        spd: trackQuiet.speed,
+        sampleSource: 'recorder_track',
+      }) === 150
+      && mapDisplayAgeSec(trackQuiet) === 150
+      && gpsFixState(trackQuiet) === 'amber',
   });
 }
 {
@@ -1367,7 +1462,7 @@ const out = {
 
 writeFileSync(join(HERE, '_tmp-gps-live-reporting.out.json'), JSON.stringify(out, null, 2));
 
-/** Upload interval floor 1s. The GPS request is always 1s. Fresh fixes: t is now. Older than 8s: last_known, t = fixMs. */
+/** Upload interval floor 1s. The GPS request is always 1s. t is the acceptance time. fixMs is the chip clock. A quiet resend does not advance t. */
 function clampSampleIntervalMs(intervalMs) {
   const n = Number(intervalMs);
   if (!Number.isFinite(n)) return 1000;
@@ -1399,26 +1494,33 @@ function liveUploadDecision({
   const due = clampSampleIntervalMs(intervalMs);
   const requestMs = GPS_REQUEST_MS;
   const quiet = lastCallbackWallMs > 0 && now - lastCallbackWallMs >= GPS_QUIET_MS;
-  let loc = held;
+  let loc = held ? { ...held } : null;
   let adopted = false;
   let rejected = false;
   if (quiet && systemLastKnown && systemLastKnown.fixMs > 0 && (!held || systemLastKnown.fixMs > held.fixMs)) {
     if (stepWithin120(held, systemLastKnown)) {
-      loc = systemLastKnown;
+      loc = { ...systemLastKnown, acceptedMs: now };
       adopted = true;
     } else {
       rejected = true;
     }
   } else if (!quiet && incoming && Number.isFinite(incoming.lat)) {
-    if (stepWithin120(held, incoming)) loc = incoming;
-    else rejected = true;
+    if (stepWithin120(held, incoming)) {
+      const replaced = !held || incoming.fixMs > (held.fixMs || 0);
+      loc = {
+        ...incoming,
+        acceptedMs: replaced
+          ? (incoming.acceptedMs > 0 ? incoming.acceptedMs : now)
+          : (held?.acceptedMs > 0 ? held.acceptedMs : held?.fixMs),
+      };
+    } else rejected = true;
   }
   if (!loc || !Number.isFinite(loc.lat) || !(loc.fixMs > 0)) {
     return { send: false, due, requestMs, adopted, rejected, reregistered: quiet, t: null, fixMs: null, source: null };
   }
   const fixMs = loc.fixMs;
   const source = 'recorder_track';
-  const t = fixMs;
+  const t = loc.acceptedMs > 0 ? loc.acceptedMs : fixMs;
   if (lastSendWallMs > 0 && now - lastSendWallMs < due) {
     return { send: false, due, requestMs, adopted, rejected, reregistered: quiet, t, fixMs, source, lat: loc.lat };
   }
@@ -1426,10 +1528,27 @@ function liveUploadDecision({
 }
 
 const quietNow = Date.parse('2026-10-30T06:38:02.000Z');
-const heldFresh = { lat: -37.91926, lon: 175.54075, fixMs: quietNow - 2000 };
-const heldStale = { lat: -37.91926, lon: 175.54075, fixMs: quietNow - 58_000 };
-const networkFix = { lat: -37.91917, lon: 175.54075, fixMs: quietNow - 1500, provider: 'network' };
-const newerQuiet = { lat: -37.91831, lon: 175.53772, fixMs: quietNow - 2000 };
+const CHIP_LAG_MS = 120_000;
+const heldFresh = {
+  lat: -37.91926,
+  lon: 175.54075,
+  fixMs: quietNow - 2_000 - CHIP_LAG_MS,
+  acceptedMs: quietNow - 2_000,
+};
+const heldStale = {
+  lat: -37.91926,
+  lon: 175.54075,
+  fixMs: quietNow - 58_000 - CHIP_LAG_MS,
+  acceptedMs: quietNow - 58_000,
+};
+const networkFix = {
+  lat: -37.91917,
+  lon: 175.54075,
+  fixMs: quietNow - 1_500 - CHIP_LAG_MS,
+  acceptedMs: quietNow,
+  provider: 'network',
+};
+const newerQuiet = { lat: -37.91831, lon: 175.53772, fixMs: quietNow - 2_000 };
 const olderQuiet = { lat: -37.919, lon: 175.541, fixMs: quietNow - 39_000 };
 const liveUploadCases = [
   {
@@ -1442,7 +1561,8 @@ const liveUploadCases = [
         held: heldFresh,
         lastCallbackWallMs: quietNow - 1000,
       });
-      return d.send && d.due === 3000 && d.requestMs === 1000 && d.t === heldFresh.fixMs && d.fixMs === heldFresh.fixMs
+      return d.send && d.due === 3000 && d.requestMs === 1000 && d.t === heldFresh.acceptedMs
+        && d.fixMs === heldFresh.fixMs && d.t !== d.fixMs && d.t !== quietNow
         && d.source === 'recorder_track' && !d.reregistered;
     })(),
   },
@@ -1456,7 +1576,8 @@ const liveUploadCases = [
         held: heldFresh,
         lastCallbackWallMs: quietNow - 500,
       });
-      return d.send && d.due === 1000 && d.source === 'recorder_track' && d.t === heldFresh.fixMs;
+      return d.send && d.due === 1000 && d.source === 'recorder_track'
+        && d.t === heldFresh.acceptedMs && d.fixMs === heldFresh.fixMs && d.t !== d.fixMs;
     })(),
   },
   {
@@ -1491,11 +1612,11 @@ const liveUploadCases = [
       });
       return early.send === false && early.requestMs === 1000
         && due.send && due.due === 20_000 && due.requestMs === 1000 && due.source === 'recorder_track'
-        && due.t === heldFresh.fixMs;
+        && due.t === heldFresh.acceptedMs && due.fixMs === heldFresh.fixMs && due.t !== due.fixMs;
     })(),
   },
   {
-    name: 'a fix older than 8s is last_known with t equal to fixMs',
+    name: 'a quiet held fix resends its original acceptance time and chip fixMs',
     pass: (() => {
       const d = liveUploadDecision({
         now: quietNow,
@@ -1504,12 +1625,12 @@ const liveUploadCases = [
         held: heldStale,
         lastCallbackWallMs: quietNow - 1000,
       });
-      return d.send && d.source === 'recorder_track' && d.t === heldStale.fixMs
-        && d.fixMs === heldStale.fixMs && d.t !== quietNow;
+      return d.send && d.source === 'recorder_track' && d.t === heldStale.acceptedMs
+        && d.fixMs === heldStale.fixMs && d.t !== quietNow && d.t !== d.fixMs;
     })(),
   },
   {
-    name: 'quiet listener re-registers and adopts a newer last known without t=now when that fix is old',
+    name: 'quiet listener adopts a newer last known at wall-clock acceptance time',
     pass: (() => {
       const d = liveUploadDecision({
         now: quietNow,
@@ -1520,7 +1641,8 @@ const liveUploadCases = [
         systemLastKnown: olderQuiet,
       });
       return d.reregistered && d.adopted && d.lat === olderQuiet.lat
-        && d.source === 'recorder_track' && d.t === olderQuiet.fixMs && d.t !== quietNow;
+        && d.source === 'recorder_track' && d.t === quietNow
+        && d.fixMs === olderQuiet.fixMs && d.t !== d.fixMs;
     })(),
   },
   {
@@ -1535,7 +1657,8 @@ const liveUploadCases = [
         systemLastKnown: newerQuiet,
       });
       return d.reregistered && d.adopted && d.lat === newerQuiet.lat
-        && d.source === 'recorder_track' && d.t === newerQuiet.fixMs && d.fixMs === newerQuiet.fixMs;
+        && d.source === 'recorder_track' && d.t === quietNow
+        && d.fixMs === newerQuiet.fixMs && d.t !== d.fixMs;
     })(),
   },
   {
@@ -1563,8 +1686,9 @@ const liveUploadCases = [
         incoming: networkFix,
         lastCallbackWallMs: quietNow - 500,
       });
-      return d.send && d.lat === networkFix.lat && d.t === networkFix.fixMs
-        && d.fixMs === networkFix.fixMs && d.source === 'recorder_track' && !d.reregistered;
+      return d.send && d.lat === networkFix.lat && d.t === networkFix.acceptedMs
+        && d.fixMs === networkFix.fixMs && d.t !== d.fixMs
+        && d.source === 'recorder_track' && !d.reregistered;
     })(),
   },
   {
@@ -1574,20 +1698,30 @@ const liveUploadCases = [
         now: quietNow,
         intervalMs: 10_000,
         lastSendWallMs: quietNow - 3000,
-        held: { lat: heldFresh.lat, lon: heldFresh.lon, fixMs: quietNow - 1000 },
+        held: {
+          lat: heldFresh.lat,
+          lon: heldFresh.lon,
+          fixMs: quietNow - 1000 - CHIP_LAG_MS,
+          acceptedMs: quietNow - 1000,
+        },
         lastCallbackWallMs: quietNow - 1000,
       });
       const due = liveUploadDecision({
         now: quietNow,
         intervalMs: 10_000,
         lastSendWallMs: quietNow - 10_000,
-        held: { lat: heldFresh.lat, lon: heldFresh.lon, fixMs: quietNow - 1000 },
+        held: {
+          lat: heldFresh.lat,
+          lon: heldFresh.lon,
+          fixMs: quietNow - 1000 - CHIP_LAG_MS,
+          acceptedMs: quietNow - 1000,
+        },
         lastCallbackWallMs: quietNow - 1000,
       });
       return early.send === false && early.requestMs === 1000 && early.due === 10_000
         && !early.reregistered
-        && due.send && due.requestMs === 1000 && due.fixMs === quietNow - 1000
-        && due.source === 'recorder_track' && due.t === quietNow - 1000;
+        && due.send && due.requestMs === 1000 && due.fixMs === quietNow - 1000 - CHIP_LAG_MS
+        && due.source === 'recorder_track' && due.t === quietNow - 1000 && due.t !== due.fixMs;
     })(),
   },
   {
@@ -1611,7 +1745,8 @@ const liveUploadCases = [
       });
       return still.reregistered === false && still.requestMs === 1000
         && quiet.reregistered && quiet.adopted && quiet.send === false
-        && quiet.source === 'recorder_track' && quiet.t === olderQuiet.fixMs && quiet.t !== quietNow;
+        && quiet.source === 'recorder_track' && quiet.t === quietNow
+        && quiet.fixMs === olderQuiet.fixMs && quiet.t !== quiet.fixMs;
     })(),
   },
   {
@@ -1630,7 +1765,8 @@ const liveUploadCases = [
         incoming: jumped,
         lastCallbackWallMs: quietNow - 500,
       });
-      return d.rejected === true && d.lat === heldFresh.lat && d.source === 'recorder_track';
+      return d.rejected === true && d.lat === heldFresh.lat && d.source === 'recorder_track'
+        && d.t === heldFresh.acceptedMs && d.fixMs === heldFresh.fixMs;
     })(),
   },
   {
@@ -1649,8 +1785,40 @@ const liveUploadCases = [
         incoming: resumed,
         lastCallbackWallMs: quietNow - 500,
       });
-      return d.rejected !== true && d.lat === resumed.lat && d.t === resumed.fixMs
+      return d.rejected !== true && d.lat === resumed.lat && d.t === quietNow
+        && d.fixMs === resumed.fixMs && d.t !== d.fixMs
         && d.source === 'recorder_track';
+    })(),
+  },
+  {
+    name: 'a quiet resend does not advance t',
+    pass: (() => {
+      const acceptedMs = quietNow - 45_000;
+      const held = {
+        lat: heldFresh.lat,
+        lon: heldFresh.lon,
+        fixMs: acceptedMs - CHIP_LAG_MS,
+        acceptedMs,
+      };
+      const resend = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 3000,
+        lastSendWallMs: quietNow - 3000,
+        held,
+        lastCallbackWallMs: quietNow - 1000,
+      });
+      const reregistered = liveUploadDecision({
+        now: quietNow,
+        intervalMs: 3000,
+        lastSendWallMs: quietNow - 3000,
+        held,
+        lastCallbackWallMs: quietNow - 4000,
+        systemLastKnown: { lat: held.lat, lon: held.lon, fixMs: held.fixMs },
+      });
+      return resend.send && resend.t === acceptedMs && resend.t !== quietNow
+        && resend.fixMs === held.fixMs && resend.fixMs !== resend.t
+        && reregistered.reregistered && !reregistered.adopted
+        && reregistered.t === acceptedMs && reregistered.t !== quietNow;
     })(),
   },
 ];

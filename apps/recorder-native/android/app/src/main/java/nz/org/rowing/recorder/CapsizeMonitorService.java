@@ -300,10 +300,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      * A listener callback stores new Location(location) here. A quiet tick
      * may replace it with a newer getLastKnownLocation copy. Not a second slot.
      * 1 s request, Sample interval throttles upload, newest fix in the window.
-     * fixMs is this location's getTime(). Do not rewrite t to now when the
-     * satellite time is old.
+     * fixMs is this location's getTime(). Sample t is the wall-clock time
+     * this fix was accepted. A resend reuses that time. Do not set t=now
+     * on a resend.
      */
     private Location mapLiveFix;
+    /**
+     * Wall clock when mapLiveFix was accepted. Uploads send this as t.
+     * A resend reuses it. Re-registering the 1 s request does not refresh it.
+     */
+    private long mapLiveAcceptedWallMs;
     /** Wall clock of the last sample-interval map send. 0 until the first. */
     private long lastMapLiveUploadWallMs;
     /** Wall clock of the last onLocationChanged. Quiet recovery uses this. */
@@ -862,6 +868,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             // Capsize stays on the accelerometer.
             if (!acceptLiveFix(location)) return;
             noteRawGpsMovement(location);
+            noteLiveFixAccepted(location);
             cacheManagerWatchOnly(location);
             if (standbyMode) {
                 Location standbyFix = mapLiveFix != null ? mapLiveFix : location;
@@ -1461,6 +1468,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (best == null || !isGpsFixUsable(best)) return;
         Location copy = new Location(best);
         if (!acceptLiveFix(copy)) return;
+        noteLiveFixAccepted(copy);
         cacheManagerWatchOnly(copy);
     }
 
@@ -1475,8 +1483,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * Live upload. Callback and poll both wait the full sample interval.
-     * Send t and fixMs from location.getTime(). fixMs stays location.getTime().
-     * Do not set t=now. A step over 120 km/h is dropped before it is stored.
+     * t is the wall-clock acceptance time. fixMs stays location.getTime().
+     * A resend reuses that acceptance time. Do not set t=now on a resend.
+     * Do not refresh the acceptance time when the 1s request is re-registered.
+     * A step over 120 km/h is dropped before it is stored.
      * A step under 120 km/h is kept, including a long gap.
      * Repeats the held fix only after the full interval when nothing newer exists.
      * The sent fix is mapLiveFix, the metrics-map dot.
@@ -1497,7 +1507,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         lastUploadedLon = shown.getLongitude();
         lastUploadedFixTimeMs = now;
         final Location live = shown;
-        final long uploadNow = now;
+        final long acceptedT = mapLiveAcceptedWallMs > 0L ? mapLiveAcceptedWallMs : shown.getTime();
         Log.i(
                 TAG,
                 "Map fix send "
@@ -1506,7 +1516,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                         + due
                         + (fromCallback ? " callback" : " poll"));
         uploadExecutor.execute(
-                () -> enqueueGpsSample(live, uploadNow, true, RECORDER_TRACK_SOURCE, false, true));
+                () -> enqueueGpsSample(live, acceptedT, true, RECORDER_TRACK_SOURCE, false, true));
     }
 
     private void requestGpsFlush() {
@@ -1864,8 +1874,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
     /**
      * @param keepSatelliteTime non-live path: t and fixMs stay location.getTime().
-     * @param managerLive live pin. Send t and fixMs from location.getTime()
-     *     as recorder_track. Do not set t=now. Do not retag sitting or last_known.
+     * @param managerLive live pin. t is the stored acceptance time. fixMs stays
+     *     location.getTime(). Tag recorder_track. Do not set t=now on a resend.
      */
     private void enqueueGpsSample(
             Location location,
@@ -1909,8 +1919,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                     locFix > 0L && locFix <= now + 5_000L ? locFix : latestGpsRawFixClockMs;
             final long sampleT;
             if (managerLive) {
-                // Send t and fixMs from location.getTime(). Do not set t=now.
-                sampleT = locFix;
+                // t is the wall-clock acceptance time. fixMs stays location.getTime().
+                // A resend reuses that acceptance time. Do not set t=now on a resend.
+                sampleT = t > 0L ? t : locFix;
             } else if (keepSatelliteTime) {
                 // Old getTime() must not be stored with t=now.
                 if (locFix > 0L && locFix <= now + 5_000L) {
@@ -1953,8 +1964,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             if (appendEconomyDerived(derived)) hasDerived = true;
             if (hasDerived) sample.put("derived", derived);
             offerIngestSample(sample, flushNow);
-            // Pulse "uploaded ago" is wall clock. Sample t stays satellite time
-            // so a late fix is not recorded as just-fresh.
+            // Pulse "uploaded ago" is wall clock. recorder_track sample t stays
+            // the acceptance time, not this pulse and not the chip clock.
             markGpsSampleOffered(managerLive || keepSatelliteTime ? now : sampleT);
         } catch (Exception e) {
             recordUploadResult(-1, 1, false);
@@ -3428,9 +3439,23 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     /**
+     * Remember System.currentTimeMillis() when a new fix replaces the held one.
+     * The same location.getTime() is the same fix: re-register and a quiet
+     * resend must not refresh this. Call before cacheManagerWatchOnly.
+     */
+    private void noteLiveFixAccepted(Location location) {
+        if (location == null) return;
+        Location prev = mapLiveFix;
+        long fixMs = location.getTime();
+        if (prev == null || prev.getTime() <= 0L || fixMs > prev.getTime()) {
+            mapLiveAcceptedWallMs = System.currentTimeMillis();
+        }
+    }
+
+    /**
      * Prefer wall clock or GPS fix clock — whichever is closer to now.
      * Moving fixes more than 20s behind used to be rewritten to now. The live
-     * map fix does not call this — it stores t from location.getTime().
+     * map fix does not call this — its t is the acceptance wall clock.
      * Do not rewrite t to now when the satellite time is old.
      * Do not rewrite t for a sitting last-known.
      */
@@ -3606,7 +3631,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (rawFix > 0L && rawFix <= now + 5_000L) {
             latestGpsRawFixClockMs = rawFix;
         }
-        // Held fix is the uploaded coordinate. Sample t is location.getTime().
+        // Held fix is the metrics-map dot. Upload t is the acceptance wall
+        // clock, not this chip stamp. Do not redraw the dot from sample t.
         long stamp = rawFix > 0L ? rawFix : now;
         saveLastGpsToPrefs(location, stamp, nativeGpsCount);
         savePulseDiagnostics();
@@ -3715,6 +3741,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             return false;
         }
         gpsSatelliteFallbackActive = true;
+        // Quiet-timer only. Do not refresh the acceptance time on re-register.
         lastLiveCallbackWallMs = System.currentTimeMillis();
         Log.i(TAG, "GPS+network manager-watch listener registered (" + minTime + "ms, minDistance 0)");
         return true;
@@ -3773,6 +3800,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         gpsSatelliteFallbackActive = false;
         latestManagerWatchLocation = null;
         mapLiveFix = null;
+        mapLiveAcceptedWallMs = 0L;
         lastMapLiveUploadWallMs = 0L;
         lastLiveCallbackWallMs = 0L;
         lastFusedGpsClockMs = 0L;
