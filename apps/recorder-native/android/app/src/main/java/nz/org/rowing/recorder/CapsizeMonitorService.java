@@ -46,10 +46,12 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -83,8 +85,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /**
      * AlarmManager starts this service about once a second while capsize
      * monitoring is on. Not ACTION_LIVE_LOCATION: this wake must not reset the
-     * session or upload another GPS fix. A frozen process does not get
-     * SensorEventListener callbacks; this pending intent still runs.
+     * session. When the sample interval is due it sends the last accepted fix.
+     * A quiet resend does not advance t. Do not invent a position if none has
+     * been accepted yet. Do not attach a stale pre-session fix. A frozen
+     * process does not get SensorEventListener callbacks or the in-process GPS
+     * timer; this pending intent still runs.
      */
     public static final String ACTION_CAPSIZE_WAKE = "nz.org.rowing.recorder.CAPSIZE_WAKE";
     private static final int CAPSIZE_WAKE_PI_REQUEST = 9108;
@@ -259,7 +264,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private ConnectivityManager.NetworkCallback networkCallback;
     private long lastNetworkResumeKickMs;
     /** Wall clock when the current ingest POST started; 0 when idle. */
-    private volatile long uploadAttemptStartedMs;
+    private final AtomicLong uploadAttemptStartedMs = new AtomicLong();
     /** Coalesce flush ticks so a long outage cannot flood the single upload thread. */
     private final AtomicBoolean ingestFlushQueued = new AtomicBoolean(false);
     private final AtomicBoolean pendingFlushQueued = new AtomicBoolean(false);
@@ -344,14 +349,19 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      * this fix was accepted. A resend reuses that time. Do not set t=now
      * on a resend.
      */
-    private Location mapLiveFix;
+    private volatile Location mapLiveFix;
     /**
      * Wall clock when mapLiveFix was accepted. Uploads send this as t.
      * A resend reuses it. Re-registering the 1 s request does not refresh it.
+     * A quiet resend does not advance t.
      */
-    private long mapLiveAcceptedWallMs;
+    private volatile long mapLiveAcceptedWallMs;
     /** Wall clock of the last sample-interval map send. 0 until the first. */
-    private long lastMapLiveUploadWallMs;
+    private volatile long lastMapLiveUploadWallMs;
+    /** Serializes the sample-interval gate across the wake and a GPS delivery. */
+    private final Object liveUploadLock = new Object();
+    /** Serializes ingestBuffer puts against a flush on a replaced upload thread. */
+    private final Object ingestLock = new Object();
     /** Wall clock of the last onLocationChanged. Quiet recovery uses this. */
     private long lastLiveCallbackWallMs;
     /** First live fused fix seen this session — unlocks 4s maxAge + 15s last-known. */
@@ -531,7 +541,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             acquireWakeLock();
             startForegroundWithTypes(false);
             scheduleCapsizeWake();
+            // Fresh accel first. The capsize alert still runs before its ingest.
             pollFreshCapsizeSample();
+            // Held fix on the sample interval. Same path as the 1 s handler.
+            // uploadLiveFixIfDue already gates on the interval.
+            uploadLiveFixIfDue(false);
             return START_STICKY;
         }
         promoteDeviceProtectedSessionPrefs();
@@ -568,7 +582,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
 
         recordingHalted = false;
         clearSittingLock();
-        ingestBuffer = new JSONArray();
+        synchronized (ingestLock) {
+            ingestBuffer = new JSONArray();
+        }
         lastIngestFlushMs = 0L;
         lastSuccessfulUploadMs = 0L;
         lastBatteryReportMs = 0L;
@@ -616,6 +632,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         scheduleCapsizeWake();
         if (capsizeWake) {
             pollFreshCapsizeSample();
+            // Held fix on the sample interval. Same path as the 1 s handler.
+            // uploadLiveFixIfDue already gates on the interval.
+            uploadLiveFixIfDue(false);
         }
         if (liveLocation) {
             enqueueWokenLocation(intent);
@@ -1584,6 +1603,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      * Live upload. Callback and poll both wait the full sample interval.
      * t is the wall-clock acceptance time. fixMs stays location.getTime().
      * A resend reuses that acceptance time. Do not set t=now on a resend.
+     * A quiet resend does not advance t.
      * Do not refresh the acceptance time when the 1s request is re-registered.
      * A step over 120 km/h is dropped before it is stored.
      * A step under 120 km/h is kept, including a long gap.
@@ -1594,28 +1614,44 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void uploadLiveFixIfDue(boolean fromCallback) {
         if (recordingHalted || !enableGps || standbyMode) return;
         Location shown = mapLiveFix;
+        // Do not invent a position if none has been accepted yet.
+        // Do not attach a stale pre-session fix. Only the accepted map fix is sent.
         if (shown == null || !isGpsFixUsable(shown)) return;
-        if (uploadExecutor == null || uploadExecutor.isShutdown()) return;
-        long now = System.currentTimeMillis();
-        long due = managerLocationIntervalMs();
-        if (lastMapLiveUploadWallMs > 0L && now - lastMapLiveUploadWallMs < due) {
-            return;
+        if (uploadExecutor == null || uploadExecutor.isShutdown()) {
+            maybeRecreateStuckUploadExecutor();
         }
-        lastMapLiveUploadWallMs = now;
-        lastUploadedLat = shown.getLatitude();
-        lastUploadedLon = shown.getLongitude();
-        lastUploadedFixTimeMs = now;
-        final Location live = shown;
-        final long acceptedT = mapLiveAcceptedWallMs > 0L ? mapLiveAcceptedWallMs : shown.getTime();
-        Log.i(
-                TAG,
-                "Map fix send "
-                        + live.getProvider()
-                        + " dueMs="
-                        + due
-                        + (fromCallback ? " callback" : " poll"));
-        uploadExecutor.execute(
-                () -> enqueueGpsSample(live, acceptedT, true, RECORDER_TRACK_SOURCE, false, true));
+        synchronized (liveUploadLock) {
+            ExecutorService exec = uploadExecutor;
+            if (exec == null || exec.isShutdown()) return;
+            long now = System.currentTimeMillis();
+            long due = managerLocationIntervalMs();
+            // uploadLiveFixIfDue already gates on the interval.
+            if (lastMapLiveUploadWallMs > 0L && now - lastMapLiveUploadWallMs < due) {
+                return;
+            }
+            long previousSendWallMs = lastMapLiveUploadWallMs;
+            lastMapLiveUploadWallMs = now;
+            lastUploadedLat = shown.getLatitude();
+            lastUploadedLon = shown.getLongitude();
+            lastUploadedFixTimeMs = now;
+            final Location live = shown;
+            // A quiet resend does not advance t. This reads the acceptance time.
+            final long acceptedT = mapLiveAcceptedWallMs > 0L ? mapLiveAcceptedWallMs : shown.getTime();
+            Log.i(
+                    TAG,
+                    "Map fix send "
+                            + live.getProvider()
+                            + " dueMs="
+                            + due
+                            + (fromCallback ? " callback" : " poll"));
+            try {
+                exec.execute(
+                        () -> enqueueGpsSample(live, acceptedT, true, RECORDER_TRACK_SOURCE, false, true));
+            } catch (RuntimeException e) {
+                lastMapLiveUploadWallMs = previousSendWallMs;
+                Log.w(TAG, "Interval send was not queued", e);
+            }
+        }
     }
 
     private void requestGpsFlush() {
@@ -1853,7 +1889,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         if (recordingHalted && !sampleHasCapsize(sample)) return;
         // Boat-park suppress pauses normal telemetry, but capsize must still reach Manager.
         if (suppressRecordingActive && !sampleHasCapsize(sample)) return;
-        ingestBuffer.put(sample);
+        synchronized (ingestLock) {
+            ingestBuffer.put(sample);
+        }
         maybeAutoFlushIngest(flushNow);
     }
 
@@ -1868,23 +1906,32 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void maybeAutoFlushIngest(boolean force) {
-        if (ingestBuffer.length() == 0) return;
-        long now = System.currentTimeMillis();
-        if (force
-                || ingestBuffer.length() >= UPLOAD_FLUSH_MAX_SAMPLES
-                || now - lastIngestFlushMs >= effectiveUploadFlushMs()) {
-            flushIngestBufferNow();
+        synchronized (ingestLock) {
+            if (ingestBuffer.length() == 0) return;
+            long now = System.currentTimeMillis();
+            if (!(force
+                    || ingestBuffer.length() >= UPLOAD_FLUSH_MAX_SAMPLES
+                    || now - lastIngestFlushMs >= effectiveUploadFlushMs())) {
+                return;
+            }
         }
+        flushIngestBufferNow();
     }
 
     private void flushIngestBufferNow() {
-        if (ingestBuffer.length() == 0) return;
-        JSONArray toSend = ingestBuffer;
-        ingestBuffer = new JSONArray();
-        lastIngestFlushMs = System.currentTimeMillis();
-        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
-        String deviceId = p.getString("deviceId", "");
-        String sessionId = p.getString("sessionId", "");
+        JSONArray toSend;
+        SharedPreferences p;
+        String deviceId;
+        String sessionId;
+        synchronized (ingestLock) {
+            if (ingestBuffer.length() == 0) return;
+            toSend = ingestBuffer;
+            ingestBuffer = new JSONArray();
+            lastIngestFlushMs = System.currentTimeMillis();
+            p = getSharedPreferences(PREFS, MODE_PRIVATE);
+            deviceId = p.getString("deviceId", "");
+            sessionId = p.getString("sessionId", "");
+        }
         if (deviceId.isEmpty() || sessionId.isEmpty()) {
             Log.e(TAG, "Missing ingest config — dropping " + toSend.length() + " buffered sample(s)");
             return;
@@ -2281,7 +2328,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             boolean requeueOnFailure,
             JSONObject requeueBatch) {
         HttpURLConnection conn = null;
-        uploadAttemptStartedMs = System.currentTimeMillis();
+        long attemptStarted = System.currentTimeMillis();
+        uploadAttemptStartedMs.set(attemptStarted);
         try {
             String ingestUrl = p.getString("ingestUrl", "");
             if (ingestUrl.isEmpty()) {
@@ -2320,7 +2368,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             }
             return false;
         } finally {
-            uploadAttemptStartedMs = 0L;
+            // An abandoned thread must not clear a newer attempt's clock.
+            uploadAttemptStartedMs.compareAndSet(attemptStarted, 0L);
             if (conn != null) {
                 try {
                     conn.disconnect();
@@ -2668,23 +2717,25 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private void stripGpsFromIngestBuffer() {
-        if (ingestBuffer == null || ingestBuffer.length() == 0) return;
-        JSONArray kept = new JSONArray();
-        for (int i = 0; i < ingestBuffer.length(); i++) {
-            JSONObject sample = ingestBuffer.optJSONObject(i);
-            if (sample == null) continue;
-            if (sampleHasCapsize(sample)) {
-                kept.put(sample);
-                continue;
+        synchronized (ingestLock) {
+            if (ingestBuffer == null || ingestBuffer.length() == 0) return;
+            JSONArray kept = new JSONArray();
+            for (int i = 0; i < ingestBuffer.length(); i++) {
+                JSONObject sample = ingestBuffer.optJSONObject(i);
+                if (sample == null) continue;
+                if (sampleHasCapsize(sample)) {
+                    kept.put(sample);
+                    continue;
+                }
+                sample.remove("gps");
+                if (sample.optJSONObject("motion") != null
+                        || sample.optJSONObject("hr") != null
+                        || sample.optJSONObject("derived") != null) {
+                    kept.put(sample);
+                }
             }
-            sample.remove("gps");
-            if (sample.optJSONObject("motion") != null
-                    || sample.optJSONObject("hr") != null
-                    || sample.optJSONObject("derived") != null) {
-                kept.put(sample);
-            }
+            ingestBuffer = kept;
         }
-        ingestBuffer = kept;
     }
 
     private static SharedPreferences deviceProtectedPrefs(Context ctx) {
@@ -3357,7 +3408,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                     Log.i(TAG, "Network resume (" + reason + ") — flushing ingest");
                     // Abandon only if a POST is already wedged on the old interface.
                     maybeRecreateStuckUploadExecutor();
-                    long started = uploadAttemptStartedMs;
+                    long started = uploadAttemptStartedMs.get();
                     if (started > 0L
                             && System.currentTimeMillis() - started > 5_000L) {
                         recreateUploadExecutor("network-resume-inflight");
@@ -3392,15 +3443,51 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private synchronized void recreateUploadExecutor(String reason) {
+        List<Runnable> dropped = new ArrayList<>();
         if (uploadExecutor != null && !uploadExecutor.isShutdown()) {
-            uploadExecutor.shutdownNow();
+            dropped = uploadExecutor.shutdownNow();
         }
         uploadExecutor = Executors.newSingleThreadExecutor();
-        uploadAttemptStartedMs = 0L;
+        uploadAttemptStartedMs.set(0L);
         ingestFlushQueued.set(false);
         pendingFlushQueued.set(false);
         networkResumeQueued.set(false);
+        // shutdownNow drops queued GPS/capsize batches that have not entered
+        // the buffer. Retry them before any newer interval send.
+        retryDroppedUploadTasks(dropped);
         Log.w(TAG, "Upload executor recreated (" + reason + ")");
+    }
+
+    /**
+     * shutdownNow drops queued GPS/capsize batches that have not entered the
+     * buffer. Retry them on the new executor.
+     * Unsent location batches must not be discarded.
+     * A stuck socket must not erase the interval send just queued.
+     * If a retried post fails, postIngestJson stores it in pendingIngestBatches.
+     * Capsize ingest stays with the alert already shown: showAlertNotification
+     * runs before enqueueCapsizeSample, and this only retries that queued task.
+     */
+    private void retryDroppedUploadTasks(List<Runnable> dropped) {
+        if (dropped == null || dropped.isEmpty()) return;
+        ExecutorService exec = uploadExecutor;
+        if (exec == null || exec.isShutdown()) return;
+        int kept = 0;
+        for (Runnable task : dropped) {
+            if (task == null) continue;
+            try {
+                exec.execute(task);
+                kept++;
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Could not retry a dropped upload task", e);
+            }
+        }
+        if (kept > 0) {
+            Log.w(
+                    TAG,
+                    "Retried "
+                            + kept
+                            + " unsent upload task(s) after shutdownNow");
+        }
     }
 
     private synchronized void maybeRecreateStuckUploadExecutor() {
@@ -3408,7 +3495,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             recreateUploadExecutor("missing");
             return;
         }
-        long started = uploadAttemptStartedMs;
+        long started = uploadAttemptStartedMs.get();
         boolean stuck =
                 started > 0L && System.currentTimeMillis() - started > UPLOAD_STUCK_MS;
         if (stuck) {
@@ -4349,7 +4436,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         loadSessionFlagsFromPrefs();
         recordingHalted = false;
         clearSittingLock();
-        ingestBuffer = new JSONArray();
+        synchronized (ingestLock) {
+            ingestBuffer = new JSONArray();
+        }
         lastIngestFlushMs = 0L;
         lastSuccessfulUploadMs = 0L;
         lastBatteryReportMs = 0L;
@@ -4414,7 +4503,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         suppressRecordingActive = false;
         capsizeActive = false;
         cancelAlertNotification();
-        ingestBuffer = new JSONArray();
+        synchronized (ingestLock) {
+            ingestBuffer = new JSONArray();
+        }
         gpsWindowBuffer.clear();
         persistStandbyState();
         if (enableGps) {

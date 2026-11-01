@@ -271,6 +271,34 @@ check(
     && /USE_EXACT_ALARM/.test(manifestSrc)
     && /SCHEDULE_EXACT_ALARM/.test(manifestSrc),
 );
+check(
+  'capsize wake polls fresh accel and uploads the held fix without advancing t',
+  /if \(isCapsizeWakeIntent\(intent\) && recordingServiceActive\) \{[\s\S]{0,900}pollFreshCapsizeSample\(\);[\s\S]{0,500}uploadLiveFixIfDue\(false\)/.test(nativeSrc)
+    && /pollFreshCapsizeSample\(\)/.test(nativeSrc)
+    && /isAccelSampleFresh\(/.test(nativeSrc)
+    && /A quiet resend does not advance t/.test(nativeSrc)
+    && /Do not invent a position if none has been accepted yet/.test(nativeSrc)
+    && /Do not attach a stale pre-session fix/.test(nativeSrc)
+    && /uploadLiveFixIfDue already gates on the interval/.test(nativeSrc)
+    && /mapLiveAcceptedWallMs > 0L \? mapLiveAcceptedWallMs : shown\.getTime\(\)/.test(nativeSrc)
+    && /ACTION_LIVE_LOCATION/.test(nativeSrc)
+    && /PendingIntent\.getForegroundService\(/.test(nativeSrc)
+    && /requestLocationUpdates\(\s*LocationManager\.GPS_PROVIDER,\s*minTime,\s*MANAGER_GPS_MIN_M,\s*pi\)/.test(nativeSrc)
+    && /handleWokenFix/.test(nativeSrc)
+    && /A step over 120 km\/h is dropped/.test(nativeSrc)
+    && /showAlertNotification\(\);[\s\S]{0,250}enqueueCapsizeSample\(/.test(nativeSrc),
+);
+check(
+  'stuck upload recovery retries unsent location batches',
+  /dropped = uploadExecutor\.shutdownNow\(\)/.test(nativeSrc)
+    && /retryDroppedUploadTasks\(dropped\)/.test(nativeSrc)
+    && /Unsent location batches must not be discarded/.test(nativeSrc)
+    && /queued GPS\/capsize batches/.test(nativeSrc)
+    && /pendingIngestBatches/.test(nativeSrc)
+    && /PENDING_BATCHES_KEY = "pendingIngestBatches"/.test(nativeSrc)
+    && /enqueuePendingBatch\(/.test(nativeSrc)
+    && /maybeRecreateStuckUploadExecutor\(\)/.test(nativeSrc),
+);
 check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
 check('explainer has no GPS-regain scenario', !/gps-regain|last-known|GPS live/.test(explainerSrc) && !/GPS regain/.test(explainerHtml));
 

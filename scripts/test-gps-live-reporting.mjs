@@ -1052,6 +1052,27 @@ const sourceChecks = [
     pass: /Sessions that already have ended_at/.test(storeSrc)
       && /function stripGpsFromEndedSessionSamples/.test(storeSrc),
   },
+  {
+    name: 'capsize wake uploads the held fix and stuck recovery keeps unsent location batches',
+    pass: /if \(isCapsizeWakeIntent\(intent\) && recordingServiceActive\) \{[\s\S]{0,900}pollFreshCapsizeSample\(\);[\s\S]{0,500}uploadLiveFixIfDue\(false\)/.test(nativeSrc)
+      && /A quiet resend does not advance t/.test(nativeSrc)
+      && /Do not invent a position if none has been accepted yet/.test(nativeSrc)
+      && /Do not attach a stale pre-session fix/.test(nativeSrc)
+      && /uploadLiveFixIfDue already gates on the interval/.test(nativeSrc)
+      && /ACTION_LIVE_LOCATION/.test(nativeSrc)
+      && /PendingIntent\.getForegroundService\(/.test(nativeSrc)
+      && /LocationManager\.KEY_LOCATION_CHANGED/.test(nativeSrc)
+      && /requestLocationUpdates\(\s*LocationManager\.GPS_PROVIDER,\s*minTime,\s*MANAGER_GPS_MIN_M,\s*pi\)/.test(nativeSrc)
+      && /handleWokenFix/.test(nativeSrc)
+      && /acceptLiveFix\(/.test(nativeSrc)
+      && /dropped = uploadExecutor\.shutdownNow\(\)/.test(nativeSrc)
+      && /retryDroppedUploadTasks\(dropped\)/.test(nativeSrc)
+      && /Unsent location batches must not be discarded/.test(nativeSrc)
+      && /queued GPS\/capsize batches/.test(nativeSrc)
+      && /pendingIngestBatches/.test(nativeSrc)
+      && /showAlertNotification\(\);[\s\S]{0,250}enqueueCapsizeSample\(/.test(nativeSrc)
+      && /mapLiveAcceptedWallMs > 0L \? mapLiveAcceptedWallMs : shown\.getTime\(\)/.test(nativeSrc),
+  },
 ];
 
 const lastKnownCases = [];
