@@ -227,6 +227,15 @@ const nativeSrc = readFileSync(
   join(ROOT, 'apps/recorder-native/android/app/src/main/java/nz/org/rowing/recorder/CapsizeMonitorService.java'),
   'utf8',
 );
+
+function methodBody(src, signature) {
+  const at = src.indexOf(signature);
+  if (at < 0) return '';
+  const rest = src.slice(at + signature.length);
+  const next = rest.search(/\n    (?:private|public|protected) /);
+  if (next < 0) return src.slice(at);
+  return src.slice(at, at + signature.length + next);
+}
 const explainerSrc = readFileSync(join(ROOT, 'apps/recorder-pwa/public/capsize-explainer.js'), 'utf8');
 const explainerHtml = readFileSync(join(ROOT, 'apps/recorder-pwa/public/capsize-explainer.html'), 'utf8');
 
@@ -322,6 +331,59 @@ check(
     && /PendingIntent\.getForegroundService\(/.test(nativeSrc)
     && /requestLocationUpdates\(\s*LocationManager\.GPS_PROVIDER,\s*minTime,\s*MANAGER_GPS_MIN_M,\s*pi\)/.test(nativeSrc),
 );
+{
+  const capsizeEnqueue = methodBody(nativeSrc, 'private void enqueueCapsizeSample(');
+  const locationFlush = methodBody(nativeSrc, 'private void flushIngestBufferBody()');
+  const capsizePost = methodBody(nativeSrc, 'private boolean postCapsizeUpload(');
+  check(
+    'capsize is not queued behind GPS and location is not queued behind capsize',
+    capsizeEnqueue.includes('derived.put("capsize", true)')
+      && capsizeEnqueue.includes('derived.put("tiltDeg"')
+      && capsizeEnqueue.includes('sample.put("motion", motion)')
+      && capsizeEnqueue.includes('queueCapsizeSample(')
+      && !capsizeEnqueue.includes('offerIngestSample')
+      && !capsizeEnqueue.includes('uploadExecutor')
+      && !capsizeEnqueue.includes('enqueuePendingBatch')
+      && !capsizeEnqueue.includes('indexOfNewestGpsSample')
+      && !locationFlush.includes('capsizeQueue')
+      && !locationFlush.includes('capsizeExecutor')
+      && !locationFlush.includes('postCapsizeUpload')
+      && !locationFlush.includes('submitCapsizeFlush')
+      && locationFlush.includes('indexOfNewestGpsSample')
+      && capsizePost.includes('capsizeInFlightConn = conn')
+      && !capsizePost.includes('uploadExecutor')
+      && !capsizePost.includes('enqueuePendingBatch')
+      && !capsizePost.includes('uploadAttemptStartedMs')
+      && /private ExecutorService capsizeExecutor;/.test(nativeSrc)
+      && /private ExecutorService uploadExecutor;/.test(nativeSrc)
+      && /CAPSIZE_UPLOAD_THREAD_NAME = "CrewSightCapsize"/.test(nativeSrc)
+      && /newCapsizeExecutor\(\)/.test(nativeSrc)
+      && /Executors\.newSingleThreadExecutor\(/.test(nativeSrc)
+      && /A stuck or in-flight GPS post must not delay a capsize sample/.test(nativeSrc)
+      && /A capsize post must not delay a GPS or location sample/.test(nativeSrc)
+      && /Do not put capsize behind newest-GPS-first/.test(nativeSrc)
+      && /do not park it in the\s+location pendingIngestBatches/.test(nativeSrc)
+      && /offerIngestSample\(sample, flushNow\)/.test(nativeSrc),
+  );
+  check(
+    'stop and destroy still send a capsize that was already queued',
+    /void stopRecordingSession\(Context ctx\) \{[\s\S]{0,1800}submitCapsizeFlush\(\);[\s\S]{0,900}clearRecordingSession\(ctx\)/.test(nativeSrc)
+      && /uploadExecutor\.execute\(\s*\(\) -> inst\.postSessionEnd\(/.test(nativeSrc)
+      && /Stop and destroy still send a capsize sample that was already queued/.test(nativeSrc)
+      && /Session id was copied onto the batch/.test(nativeSrc)
+      && /void onDestroy\(\) \{[\s\S]{0,2200}beginCapsizeShutdown\(\)/.test(nativeSrc)
+      && /awaitCapsizeShutdown\(capsizeExec\)/.test(nativeSrc)
+      && /exec\.shutdown\(\);/.test(nativeSrc)
+      && !/capsizeExecutor\.shutdownNow\(/.test(nativeSrc)
+      && /showAlertNotification\(\);[\s\S]{0,250}enqueueCapsizeSample\(/.test(nativeSrc)
+      && /ACTION_LIVE_LOCATION/.test(nativeSrc)
+      && /PendingIntent\.getForegroundService\(/.test(nativeSrc)
+      && /requestLocationUpdates\(\s*LocationManager\.GPS_PROVIDER,\s*minTime,\s*MANAGER_GPS_MIN_M,\s*pi\)/.test(nativeSrc)
+      && /uploadLiveFixIfDue\(false\)/.test(nativeSrc)
+      && /A quiet resend does not advance t/.test(nativeSrc)
+      && /Sample interval throttles send of the map fix/.test(nativeSrc),
+  );
+}
 check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
 check('explainer has no GPS-regain scenario', !/gps-regain|last-known|GPS live/.test(explainerSrc) && !/GPS regain/.test(explainerHtml));
 

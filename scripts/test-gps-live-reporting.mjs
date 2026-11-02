@@ -840,6 +840,19 @@ const nativeSrc = readFileSync(
   'utf8',
 );
 
+function methodBody(src, signature) {
+  const at = src.indexOf(signature);
+  if (at < 0) return '';
+  const rest = src.slice(at + signature.length);
+  const next = rest.search(/\n    (?:private|public|protected) /);
+  if (next < 0) return src.slice(at);
+  return src.slice(at, at + signature.length + next);
+}
+
+const capsizeEnqueueBody = methodBody(nativeSrc, 'private void enqueueCapsizeSample(');
+const locationFlushBody = methodBody(nativeSrc, 'private void flushIngestBufferBody()');
+const capsizePostBody = methodBody(nativeSrc, 'private boolean postCapsizeUpload(');
+
 const sourceChecks = [
   {
     name: 'dashboard mapDisplayAgeSec prefers displayFixAgeSec',
@@ -1110,6 +1123,54 @@ const sourceChecks = [
       && /postDelayed\(pendingFlushRunnable, effectivePendingFlushMs\(\)\)/.test(nativeSrc)
       && /pendingIngestBatches/.test(nativeSrc)
       && /queued GPS\/capsize batches/.test(nativeSrc),
+  },
+  {
+    name: 'capsize is not queued behind GPS and location is not queued behind capsize',
+    pass: capsizeEnqueueBody.includes('derived.put("capsize", true)')
+      && capsizeEnqueueBody.includes('derived.put("tiltDeg"')
+      && capsizeEnqueueBody.includes('sample.put("motion", motion)')
+      && capsizeEnqueueBody.includes('queueCapsizeSample(')
+      && !capsizeEnqueueBody.includes('offerIngestSample')
+      && !capsizeEnqueueBody.includes('uploadExecutor')
+      && !capsizeEnqueueBody.includes('enqueuePendingBatch')
+      && !capsizeEnqueueBody.includes('indexOfNewestGpsSample')
+      && !locationFlushBody.includes('capsizeQueue')
+      && !locationFlushBody.includes('capsizeExecutor')
+      && !locationFlushBody.includes('postCapsizeUpload')
+      && !locationFlushBody.includes('submitCapsizeFlush')
+      && locationFlushBody.includes('indexOfNewestGpsSample')
+      && capsizePostBody.includes('capsizeInFlightConn = conn')
+      && !capsizePostBody.includes('uploadExecutor')
+      && !capsizePostBody.includes('enqueuePendingBatch')
+      && !capsizePostBody.includes('uploadAttemptStartedMs')
+      && /private ExecutorService capsizeExecutor;/.test(nativeSrc)
+      && /CAPSIZE_UPLOAD_THREAD_NAME = "CrewSightCapsize"/.test(nativeSrc)
+      && /newCapsizeExecutor\(\)/.test(nativeSrc)
+      && /A stuck or in-flight GPS post must not delay a capsize sample/.test(nativeSrc)
+      && /A capsize post must not delay a GPS or location sample/.test(nativeSrc)
+      && /Do not put capsize behind newest-GPS-first/.test(nativeSrc)
+      && /do not park it in the\s+location pendingIngestBatches/.test(nativeSrc)
+      && /offerIngestSample\(sample, flushNow\)/.test(nativeSrc)
+      && /showAlertNotification\(\);[\s\S]{0,250}enqueueCapsizeSample\(/.test(nativeSrc),
+  },
+  {
+    name: 'stop and destroy still send a capsize that was already queued',
+    pass: /void stopRecordingSession\(Context ctx\) \{[\s\S]{0,1800}submitCapsizeFlush\(\);[\s\S]{0,900}clearRecordingSession\(ctx\)/.test(nativeSrc)
+      && /uploadExecutor\.execute\(\s*\(\) -> inst\.postSessionEnd\(/.test(nativeSrc)
+      && /Stop and destroy still send a capsize sample that was already queued/.test(nativeSrc)
+      && /Session id was copied onto the batch/.test(nativeSrc)
+      && /void onDestroy\(\) \{[\s\S]{0,2200}beginCapsizeShutdown\(\)/.test(nativeSrc)
+      && /awaitCapsizeShutdown\(capsizeExec\)/.test(nativeSrc)
+      && !/capsizeExecutor\.shutdownNow\(/.test(nativeSrc)
+      && /showAlertNotification\(\);[\s\S]{0,250}enqueueCapsizeSample\(/.test(nativeSrc)
+      && /ACTION_LIVE_LOCATION/.test(nativeSrc)
+      && /PendingIntent\.getForegroundService\(/.test(nativeSrc)
+      && /LocationManager\.KEY_LOCATION_CHANGED/.test(nativeSrc)
+      && /requestLocationUpdates\(\s*LocationManager\.GPS_PROVIDER,\s*minTime,\s*MANAGER_GPS_MIN_M,\s*pi\)/.test(nativeSrc)
+      && /handleWokenFix/.test(nativeSrc)
+      && /uploadLiveFixIfDue\(false\)/.test(nativeSrc)
+      && /A quiet resend does not advance t/.test(nativeSrc)
+      && /if \(isCapsizeWakeIntent\(intent\) && recordingServiceActive\) \{[\s\S]{0,900}pollFreshCapsizeSample\(\);[\s\S]{0,500}uploadLiveFixIfDue\(false\)/.test(nativeSrc),
   },
 ];
 

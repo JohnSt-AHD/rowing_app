@@ -45,6 +45,7 @@ import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -155,6 +156,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** In-flight batch was parked for retry, or this attempt must not keep posting. */
     private static final int POST_ABANDONED = -1;
     private static final String UPLOAD_THREAD_NAME = "CrewSightUpload";
+    /** Own thread. A location POST on CrewSightUpload must not run here. */
+    private static final String CAPSIZE_UPLOAD_THREAD_NAME = "CrewSightCapsize";
     private static final long NETWORK_RESUME_DEBOUNCE_MS = 2_000L;
     /** Reject stale satellite fix clock for callback-driven uploads. */
     private static final long GPS_MAX_UPLOAD_FIX_AGE_MS = 45_000L;
@@ -299,6 +302,20 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private final AtomicBoolean ingestFlushQueued = new AtomicBoolean(false);
     private final AtomicBoolean pendingFlushQueued = new AtomicBoolean(false);
     private final AtomicBoolean networkResumeQueued = new AtomicBoolean(false);
+    /**
+     * Capsize uploads use their own queue and their own single in-flight HTTP
+     * connection, separate from the location ingest executor.
+     * A stuck or in-flight GPS post must not delay a capsize sample.
+     * A capsize post must not delay a GPS or location sample.
+     * Do not put capsize behind newest-GPS-first, and do not park it in the location pendingIngestBatches.
+     */
+    private ExecutorService capsizeExecutor;
+    private final Object capsizeLock = new Object();
+    private final ArrayDeque<CapsizeUpload> capsizeQueue = new ArrayDeque<>();
+    private final AtomicBoolean capsizeFlushQueued = new AtomicBoolean(false);
+    /** Capsize socket only. Location disconnectInFlight must not touch this. */
+    private volatile HttpURLConnection capsizeInFlightConn;
+    private final Runnable capsizeRetryRunnable = () -> submitCapsizeFlush();
 
     private boolean enableGps;
     private boolean enableMotion = true;
@@ -548,6 +565,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         // Do not construct FusedLocationProviderClient here. A fused request
         // beside the live LocationManager listener owns GNSS and starves GPS.
         uploadExecutor = newUploadExecutor();
+        capsizeExecutor = newCapsizeExecutor();
         createNotificationChannel();
         loadUprightFromPrefs();
     }
@@ -742,6 +760,9 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         unregisterLocation();
         shutdownLocationDeliveryThread();
         releaseWakeLock();
+        // Stop and destroy still send a capsize sample that was already queued or in flight.
+        // Do not shutdownNow the capsize path. Location flush stays on uploadExecutor.
+        ExecutorService capsizeExec = beginCapsizeShutdown();
         if (uploadExecutor != null) {
             uploadExecutor.execute(this::flushIngestBufferNow);
             uploadExecutor.shutdown();
@@ -751,6 +772,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 Thread.currentThread().interrupt();
             }
         }
+        awaitCapsizeShutdown(capsizeExec);
         Context app = getApplicationContext();
         if (shouldResumeAfterBoot(app)) {
             Log.i(TAG, "Service stopped with active session/standby — scheduling resume");
@@ -1819,7 +1841,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 final float ax = lastAx;
                 final float ay = lastAy;
                 final float az = lastAz;
-                uploadExecutor.execute(() -> enqueueCapsizeClearedSample(clearT, ax, ay, az));
+                enqueueCapsizeClearedSample(clearT, ax, ay, az);
             }
             return;
         }
@@ -1841,7 +1863,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 final float ax = lastAx;
                 final float ay = lastAy;
                 final float az = lastAz;
-                uploadExecutor.execute(() -> enqueueCapsizeClearedSample(clearT, ax, ay, az));
+                enqueueCapsizeClearedSample(clearT, ax, ay, az);
             }
         } else {
             capsizeSinceMs = 0;
@@ -1891,19 +1913,27 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         final float ax = lastAx;
         final float ay = lastAy;
         final float az = lastAz;
-        uploadExecutor.execute(() -> enqueueCapsizeRecalledSample(t, ax, ay, az, stillTipped));
+        enqueueCapsizeRecalledSample(t, ax, ay, az, stillTipped);
         Log.i(TAG, "Athlete recalled capsize alarm");
     }
 
     private void onCapsizeTriggered(long t, float ax, float ay, float az, int tiltDeg) {
         Log.w(TAG, "CAPSIZE detected (native)");
+        // Copy the session before the alert returns. Stop blanks prefs sessionId
+        // immediately, and this sample must still post on the capsize path.
+        SharedPreferences prefsNow = getSharedPreferences(PREFS, MODE_PRIVATE);
+        final String sessionId = prefsNow.getString("sessionId", "");
+        final String deviceId = prefsNow.getString("deviceId", "");
+        final String ingestUrl = prefsNow.getString("ingestUrl", "");
+        final String ingestToken = prefsNow.getString("ingestToken", "");
         if (t - lastCapsizeAlertSoundMs >= CAPSIZE_ALERT_SOUND_MIN_INTERVAL_MS) {
             lastCapsizeAlertSoundMs = t;
             showAlertNotification();
         }
         if (t - lastCapsizeUploadMs < CAPSIZE_UPLOAD_MIN_INTERVAL_MS) return;
         lastCapsizeUploadMs = t;
-        uploadExecutor.execute(() -> enqueueCapsizeSample(t, ax, ay, az, tiltDeg));
+        enqueueCapsizeSample(
+                t, ax, ay, az, tiltDeg, sessionId, deviceId, ingestUrl, ingestToken);
     }
 
     private void scheduleIngestFlush() {
@@ -2379,7 +2409,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return -1;
     }
 
-    private void enqueueCapsizeSample(long t, float ax, float ay, float az, int tiltDeg) {
+    private void enqueueCapsizeSample(
+            long t,
+            float ax,
+            float ay,
+            float az,
+            int tiltDeg,
+            String sessionId,
+            String deviceId,
+            String ingestUrl,
+            String ingestToken) {
         try {
             JSONObject derived = new JSONObject();
             derived.put("capsize", true);
@@ -2393,8 +2432,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             sample.put("t", t);
             sample.put("motion", motion);
             sample.put("derived", derived);
-            offerIngestSample(sample, true);
-            Log.i(TAG, "Capsize ingest queued");
+            queueCapsizeSample(
+                    sample,
+                    "Capsize ingest queued",
+                    sessionId,
+                    deviceId,
+                    ingestUrl,
+                    ingestToken);
         } catch (Exception e) {
             recordUploadResult(-1, 1, false);
             Log.e(TAG, "Capsize ingest failed", e);
@@ -2418,8 +2462,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             sample.put("t", t);
             sample.put("motion", motion);
             sample.put("derived", derived);
-            offerIngestSample(sample, true);
-            Log.i(TAG, "Capsize recall ingest queued");
+            queueCapsizeSample(sample, "Capsize recall ingest queued");
         } catch (Exception e) {
             Log.e(TAG, "Capsize recall ingest failed", e);
         }
@@ -2440,11 +2483,216 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             sample.put("t", t);
             sample.put("motion", motion);
             sample.put("derived", derived);
-            offerIngestSample(sample, true);
-            Log.i(TAG, "Capsize cleared ingest queued");
+            queueCapsizeSample(sample, "Capsize cleared ingest queued");
         } catch (Exception e) {
             Log.e(TAG, "Capsize cleared ingest failed", e);
         }
+    }
+
+    /**
+     * Session id is copied onto the batch here, before stop blanks prefs.
+     * A capsize that has not triggered yet is not invented.
+     */
+    private void queueCapsizeSample(JSONObject sample, String queuedLog) {
+        SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+        queueCapsizeSample(
+                sample,
+                queuedLog,
+                p.getString("sessionId", ""),
+                p.getString("deviceId", ""),
+                p.getString("ingestUrl", ""),
+                p.getString("ingestToken", ""));
+    }
+
+    private void queueCapsizeSample(
+            JSONObject sample,
+            String queuedLog,
+            String sessionId,
+            String deviceId,
+            String ingestUrl,
+            String ingestToken) {
+        if (sessionId == null || sessionId.isEmpty() || deviceId == null || deviceId.isEmpty()) {
+            Log.w(TAG, "Capsize sample not queued — session already cleared");
+            return;
+        }
+        try {
+            SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+            JSONArray samples = new JSONArray();
+            samples.put(sample);
+            JSONObject batch = buildBatch(p, sessionId, deviceId, samples);
+            CapsizeUpload upload =
+                    new CapsizeUpload(
+                            batch,
+                            ingestUrl == null ? "" : ingestUrl,
+                            ingestToken == null ? "" : ingestToken);
+            boolean start;
+            synchronized (capsizeLock) {
+                capsizeQueue.addLast(upload);
+                start = capsizeFlushQueued.compareAndSet(false, true);
+            }
+            if (start) runCapsizeFlush();
+            Log.i(TAG, queuedLog);
+        } catch (Exception e) {
+            Log.e(TAG, "Capsize queue failed", e);
+        }
+    }
+
+    /** One capsize connection. Does not use the location upload executor. */
+    private void submitCapsizeFlush() {
+        boolean start;
+        synchronized (capsizeLock) {
+            if (capsizeQueue.isEmpty()) return;
+            start = capsizeFlushQueued.compareAndSet(false, true);
+        }
+        if (start) runCapsizeFlush();
+    }
+
+    /**
+     * Prefer the capsize executor. After it has been shut down, a non-daemon
+     * thread still posts a sample that was queued when the alarm fired.
+     */
+    private void runCapsizeFlush() {
+        ExecutorService exec = capsizeExecutor;
+        if (exec != null && !exec.isShutdown()) {
+            try {
+                exec.execute(this::flushCapsizeQueueBody);
+                return;
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Capsize flush was not accepted on the capsize executor", e);
+            }
+        }
+        Thread thread = new Thread(this::flushCapsizeQueueBody, CAPSIZE_UPLOAD_THREAD_NAME);
+        thread.setDaemon(false);
+        thread.start();
+    }
+
+    private void flushCapsizeQueueBody() {
+        boolean retryLater = false;
+        try {
+            while (true) {
+                CapsizeUpload item;
+                synchronized (capsizeLock) {
+                    item = capsizeQueue.pollFirst();
+                }
+                if (item == null) return;
+                if (postCapsizeUpload(item)) continue;
+                synchronized (capsizeLock) {
+                    capsizeQueue.addFirst(item);
+                }
+                retryLater = true;
+                return;
+            }
+        } finally {
+            boolean again = false;
+            synchronized (capsizeLock) {
+                capsizeFlushQueued.set(false);
+                if (!retryLater
+                        && !capsizeQueue.isEmpty()
+                        && capsizeFlushQueued.compareAndSet(false, true)) {
+                    again = true;
+                }
+            }
+            if (retryLater) scheduleCapsizeRetry();
+            else if (again) runCapsizeFlush();
+        }
+    }
+
+    /**
+     * Own socket. Does not set uploadAttemptStartedMs, uploadEpoch, or inFlightConn,
+     * and does not enqueuePendingBatch into pendingIngestBatches.
+     *
+     * @return true when the batch is finished (posted, or cannot be posted).
+     *     False means put it back on the capsize queue and try again.
+     */
+    private boolean postCapsizeUpload(CapsizeUpload upload) {
+        if (upload == null || upload.batch == null) return true;
+        if (upload.ingestUrl == null || upload.ingestUrl.isEmpty()) {
+            Log.e(TAG, "Capsize ingest missing URL — not parked on the location path");
+            recordUploadResult(-1, 1, false);
+            return true;
+        }
+        HttpURLConnection conn = null;
+        int sampleCount = 1;
+        try {
+            JSONArray samples = upload.batch.optJSONArray("samples");
+            if (samples != null && samples.length() > 0) sampleCount = samples.length();
+            conn = (HttpURLConnection) new URL(upload.ingestUrl).openConnection();
+            capsizeInFlightConn = conn;
+            conn.setConnectTimeout(INGEST_CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(INGEST_READ_TIMEOUT_MS);
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json");
+            if (upload.ingestToken != null && !upload.ingestToken.isEmpty()) {
+                conn.setRequestProperty("Authorization", "Bearer " + upload.ingestToken);
+            }
+            byte[] body = upload.batch.toString().getBytes(StandardCharsets.UTF_8);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body);
+            }
+            int code = conn.getResponseCode();
+            boolean ok = code >= 200 && code < 300;
+            recordUploadResult(code, sampleCount, ok);
+            if (ok) {
+                Log.i(TAG, "Capsize ingest posted");
+            } else {
+                Log.w(TAG, "Capsize ingest HTTP " + code);
+            }
+            return ok;
+        } catch (Exception e) {
+            recordUploadResult(-1, sampleCount, false);
+            Log.e(TAG, "Capsize ingest POST failed", e);
+            return false;
+        } finally {
+            if (conn != null) {
+                if (capsizeInFlightConn == conn) capsizeInFlightConn = null;
+                try {
+                    conn.disconnect();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private void scheduleCapsizeRetry() {
+        mainHandler.removeCallbacks(capsizeRetryRunnable);
+        mainHandler.postDelayed(capsizeRetryRunnable, 2_000L);
+    }
+
+    /**
+     * Stop and destroy still send a capsize sample that was already queued
+     * or in flight. Session id was copied onto the batch, so a blank prefs
+     * sessionId must not drop it. Do not shutdownNow this executor.
+     */
+    private ExecutorService beginCapsizeShutdown() {
+        ExecutorService exec = capsizeExecutor;
+        submitCapsizeFlush();
+        if (exec == null || exec.isShutdown()) return exec;
+        // Do not shutdownNow. A queued or in-flight capsize sample must still send.
+        exec.shutdown();
+        return exec;
+    }
+
+    private void awaitCapsizeShutdown(ExecutorService exec) {
+        if (exec == null) return;
+        try {
+            // Connect plus read. Do not abandon an in-flight capsize POST.
+            boolean finished = exec.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) {
+                Log.w(TAG, "Capsize upload still in flight after destroy wait");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private ExecutorService newCapsizeExecutor() {
+        return Executors.newSingleThreadExecutor(
+                r -> {
+                    Thread thread = new Thread(r, CAPSIZE_UPLOAD_THREAD_NAME);
+                    thread.setDaemon(false);
+                    return thread;
+                });
     }
 
     private JSONObject buildBatch(
@@ -2850,6 +3098,19 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
+    /** Capsize batch plus the URL copied when it was queued. Not a location batch. */
+    private static final class CapsizeUpload {
+        final JSONObject batch;
+        final String ingestUrl;
+        final String ingestToken;
+
+        CapsizeUpload(JSONObject batch, String ingestUrl, String ingestToken) {
+            this.batch = batch;
+            this.ingestUrl = ingestUrl;
+            this.ingestToken = ingestToken;
+        }
+    }
+
     private static final class InFlightPost {
         static final int OPEN = 0;
         static final int PARKED = 1;
@@ -2874,7 +3135,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
-    private void recordUploadResult(int httpCode, int sampleCount, boolean ok) {
+    private synchronized void recordUploadResult(int httpCode, int sampleCount, boolean ok) {
         SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
         int seq = p.getInt("uploadSeq", 0) + 1;
         SharedPreferences.Editor ed =
@@ -3126,6 +3387,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             inst.recordingHalted = true;
             inst.enableGps = false;
             inst.mainHandler.post(inst::haltGpsUploads);
+            // Already-queued capsize posts on its own path before sessionId is cleared.
+            inst.submitCapsizeFlush();
             if (inst.uploadExecutor != null
                     && !inst.uploadExecutor.isShutdown()
                     && sessionId != null
@@ -3869,6 +4132,8 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 () -> {
                     if (standbyMode) return;
                     Log.i(TAG, "Network resume (" + reason + ") — flushing ingest");
+                    // Capsize retry uses its own connection. Do not wait for the GPS post.
+                    submitCapsizeFlush();
                     // Abandon only if a POST is already wedged on the old interface.
                     maybeRecreateStuckUploadExecutor();
                     long started = uploadAttemptStartedMs.get();
@@ -3994,8 +4259,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
      * Unsent location batches must not be discarded.
      * A stuck socket must not erase the interval send just queued.
      * If a retried post fails, postIngestJson stores it in pendingIngestBatches.
-     * Capsize ingest stays with the alert already shown: showAlertNotification
-     * runs before enqueueCapsizeSample, and this only retries that queued task.
+     * Capsize samples are not queued on this executor.
      */
     private void retryDroppedUploadTasks(List<Runnable> dropped) {
         if (dropped == null || dropped.isEmpty()) return;
@@ -5017,6 +5281,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             uploadExecutor.execute(
                     () -> postSessionEnd(p, sid, did, System.currentTimeMillis()));
         }
+        submitCapsizeFlush();
         uploadExecutor.execute(this::flushIngestBufferNow);
         standbyMode = true;
         cancelCapsizeWake();
