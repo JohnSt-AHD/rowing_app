@@ -1073,6 +1073,44 @@ const sourceChecks = [
       && /showAlertNotification\(\);[\s\S]{0,250}enqueueCapsizeSample\(/.test(nativeSrc)
       && /mapLiveAcceptedWallMs > 0L \? mapLiveAcceptedWallMs : shown\.getTime\(\)/.test(nativeSrc),
   },
+  {
+    name: 'a stuck in-flight post does not block a newer live fix',
+    pass: /LIVE_UPLOAD_ABANDON_MS = 9_000L/.test(nativeSrc)
+      && /A stuck in-flight post must not block a newer live fix/.test(nativeSrc)
+      && /parkInFlightBatchForRetry\(/.test(nativeSrc)
+      && /disconnectInFlight\(/.test(nativeSrc)
+      && /inFlightConn/.test(nativeSrc)
+      && /Newest fix first/.test(nativeSrc)
+      && /return LIVE_UPLOAD_ABANDON_MS/.test(nativeSrc)
+      && /Do not only enqueue onto a blocked executor/.test(nativeSrc)
+      && /void uploadLiveFixIfDue\(boolean fromCallback\) \{[\s\S]{0,2200}maybeRecreateStuckUploadExecutor\(\)/.test(nativeSrc)
+      && /enqueueGpsSample\(live, acceptedT, true, RECORDER_TRACK_SOURCE, false, true\)/.test(nativeSrc)
+      && /original t is kept/.test(nativeSrc)
+      && /sampleT = t > 0L \? t : locFix/.test(nativeSrc)
+      && /A quiet resend does not advance t/.test(nativeSrc)
+      && /Do not set t=now on a resend/.test(nativeSrc)
+      && /indexOfNewestGpsSample\(/.test(nativeSrc)
+      && /enqueuePendingBatch\(p, buildBatch\(/.test(nativeSrc)
+      && /takeNewestPendingBatches\(/.test(nativeSrc)
+      && /dropped = uploadExecutor\.shutdownNow\(\)/.test(nativeSrc)
+      && /retryDroppedUploadTasks\(dropped\)/.test(nativeSrc)
+      && /Unsent location batches must not be discarded/.test(nativeSrc)
+      && /showAlertNotification\(\);[\s\S]{0,250}enqueueCapsizeSample\(/.test(nativeSrc)
+      && /ACTION_LIVE_LOCATION/.test(nativeSrc)
+      && /PendingIntent\.getForegroundService\(/.test(nativeSrc)
+      && /if \(isCapsizeWakeIntent\(intent\) && recordingServiceActive\) \{[\s\S]{0,900}pollFreshCapsizeSample\(\);[\s\S]{0,500}uploadLiveFixIfDue\(false\)/.test(nativeSrc),
+  },
+  {
+    name: 'pending location batches retry within a couple of seconds while recording',
+    pass: /LIVE_PENDING_FLUSH_MS = 2_000L/.test(nativeSrc)
+      && /While recording, retry pending location batches within a couple of seconds/.test(nativeSrc)
+      && /effectivePendingFlushMs\(\)/.test(nativeSrc)
+      && /return LIVE_PENDING_FLUSH_MS/.test(nativeSrc)
+      && /PENDING_FLUSH_INTERVAL_MS = 45_000L/.test(nativeSrc)
+      && /postDelayed\(pendingFlushRunnable, effectivePendingFlushMs\(\)\)/.test(nativeSrc)
+      && /pendingIngestBatches/.test(nativeSrc)
+      && /queued GPS\/capsize batches/.test(nativeSrc),
+  },
 ];
 
 const lastKnownCases = [];

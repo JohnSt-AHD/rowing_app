@@ -51,6 +51,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -138,6 +139,22 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     /** Recreate upload thread if a POST exceeds connect+read (+slack). */
     private static final long UPLOAD_STUCK_MS =
             INGEST_CONNECT_TIMEOUT_MS + INGEST_READ_TIMEOUT_MS + 8_000L;
+    /**
+     * While a recording is active, abandon a blocked POST after this and send the
+     * newest held fix on a fresh connection. This is about 8–10s, not UPLOAD_STUCK_MS.
+     * A stuck in-flight post must not block a newer live fix.
+     */
+    private static final long LIVE_UPLOAD_ABANDON_MS = 9_000L;
+    /**
+     * While recording, retry pending location batches within a couple of seconds.
+     * PENDING_FLUSH_INTERVAL_MS remains the slow retry after the session stops.
+     */
+    private static final long LIVE_PENDING_FLUSH_MS = 2_000L;
+    private static final int POST_FAIL = 0;
+    private static final int POST_OK = 1;
+    /** In-flight batch was parked for retry, or this attempt must not keep posting. */
+    private static final int POST_ABANDONED = -1;
+    private static final String UPLOAD_THREAD_NAME = "CrewSightUpload";
     private static final long NETWORK_RESUME_DEBOUNCE_MS = 2_000L;
     /** Reject stale satellite fix clock for callback-driven uploads. */
     private static final long GPS_MAX_UPLOAD_FIX_AGE_MS = 45_000L;
@@ -265,6 +282,19 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private long lastNetworkResumeKickMs;
     /** Wall clock when the current ingest POST started; 0 when idle. */
     private final AtomicLong uploadAttemptStartedMs = new AtomicLong();
+    /**
+     * Bumped when a blocked POST is abandoned. The lingering thread must not keep
+     * posting or write the outbox over the fresh connection.
+     */
+    private volatile int uploadEpoch;
+    /** Batch inside the socket, if that POST should be retried when abandoned. */
+    private volatile InFlightPost inFlightPost;
+    /** Hung socket. disconnect() from the abandon path unblocks the old thread. */
+    private volatile HttpURLConnection inFlightConn;
+    /** Epoch check and in-flight publish. Not held during HTTP. */
+    private final Object uploadFlightLock = new Object();
+    /** SharedPreferences outbox. The retry thread and a lingering POST both take this. */
+    private final Object pendingLock = new Object();
     /** Coalesce flush ticks so a long outage cannot flood the single upload thread. */
     private final AtomicBoolean ingestFlushQueued = new AtomicBoolean(false);
     private final AtomicBoolean pendingFlushQueued = new AtomicBoolean(false);
@@ -360,7 +390,10 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private volatile long lastMapLiveUploadWallMs;
     /** Serializes the sample-interval gate across the wake and a GPS delivery. */
     private final Object liveUploadLock = new Object();
-    /** Serializes ingestBuffer puts against a flush on a replaced upload thread. */
+    /**
+     * Serializes ingestBuffer puts against a flush on a replaced upload thread.
+     * The retry thread and a lingering upload thread must not swap the same batch.
+     */
     private final Object ingestLock = new Object();
     /** Wall clock of the last onLocationChanged. Quiet recovery uses this. */
     private long lastLiveCallbackWallMs;
@@ -454,9 +487,13 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                     exec.execute(
                             () -> {
                                 try {
-                                    flushPendingIngest(
-                                            getSharedPreferences(PREFS, MODE_PRIVATE),
-                                            MAX_PENDING_FLUSH_PER_CYCLE);
+                                    SharedPreferences p =
+                                            getSharedPreferences(PREFS, MODE_PRIVATE);
+                                    // Newest held fix first, then the outbox.
+                                    if (ingestBufferHasSamples()) {
+                                        flushIngestBufferNow();
+                                    }
+                                    flushPendingIngest(p, MAX_PENDING_FLUSH_PER_CYCLE);
                                 } finally {
                                     pendingFlushQueued.set(false);
                                 }
@@ -510,7 +547,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
         // Do not construct FusedLocationProviderClient here. A fused request
         // beside the live LocationManager listener owns GNSS and starves GPS.
-        uploadExecutor = Executors.newSingleThreadExecutor();
+        uploadExecutor = newUploadExecutor();
         createNotificationChannel();
         loadUprightFromPrefs();
     }
@@ -1617,12 +1654,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         // Do not invent a position if none has been accepted yet.
         // Do not attach a stale pre-session fix. Only the accepted map fix is sent.
         if (shown == null || !isGpsFixUsable(shown)) return;
-        if (uploadExecutor == null || uploadExecutor.isShutdown()) {
-            maybeRecreateStuckUploadExecutor();
-        }
         synchronized (liveUploadLock) {
-            ExecutorService exec = uploadExecutor;
-            if (exec == null || exec.isShutdown()) return;
             long now = System.currentTimeMillis();
             long due = managerLocationIntervalMs();
             // uploadLiveFixIfDue already gates on the interval.
@@ -1644,9 +1676,11 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                             + " dueMs="
                             + due
                             + (fromCallback ? " callback" : " poll"));
+            // The sample enters the buffer here. The HTTP flush runs on the upload
+            // thread. Do not only enqueue onto a blocked executor.
             try {
-                exec.execute(
-                        () -> enqueueGpsSample(live, acceptedT, true, RECORDER_TRACK_SOURCE, false, true));
+                enqueueGpsSample(live, acceptedT, true, RECORDER_TRACK_SOURCE, false, true);
+                maybeRecreateStuckUploadExecutor();
             } catch (RuntimeException e) {
                 lastMapLiveUploadWallMs = previousSendWallMs;
                 Log.w(TAG, "Interval send was not queued", e);
@@ -1890,9 +1924,33 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         // Boat-park suppress pauses normal telemetry, but capsize must still reach Manager.
         if (suppressRecordingActive && !sampleHasCapsize(sample)) return;
         synchronized (ingestLock) {
-            ingestBuffer.put(sample);
+            // A second copy of the same accepted fix is not queued inside one interval.
+            if (!bufferContainsSameGpsFix(sample)) {
+                ingestBuffer.put(sample);
+            }
         }
         maybeAutoFlushIngest(flushNow);
+    }
+
+    /** Caller holds ingestLock. Same acceptance t and coordinate already waiting. */
+    private boolean bufferContainsSameGpsFix(JSONObject sample) {
+        JSONObject gps = sample == null ? null : sample.optJSONObject("gps");
+        if (gps == null) return false;
+        long t = sample.optLong("t", Long.MIN_VALUE);
+        double lat = gps.optDouble("lat", Double.NaN);
+        double lon = gps.optDouble("lon", Double.NaN);
+        long fixMs = gps.optLong("fixMs", Long.MIN_VALUE);
+        for (int i = 0; i < ingestBuffer.length(); i++) {
+            JSONObject have = ingestBuffer.optJSONObject(i);
+            if (have == null || have.optLong("t", Long.MIN_VALUE) != t) continue;
+            JSONObject haveGps = have.optJSONObject("gps");
+            if (haveGps == null) continue;
+            if (Double.compare(haveGps.optDouble("lat", Double.NaN), lat) != 0) continue;
+            if (Double.compare(haveGps.optDouble("lon", Double.NaN), lon) != 0) continue;
+            if (haveGps.optLong("fixMs", Long.MIN_VALUE) != fixMs) continue;
+            return true;
+        }
+        return false;
     }
 
     private static boolean sampleHasCapsize(JSONObject sample) {
@@ -1915,36 +1973,168 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 return;
             }
         }
-        flushIngestBufferNow();
-    }
-
-    private void flushIngestBufferNow() {
-        JSONArray toSend;
-        SharedPreferences p;
-        String deviceId;
-        String sessionId;
-        synchronized (ingestLock) {
-            if (ingestBuffer.length() == 0) return;
-            toSend = ingestBuffer;
-            ingestBuffer = new JSONArray();
-            lastIngestFlushMs = System.currentTimeMillis();
-            p = getSharedPreferences(PREFS, MODE_PRIVATE);
-            deviceId = p.getString("deviceId", "");
-            sessionId = p.getString("sessionId", "");
-        }
-        if (deviceId.isEmpty() || sessionId.isEmpty()) {
-            Log.e(TAG, "Missing ingest config — dropping " + toSend.length() + " buffered sample(s)");
+        if (onUploadThread()) {
+            flushIngestBufferNow();
             return;
         }
-        savePulseDiagnostics();
-        if (postBatch(p, sessionId, deviceId, toSend)) {
-            lastSuccessfulUploadMs = System.currentTimeMillis();
-            Log.d(TAG, "Ingest batch OK (" + toSend.length() + " samples)");
-            // Catch up any outage backlog while the link is healthy.
-            flushPendingIngest(p, MAX_PENDING_FLUSH_ON_SUCCESS);
-        } else {
-            Log.w(TAG, "Ingest batch queued for retry (" + toSend.length() + " samples)");
+        // Location and capsize-wake threads must not block on HTTP, and must
+        // not leave the sample only in a queue behind a hung socket.
+        submitIngestFlush();
+    }
+
+    /**
+     * Queue one flush. If a POST is already past the short bound, abandon it
+     * first so this flush is not waiting on that socket.
+     */
+    private void submitIngestFlush() {
+        if (!onUploadThread()) {
+            maybeRecreateStuckUploadExecutor();
         }
+        ExecutorService exec = uploadExecutor;
+        if (exec == null || exec.isShutdown()) return;
+        if (!ingestFlushQueued.compareAndSet(false, true)) return;
+        try {
+            exec.execute(
+                    () -> {
+                        try {
+                            flushIngestBufferNow();
+                        } finally {
+                            ingestFlushQueued.set(false);
+                        }
+                    });
+        } catch (RuntimeException e) {
+            ingestFlushQueued.set(false);
+            throw e;
+        }
+    }
+
+    private int liveFlushDepth;
+
+    private void flushIngestBufferNow() {
+        if (onUploadThread() && !isCurrentUploadThread()) {
+            // This worker was replaced. Its samples are already in the buffer.
+            submitIngestFlush();
+            return;
+        }
+        if (liveFlushDepth >= 4) return;
+        liveFlushDepth++;
+        try {
+            flushIngestBufferBody();
+        } finally {
+            liveFlushDepth--;
+        }
+    }
+
+    private void flushIngestBufferBody() {
+        final int epoch = uploadEpoch;
+        boolean posted = false;
+        boolean stopBackfill = false;
+        // A burst during one POST is sent newest-first. The cap stops a spin.
+        for (int n = 0; n < 8 && epoch == uploadEpoch && !stopBackfill; n++) {
+            JSONArray newest = new JSONArray();
+            JSONArray rest = new JSONArray();
+            SharedPreferences p;
+            String deviceId;
+            String sessionId;
+            synchronized (ingestLock) {
+                if (ingestBuffer.length() == 0) break;
+                int gpsIdx = indexOfNewestGpsSample(ingestBuffer);
+                if (gpsIdx < 0) {
+                    for (int i = 0; i < ingestBuffer.length(); i++) {
+                        JSONObject sample = ingestBuffer.optJSONObject(i);
+                        if (sample != null) newest.put(sample);
+                    }
+                } else {
+                    JSONObject live = ingestBuffer.optJSONObject(gpsIdx);
+                    if (live != null) newest.put(live);
+                    for (int i = 0; i < ingestBuffer.length(); i++) {
+                        if (i == gpsIdx) continue;
+                        JSONObject sample = ingestBuffer.optJSONObject(i);
+                        if (sample != null) rest.put(sample);
+                    }
+                }
+                ingestBuffer = new JSONArray();
+                lastIngestFlushMs = System.currentTimeMillis();
+                p = getSharedPreferences(PREFS, MODE_PRIVATE);
+                deviceId = p.getString("deviceId", "");
+                sessionId = p.getString("sessionId", "");
+            }
+            if (deviceId.isEmpty() || sessionId.isEmpty()) {
+                Log.e(
+                        TAG,
+                        "Missing ingest config — dropping "
+                                + (newest.length() + rest.length())
+                                + " buffered sample(s)");
+                return;
+            }
+            if (rest.length() > 0) {
+                try {
+                    // Newest fix first, then backfill. Older samples wait in the outbox.
+                    enqueuePendingBatch(p, buildBatch(p, sessionId, deviceId, rest));
+                } catch (Exception e) {
+                    Log.e(TAG, "Could not hold older samples for backfill", e);
+                    synchronized (ingestLock) {
+                        for (int i = 0; i < rest.length(); i++) {
+                            JSONObject sample = rest.optJSONObject(i);
+                            if (sample != null) ingestBuffer.put(sample);
+                        }
+                    }
+                }
+            }
+            if (newest.length() == 0) continue;
+            if (epoch != uploadEpoch) {
+                try {
+                    enqueuePendingBatch(p, buildBatch(p, sessionId, deviceId, newest));
+                } catch (Exception e) {
+                    Log.e(TAG, "Could not park newest samples after abandon", e);
+                }
+                stopBackfill = true;
+                break;
+            }
+            savePulseDiagnostics();
+            int result = postBatch(p, sessionId, deviceId, newest, epoch);
+            if (result == POST_ABANDONED || epoch != uploadEpoch) {
+                stopBackfill = true;
+                break;
+            }
+            if (result != POST_OK) {
+                stopBackfill = true;
+                Log.w(TAG, "Ingest batch queued for retry (" + newest.length() + " samples)");
+                break;
+            }
+            posted = true;
+            lastSuccessfulUploadMs = System.currentTimeMillis();
+            Log.d(TAG, "Ingest batch OK (" + newest.length() + " samples)");
+        }
+        if (posted && !stopBackfill && epoch == uploadEpoch) {
+            // Catch up any outage backlog while the link is healthy.
+            flushPendingIngest(
+                    getSharedPreferences(PREFS, MODE_PRIVATE), MAX_PENDING_FLUSH_ON_SUCCESS);
+        }
+        if (!stopBackfill
+                && epoch == uploadEpoch
+                && ingestBufferHasSamples()
+                && isCurrentUploadThread()) {
+            // A fix arrived during backfill. Send it before this thread goes idle.
+            flushIngestBufferNow();
+        }
+    }
+
+    /** Newest recorder_track / gps sample, or -1 when the buffer has no fix. */
+    private static int indexOfNewestGpsSample(JSONArray samples) {
+        int best = -1;
+        long bestT = Long.MIN_VALUE;
+        if (samples == null) return -1;
+        for (int i = 0; i < samples.length(); i++) {
+            JSONObject sample = samples.optJSONObject(i);
+            if (sample == null || sample.optJSONObject("gps") == null) continue;
+            long t = sample.optLong("t", Long.MIN_VALUE);
+            if (t >= bestT) {
+                bestT = t;
+                best = i;
+            }
+        }
+        return best;
     }
 
     private void enqueueGpsSample(Location location, long t) {
@@ -2086,6 +2276,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 gps.put("fixMs", locFix);
                 gps.put("sampleSource", RECORDER_TRACK_SOURCE);
             }
+            // original t is kept. A resend does not stamp the coordinate with now.
             sample.put("t", sampleT);
             sample.put("gps", gps);
             if (enableMotion && (lastAx != 0f || lastAy != 0f || lastAz != 0f)) {
@@ -2268,28 +2459,29 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         return batch;
     }
 
-    private boolean postBatch(
-            SharedPreferences p, String sessionId, String deviceId, JSONArray samples) {
+    private int postBatch(
+            SharedPreferences p, String sessionId, String deviceId, JSONArray samples, int epoch) {
         try {
-            return postBatchJson(p, buildBatch(p, sessionId, deviceId, samples), true);
+            return postBatchJson(p, buildBatch(p, sessionId, deviceId, samples), true, epoch);
         } catch (Exception e) {
             Log.e(TAG, "postBatch build failed", e);
             recordUploadResult(-1, samples.length(), false);
-            return false;
+            return POST_FAIL;
         }
     }
 
-    private boolean postBatchJson(SharedPreferences p, JSONObject batch, boolean requeueOnFailure) {
+    private int postBatchJson(
+            SharedPreferences p, JSONObject batch, boolean requeueOnFailure, int epoch) {
         int sampleCount = 0;
         try {
             JSONArray samples = batch.getJSONArray("samples");
             sampleCount = samples.length();
-            return postIngestJson(p, batch.toString(), sampleCount, requeueOnFailure, batch);
+            return postIngestJson(p, batch.toString(), sampleCount, requeueOnFailure, batch, epoch);
         } catch (Exception e) {
             recordUploadResult(-1, sampleCount, false);
             Log.e(TAG, "postBatchJson build failed", e);
             if (requeueOnFailure) enqueuePendingBatch(p, batch);
-            return false;
+            return POST_FAIL;
         }
     }
 
@@ -2305,7 +2497,7 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                 body.put("athleteId", athleteId);
             }
             body.put("endedAt", endedAtMs);
-            boolean ok = postIngestJson(p, body.toString(), 0, false, null);
+            boolean ok = postIngestJson(p, body.toString(), 0, false, null, uploadEpoch) == POST_OK;
             if (ok) {
                 Log.i(
                         TAG,
@@ -2321,23 +2513,46 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
-    private boolean postIngestJson(
+    private int postIngestJson(
             SharedPreferences p,
             String body,
             int sampleCount,
             boolean requeueOnFailure,
-            JSONObject requeueBatch) {
+            JSONObject requeueBatch,
+            int epoch) {
         HttpURLConnection conn = null;
+        InFlightPost flight = requeueBatch != null ? new InFlightPost(requeueBatch) : null;
+        boolean published = false;
+        synchronized (uploadFlightLock) {
+            if (uploadEpoch != epoch) {
+                published = false;
+            } else if (flight != null) {
+                inFlightPost = flight;
+                published = true;
+            } else {
+                published = true;
+            }
+        }
+        if (!published) {
+            // Never entered the socket. Caller with requeue=false still holds the batch.
+            if (requeueOnFailure && requeueBatch != null) {
+                enqueuePendingBatch(p, requeueBatch);
+                return POST_ABANDONED;
+            }
+            return POST_FAIL;
+        }
         long attemptStarted = System.currentTimeMillis();
         uploadAttemptStartedMs.set(attemptStarted);
         try {
             String ingestUrl = p.getString("ingestUrl", "");
             if (ingestUrl.isEmpty()) {
                 recordUploadResult(-1, sampleCount, false);
-                return false;
+                finishInFlight(flight, false, false, p, requeueBatch, requeueOnFailure);
+                return POST_FAIL;
             }
             URL url = new URL(ingestUrl);
             conn = (HttpURLConnection) url.openConnection();
+            inFlightConn = conn;
             conn.setConnectTimeout(INGEST_CONNECT_TIMEOUT_MS);
             conn.setReadTimeout(INGEST_READ_TIMEOUT_MS);
             conn.setRequestMethod("POST");
@@ -2347,30 +2562,43 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
             if (!token.isEmpty()) {
                 conn.setRequestProperty("Authorization", "Bearer " + token);
             }
+            if (uploadEpoch != epoch) {
+                return abandonOwnedPost(flight, p, requeueBatch, requeueOnFailure);
+            }
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(body.getBytes(StandardCharsets.UTF_8));
+            }
+            if (uploadEpoch != epoch) {
+                return abandonOwnedPost(flight, p, requeueBatch, requeueOnFailure);
             }
             int code = conn.getResponseCode();
             boolean ok = code >= 200 && code < 300;
             recordUploadResult(code, sampleCount, ok);
-            if (!ok) {
-                Log.w(TAG, "Ingest HTTP " + code);
-                if (requeueOnFailure && requeueBatch != null) {
-                    enqueuePendingBatch(p, requeueBatch);
+            if (ok) {
+                if (flight != null && !flight.markFinished()) {
+                    // Abandon already parked this batch. Drop that copy if it is still queued.
+                    removePendingBatch(p, requeueBatch);
                 }
+                clearInFlight(flight);
+                return POST_OK;
             }
-            return ok;
+            Log.w(TAG, "Ingest HTTP " + code);
+            return finishInFlight(flight, false, true, p, requeueBatch, requeueOnFailure);
         } catch (Exception e) {
+            if (uploadEpoch != epoch || (flight != null && flight.wasParked())) {
+                recordUploadResult(-1, sampleCount, false);
+                Log.w(TAG, "Ingest POST abandoned", e);
+                clearInFlight(flight);
+                return POST_ABANDONED;
+            }
             recordUploadResult(-1, sampleCount, false);
             Log.e(TAG, "Ingest POST failed", e);
-            if (requeueOnFailure && requeueBatch != null) {
-                enqueuePendingBatch(p, requeueBatch);
-            }
-            return false;
+            return finishInFlight(flight, false, true, p, requeueBatch, requeueOnFailure);
         } finally {
             // An abandoned thread must not clear a newer attempt's clock.
             uploadAttemptStartedMs.compareAndSet(attemptStarted, 0L);
             if (conn != null) {
+                if (inFlightConn == conn) inFlightConn = null;
                 try {
                     conn.disconnect();
                 } catch (Exception ignored) {
@@ -2379,7 +2607,70 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
+    /**
+     * @return POST_ABANDONED when the batch is already in the outbox, POST_FAIL when
+     *     the caller still has to keep it.
+     */
+    private int finishInFlight(
+            InFlightPost flight,
+            boolean ok,
+            boolean failed,
+            SharedPreferences p,
+            JSONObject requeueBatch,
+            boolean requeueOnFailure) {
+        if (ok) {
+            if (flight != null) flight.markFinished();
+            clearInFlight(flight);
+            return POST_OK;
+        }
+        if (flight != null && flight.wasParked()) {
+            clearInFlight(flight);
+            return POST_ABANDONED;
+        }
+        if (failed && uploadEpoch != 0 && flight != null && flight.wasParked()) {
+            clearInFlight(flight);
+            return POST_ABANDONED;
+        }
+        if (requeueOnFailure && requeueBatch != null && (flight == null || flight.handOff())) {
+            enqueuePendingBatch(p, requeueBatch);
+            clearInFlight(flight);
+            return POST_FAIL;
+        }
+        clearInFlight(flight);
+        return POST_FAIL;
+    }
+
+    private int abandonOwnedPost(
+            InFlightPost flight,
+            SharedPreferences p,
+            JSONObject requeueBatch,
+            boolean requeueOnFailure) {
+        if (flight != null && flight.handOff()) {
+            if (requeueBatch != null) enqueuePendingBatch(p, requeueBatch);
+            clearInFlight(flight);
+            return POST_ABANDONED;
+        }
+        clearInFlight(flight);
+        if (flight != null && flight.wasParked()) return POST_ABANDONED;
+        if (requeueOnFailure && requeueBatch != null) {
+            enqueuePendingBatch(p, requeueBatch);
+            return POST_ABANDONED;
+        }
+        return POST_FAIL;
+    }
+
+    private void clearInFlight(InFlightPost flight) {
+        if (flight != null && inFlightPost == flight) inFlightPost = null;
+    }
+
     private void enqueuePendingBatch(SharedPreferences p, JSONObject batch) {
+        if (batch == null) return;
+        synchronized (pendingLock) {
+            appendPendingBatchLocked(p, batch);
+        }
+    }
+
+    private void appendPendingBatchLocked(SharedPreferences p, JSONObject batch) {
         try {
             JSONArray queue = new JSONArray(p.getString(PENDING_BATCHES_KEY, "[]"));
             queue.put(batch);
@@ -2393,42 +2684,193 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
         }
     }
 
+    /** Drop one parked copy after the original socket later succeeds. */
+    private void removePendingBatch(SharedPreferences p, JSONObject batch) {
+        if (batch == null) return;
+        String key = batch.toString();
+        synchronized (pendingLock) {
+            try {
+                JSONArray queue = new JSONArray(p.getString(PENDING_BATCHES_KEY, "[]"));
+                JSONArray kept = new JSONArray();
+                boolean removed = false;
+                for (int i = 0; i < queue.length(); i++) {
+                    JSONObject item = queue.optJSONObject(i);
+                    if (!removed && item != null && key.equals(item.toString())) {
+                        removed = true;
+                        continue;
+                    }
+                    if (item != null) kept.put(item);
+                }
+                if (removed) {
+                    p.edit().putString(PENDING_BATCHES_KEY, kept.toString()).apply();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "removePendingBatch failed", e);
+            }
+        }
+    }
+
     private void flushPendingIngest(SharedPreferences p) {
         flushPendingIngest(p, MAX_PENDING_FLUSH_PER_CYCLE);
     }
 
     private void flushPendingIngest(SharedPreferences p, int maxFlush) {
+        if (maxFlush <= 0) return;
+        final int epoch = uploadEpoch;
+        JSONArray taken;
+        synchronized (pendingLock) {
+            try {
+                JSONArray queue = new JSONArray(p.getString(PENDING_BATCHES_KEY, "[]"));
+                if (queue.length() == 0) return;
+                PendingTake split = takeNewestPendingBatches(queue, maxFlush);
+                taken = split.taken;
+                p.edit().putString(PENDING_BATCHES_KEY, split.kept.toString()).apply();
+            } catch (Exception e) {
+                Log.e(TAG, "flushPendingIngest failed", e);
+                return;
+            }
+        }
+        JSONArray failed = new JSONArray();
+        int sent = 0;
         try {
-            JSONArray queue = new JSONArray(p.getString(PENDING_BATCHES_KEY, "[]"));
-            if (queue.length() == 0) return;
-            JSONArray remaining = new JSONArray();
-            int sent = 0;
-            for (int i = 0; i < queue.length(); i++) {
-                JSONObject batch = queue.getJSONObject(i);
-                if (postBatchJson(p, batch, false)) {
+            for (int i = 0; i < taken.length(); i++) {
+                if (epoch != uploadEpoch || newerLiveFixWaiting()) {
+                    for (int j = i; j < taken.length(); j++) {
+                        JSONObject rest = taken.optJSONObject(j);
+                        if (rest != null) failed.put(rest);
+                    }
+                    break;
+                }
+                JSONObject batch = taken.optJSONObject(i);
+                if (batch == null) continue;
+                int result = postBatchJson(p, batch, false, epoch);
+                if (result == POST_OK) {
                     sent++;
-                } else {
-                    remaining.put(batch);
+                } else if (result != POST_ABANDONED) {
+                    failed.put(batch);
+                }
+                if (result == POST_ABANDONED || epoch != uploadEpoch || newerLiveFixWaiting()) {
+                    for (int j = i + 1; j < taken.length(); j++) {
+                        JSONObject rest = taken.optJSONObject(j);
+                        if (rest != null) failed.put(rest);
+                    }
+                    break;
                 }
                 if (sent >= maxFlush) {
-                    for (int j = i + 1; j < queue.length(); j++) {
-                        remaining.put(queue.getJSONObject(j));
+                    for (int j = i + 1; j < taken.length(); j++) {
+                        JSONObject rest = taken.optJSONObject(j);
+                        if (rest != null) failed.put(rest);
                     }
                     break;
                 }
             }
-            p.edit().putString(PENDING_BATCHES_KEY, remaining.toString()).apply();
-            if (sent > 0) {
-                Log.i(
-                    TAG,
-                    "Flushed "
-                        + sent
-                        + " pending ingest batch(es), "
-                        + remaining.length()
-                        + " left");
-            }
         } catch (Exception e) {
             Log.e(TAG, "flushPendingIngest failed", e);
+        }
+        if (failed.length() > 0) {
+            synchronized (pendingLock) {
+                for (int i = 0; i < failed.length(); i++) {
+                    JSONObject batch = failed.optJSONObject(i);
+                    if (batch != null) appendPendingBatchLocked(p, batch);
+                }
+            }
+        }
+        if (sent > 0) {
+            Log.i(TAG, "Flushed " + sent + " pending ingest batch(es)");
+        }
+    }
+
+    /** Newest location batch first while recording, then the rest in outbox order. */
+    private PendingTake takeNewestPendingBatches(JSONArray queue, int maxFlush) {
+        JSONArray taken = new JSONArray();
+        JSONArray kept = new JSONArray();
+        int newestGps = -1;
+        long bestT = Long.MIN_VALUE;
+        boolean newestFirst = recordingServiceActive && !recordingHalted && !standbyMode;
+        if (newestFirst) {
+            for (int i = 0; i < queue.length(); i++) {
+                long t = newestGpsTInBatch(queue.optJSONObject(i));
+                if (t > bestT) {
+                    bestT = t;
+                    newestGps = i;
+                }
+            }
+        }
+        boolean[] take = new boolean[queue.length()];
+        int count = 0;
+        if (newestGps >= 0 && bestT > Long.MIN_VALUE) {
+            take[newestGps] = true;
+            count++;
+            JSONObject batch = queue.optJSONObject(newestGps);
+            if (batch != null) taken.put(batch);
+        }
+        for (int i = 0; i < queue.length() && count < maxFlush; i++) {
+            if (take[i]) continue;
+            take[i] = true;
+            count++;
+            JSONObject batch = queue.optJSONObject(i);
+            if (batch != null) taken.put(batch);
+        }
+        for (int i = 0; i < queue.length(); i++) {
+            if (take[i]) continue;
+            JSONObject batch = queue.optJSONObject(i);
+            if (batch != null) kept.put(batch);
+        }
+        return new PendingTake(taken, kept);
+    }
+
+    private static long newestGpsTInBatch(JSONObject batch) {
+        if (batch == null) return Long.MIN_VALUE;
+        JSONArray samples = batch.optJSONArray("samples");
+        if (samples == null) return Long.MIN_VALUE;
+        long best = Long.MIN_VALUE;
+        for (int i = 0; i < samples.length(); i++) {
+            JSONObject sample = samples.optJSONObject(i);
+            if (sample == null || sample.optJSONObject("gps") == null) continue;
+            long t = sample.optLong("t", Long.MIN_VALUE);
+            if (t > best) best = t;
+        }
+        return best;
+    }
+
+    private boolean newerLiveFixWaiting() {
+        if (!recordingServiceActive || recordingHalted || standbyMode) return false;
+        synchronized (ingestLock) {
+            return indexOfNewestGpsSample(ingestBuffer) >= 0;
+        }
+    }
+
+    private static final class PendingTake {
+        final JSONArray taken;
+        final JSONArray kept;
+
+        PendingTake(JSONArray taken, JSONArray kept) {
+            this.taken = taken;
+            this.kept = kept;
+        }
+    }
+
+    private static final class InFlightPost {
+        static final int OPEN = 0;
+        static final int PARKED = 1;
+        static final int FINISHED = 2;
+        final JSONObject batch;
+        final AtomicInteger state = new AtomicInteger(OPEN);
+
+        InFlightPost(JSONObject batch) {
+            this.batch = batch;
+        }
+
+        boolean handOff() {
+            return state.compareAndSet(OPEN, PARKED);
+        }
+
+        boolean markFinished() {
+            return state.compareAndSet(OPEN, FINISHED);
+        }
+
+        boolean wasParked() {
+            return state.get() == PARKED;
         }
     }
 
@@ -3389,7 +3831,28 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     private void schedulePendingFlush() {
         if (standbyMode) return;
         mainHandler.removeCallbacks(pendingFlushRunnable);
-        mainHandler.postDelayed(pendingFlushRunnable, PENDING_FLUSH_INTERVAL_MS);
+        mainHandler.postDelayed(pendingFlushRunnable, effectivePendingFlushMs());
+    }
+
+    private long effectivePendingFlushMs() {
+        // While recording, retry pending location batches within a couple of seconds.
+        if (recordingServiceActive && !recordingHalted && !standbyMode) {
+            return LIVE_PENDING_FLUSH_MS;
+        }
+        return PENDING_FLUSH_INTERVAL_MS;
+    }
+
+    private long uploadStuckBoundMs() {
+        if (recordingServiceActive && !recordingHalted && !standbyMode) {
+            return LIVE_UPLOAD_ABANDON_MS;
+        }
+        return UPLOAD_STUCK_MS;
+    }
+
+    private boolean ingestBufferHasSamples() {
+        synchronized (ingestLock) {
+            return ingestBuffer.length() > 0;
+        }
     }
 
     /**
@@ -3425,7 +3888,6 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
                                     try {
                                         SharedPreferences p =
                                                 getSharedPreferences(PREFS, MODE_PRIVATE);
-                                        flushPendingIngest(p, MAX_PENDING_FLUSH_PER_CYCLE);
                                         flushIngestBufferNow();
                                         flushPendingIngest(p, MAX_PENDING_FLUSH_PER_CYCLE);
                                     } finally {
@@ -3443,19 +3905,87 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private synchronized void recreateUploadExecutor(String reason) {
+        // A stuck in-flight post must not block a newer live fix.
+        // Park the in-flight batch for retry and disconnect the hung socket.
+        parkInFlightBatchForRetry();
+        disconnectInFlight();
         List<Runnable> dropped = new ArrayList<>();
         if (uploadExecutor != null && !uploadExecutor.isShutdown()) {
             dropped = uploadExecutor.shutdownNow();
         }
-        uploadExecutor = Executors.newSingleThreadExecutor();
+        uploadExecutor = newUploadExecutor();
         uploadAttemptStartedMs.set(0L);
         ingestFlushQueued.set(false);
         pendingFlushQueued.set(false);
         networkResumeQueued.set(false);
+        ExecutorService exec = uploadExecutor;
+        if (exec != null) {
+            // Newest fix first, then backfill.
+            exec.execute(
+                    () -> {
+                        flushIngestBufferNow();
+                        flushPendingIngest(
+                                getSharedPreferences(PREFS, MODE_PRIVATE),
+                                MAX_PENDING_FLUSH_PER_CYCLE);
+                    });
+        }
         // shutdownNow drops queued GPS/capsize batches that have not entered
         // the buffer. Retry them before any newer interval send.
         retryDroppedUploadTasks(dropped);
         Log.w(TAG, "Upload executor recreated (" + reason + ")");
+    }
+
+    /** Copy the socket's batch into the outbox, then invalidate that attempt. */
+    private void parkInFlightBatchForRetry() {
+        InFlightPost flight;
+        synchronized (uploadFlightLock) {
+            flight = inFlightPost;
+            inFlightPost = null;
+            uploadEpoch++;
+        }
+        executorGeneration++;
+        if (flight != null && flight.batch != null && flight.handOff()) {
+            enqueuePendingBatch(getSharedPreferences(PREFS, MODE_PRIVATE), flight.batch);
+            Log.w(TAG, "Parked in-flight ingest batch for retry");
+        }
+    }
+
+    private void disconnectInFlight() {
+        HttpURLConnection conn = inFlightConn;
+        inFlightConn = null;
+        if (conn == null) return;
+        try {
+            conn.disconnect();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private final ThreadLocal<Integer> uploadGeneration = new ThreadLocal<>();
+    private volatile int executorGeneration;
+
+    private ExecutorService newUploadExecutor() {
+        final int generation = executorGeneration;
+        return Executors.newSingleThreadExecutor(
+                r ->
+                        new Thread(
+                                () -> {
+                                    uploadGeneration.set(generation);
+                                    try {
+                                        r.run();
+                                    } finally {
+                                        uploadGeneration.remove();
+                                    }
+                                },
+                                UPLOAD_THREAD_NAME));
+    }
+
+    private static boolean onUploadThread() {
+        return UPLOAD_THREAD_NAME.equals(Thread.currentThread().getName());
+    }
+
+    private boolean isCurrentUploadThread() {
+        Integer generation = uploadGeneration.get();
+        return generation != null && generation == executorGeneration;
     }
 
     /**
@@ -3491,15 +4021,16 @@ public class CapsizeMonitorService extends Service implements SensorEventListene
     }
 
     private synchronized void maybeRecreateStuckUploadExecutor() {
+        if (onUploadThread()) return;
         if (uploadExecutor == null || uploadExecutor.isShutdown()) {
             recreateUploadExecutor("missing");
             return;
         }
         long started = uploadAttemptStartedMs.get();
-        boolean stuck =
-                started > 0L && System.currentTimeMillis() - started > UPLOAD_STUCK_MS;
+        long bound = uploadStuckBoundMs();
+        boolean stuck = started > 0L && System.currentTimeMillis() - started > bound;
         if (stuck) {
-            recreateUploadExecutor("stuck>" + UPLOAD_STUCK_MS + "ms");
+            recreateUploadExecutor("stuck>" + bound + "ms");
         }
     }
 

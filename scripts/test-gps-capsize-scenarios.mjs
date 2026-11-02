@@ -299,6 +299,29 @@ check(
     && /enqueuePendingBatch\(/.test(nativeSrc)
     && /maybeRecreateStuckUploadExecutor\(\)/.test(nativeSrc),
 );
+check(
+  'a stuck in-flight post does not block a newer live fix',
+  /LIVE_UPLOAD_ABANDON_MS = 9_000L/.test(nativeSrc)
+    && /A stuck in-flight post must not block a newer live fix/.test(nativeSrc)
+    && /parkInFlightBatchForRetry\(/.test(nativeSrc)
+    && /disconnectInFlight\(/.test(nativeSrc)
+    && /Newest fix first/.test(nativeSrc)
+    && /return LIVE_UPLOAD_ABANDON_MS/.test(nativeSrc)
+    && /Do not only enqueue onto a blocked executor/.test(nativeSrc)
+    && /indexOfNewestGpsSample\(/.test(nativeSrc)
+    && /takeNewestPendingBatches\(/.test(nativeSrc)
+    && /original t is kept/.test(nativeSrc)
+    && /A quiet resend does not advance t/.test(nativeSrc)
+    && /LIVE_PENDING_FLUSH_MS = 2_000L/.test(nativeSrc)
+    && /While recording, retry pending location batches within a couple of seconds/.test(nativeSrc)
+    && /return LIVE_PENDING_FLUSH_MS/.test(nativeSrc)
+    && /postDelayed\(pendingFlushRunnable, effectivePendingFlushMs\(\)\)/.test(nativeSrc)
+    && /showAlertNotification\(\);[\s\S]{0,250}enqueueCapsizeSample\(/.test(nativeSrc)
+    && /if \(isCapsizeWakeIntent\(intent\) && recordingServiceActive\) \{[\s\S]{0,900}pollFreshCapsizeSample\(\);[\s\S]{0,500}uploadLiveFixIfDue\(false\)/.test(nativeSrc)
+    && /ACTION_LIVE_LOCATION/.test(nativeSrc)
+    && /PendingIntent\.getForegroundService\(/.test(nativeSrc)
+    && /requestLocationUpdates\(\s*LocationManager\.GPS_PROVIDER,\s*minTime,\s*MANAGER_GPS_MIN_M,\s*pi\)/.test(nativeSrc),
+);
 check('explainer has tip / right / on-the-way / I\'m OK / offline / re-arm / multi', /id: 'stay'/.test(explainerSrc) && /id: 'right-no-ack'/.test(explainerSrc) && /id: 'right-on-way'/.test(explainerSrc) && /id: 'athlete-ok'/.test(explainerSrc) && /id: 'offline-reconnect'/.test(explainerSrc) && /id: 'multi'/.test(explainerSrc) && /REARM_MS = 60_000/.test(explainerSrc) && /holdUntilUpright/.test(explainerSrc));
 check('explainer has no GPS-regain scenario', !/gps-regain|last-known|GPS live/.test(explainerSrc) && !/GPS regain/.test(explainerHtml));
 
