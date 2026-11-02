@@ -98,6 +98,7 @@ import { repairOversizedPendingOutbox } from '../session/store';
 import {
   formatPrognostic,
   formatSplit500m,
+  hrBarColor,
   hrToT,
   MetricRollingAvg,
   STROKE_AVG_WINDOW_MS,
@@ -983,6 +984,21 @@ export function mountApp(root: HTMLElement): void {
     });
   }
 
+  function setHrRail(bpm: number | null | undefined): void {
+    const hrRail = root.querySelector('[data-rail-hr]') as HTMLElement | null;
+    if (!hrRail) return;
+    const valueEl = hrRail.querySelector('[data-rail-hr-value]');
+    const live = bpm != null && Number.isFinite(bpm) && bpm > 0;
+    hrRail.classList.toggle('is-live', live);
+    if (valueEl) valueEl.textContent = live ? String(Math.round(bpm)) : '';
+    hrRail.setAttribute(
+      'aria-label',
+      live
+        ? `Heart rate ${Math.round(bpm)} beats per minute`
+        : 'Heart rate spectrum: 200 top, 100 bottom. No monitor connected',
+    );
+  }
+
   function updateLiveHud(): void {
     if (!recording || view !== 'record') return;
     const stats = controller?.getStats();
@@ -1080,13 +1096,13 @@ export function mountApp(root: HTMLElement): void {
     );
     const hr = stats?.lastHr;
     const hrT = hr != null && hr > 0 ? hrToT(hr) : undefined;
+    setHrRail(hr);
     updateSpectrumRail(
       root.querySelector('[data-rail-hr]') as HTMLElement | null,
       hrT,
       {
-        // Same band thresholds as pace prognostic: 60–70 green … 90–100 red … ≥100 purple.
-        fillColor:
-          hrT != null ? speedChartColorForPrognostic(hrT * 100) : undefined,
+        // Prognostic hexes, low → high, in six equal slices of the 100–200 rail.
+        fillColor: hrT != null && hr != null ? hrBarColor(hr) : undefined,
       },
     );
 
@@ -1466,8 +1482,9 @@ export function mountApp(root: HTMLElement): void {
         <span class="spectrum-rail__fast">1:15</span>
         <span class="spectrum-rail__slow">2:30</span>
       </div>
-      <div class="spectrum-rail spectrum-rail--hr" data-rail-hr aria-label="Heart rate spectrum: 200 top, 100 bottom">
+      <div class="spectrum-rail spectrum-rail--hr" data-rail-hr aria-label="Heart rate spectrum: 200 top, 100 bottom. No monitor connected">
         <span class="spectrum-rail__marker" data-rail-marker></span>
+        <span class="spectrum-rail__value" data-rail-hr-value></span>
         <span class="spectrum-rail__legend">HR</span>
         <span class="spectrum-rail__fast">200</span>
         <span class="spectrum-rail__slow">100</span>
@@ -2005,6 +2022,9 @@ export function mountApp(root: HTMLElement): void {
     });
     if (st.connected && st.lastBpm != null) {
       setHudText('[data-hud-hr]', String(st.lastBpm));
+      setHrRail(st.lastBpm);
+    } else if (!st.connected && controller?.getStats()?.lastHr == null) {
+      setHrRail(null);
     }
   }
 

@@ -35,6 +35,32 @@ export function hrToT(bpm: number): number {
   return clamp01((bpm - HR_SLOW_BPM) / (HR_FAST_BPM - HR_SLOW_BPM));
 }
 
+/**
+ * Prognostic palette, low → high. Same hexes as speedChartColorForPrognostic
+ * (cyan, green, yellow, orange, red, purple).
+ */
+export const HR_BAR_COLORS = [
+  '#00e5ff',
+  '#34d399',
+  '#fbbf24',
+  '#f97316',
+  '#ef4444',
+  '#c084fc',
+] as const;
+
+/**
+ * HR rail fill. The on-screen scale is HR_SLOW_BPM (100) to HR_FAST_BPM (200).
+ * That span is six equal slices of those prognostic colours, low to high.
+ * Not boat speed, and not a medical heart-rate zone. Readings outside
+ * 100–200 clamp to the end colour. Callers skip this when no monitor reading.
+ */
+export function hrBarColor(bpm: number): string {
+  const t = hrToT(bpm);
+  const n = HR_BAR_COLORS.length;
+  if (t >= 1) return HR_BAR_COLORS[n - 1];
+  return HR_BAR_COLORS[Math.min(n - 1, Math.floor(t * n))];
+}
+
 /** Vertical marker: 0% top = fast, 100% bottom = slow. */
 export function railPositionFromT(t: number): number {
   return (1 - clamp01(t)) * 100;

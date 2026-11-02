@@ -890,6 +890,46 @@
   right: 0;
 }
 
+/* Live BPM sits on the HR rail. The faint scale gradient would hide that number, so the rail colour comes only from the reading. */
+.spectrum-rail--hr::before {
+  opacity: 0;
+}
+
+.spectrum-rail__value {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: 1.65rem;
+  z-index: 3;
+  transform: translateX(-50%);
+  max-width: calc(100% - 4px);
+  padding: 0.1rem 0.12rem;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #0b1f3a;
+  font-size: 0.72rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  text-align: center;
+  box-shadow: 0 1px 2px rgba(11, 31, 58, 0.35);
+}
+
+.spectrum-rail--hr.is-live .spectrum-rail__value {
+  display: block;
+}
+
+.spectrum-rail--hr.is-live .spectrum-rail__legend {
+  display: none;
+}
+
+.spectrum-rail--hr.is-live .spectrum-rail__fast,
+.spectrum-rail--hr.is-live .spectrum-rail__slow {
+  color: #0b1f3a;
+  text-shadow: 0 0 2px #ffffff, 0 0 3px #ffffff;
+}
+
 .spectrum-rail__marker {
   position: absolute;
   left: 1px;
@@ -1088,7 +1128,11 @@
   font-size: 1.1rem;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
-  color: var(--ahd-accent);
+  color: #0b1f3a;
+  background: #ffffff;
+  border: 1px solid rgba(11, 31, 58, 0.16);
+  border-radius: 10px;
+  padding: 0.2rem 0.55rem;
   min-width: 3.5rem;
 }
 
@@ -1214,10 +1258,10 @@
   flex: 1;
   min-height: 154px;
   border-radius: 12px;
-  border: 1px solid var(--ahd-border);
+  border: 1px solid rgba(11, 31, 58, 0.16);
   overflow: hidden;
-  background: rgba(12, 28, 52, 0.92);
-  box-shadow: inset 0 0 0 1px rgba(0, 229, 255, 0.06);
+  background: #ffffff;
+  box-shadow: none;
 }
 
 .session-speed-chart-wrap canvas {
@@ -1388,6 +1432,44 @@
   font-size: 0.85rem;
 }
 
+.session-stage:fullscreen .spectrum-rail__value,
+.session-stage--fullscreen .spectrum-rail__value {
+  top: 2rem;
+  font-size: 0.95rem;
+  padding: 0.14rem 0.16rem;
+}
+
+/* Metrics tab: solid white tiles, dark text — readable in sun on the navy stage. */
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric {
+  background: #ffffff;
+  border: 1px solid rgba(11, 31, 58, 0.14);
+  border-radius: 12px;
+  padding: 0.4rem 0.5rem 0.45rem;
+}
+
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric__value,
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric__prog,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__value,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__prog,
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__value,
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric--timer .session-metric__value,
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric--spm .session-metric__value,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__value,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--timer .session-metric__value,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--spm .session-metric__value {
+  color: #0b1f3a;
+  -webkit-text-fill-color: #0b1f3a;
+}
+
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric__label,
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric__sub,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__label,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__sub {
+  color: #1e3a5f;
+  opacity: 1;
+}
+
 .session-stage:fullscreen .hub-topbar,
 .session-stage:fullscreen .ahd-footer,
 .session-stage:fullscreen .hub-stats-bar,
@@ -1553,10 +1635,11 @@
   .session-stage--fullscreen .session-fs-timer {
     padding: 0.35rem 0.6rem;
     border-radius: 10px;
-    border: 1px solid rgba(232, 244, 252, 0.22);
-    background: rgba(10, 22, 40, 0.55);
-    backdrop-filter: blur(6px);
-    color: #f8fafc;
+    border: 1px solid rgba(11, 31, 58, 0.16);
+    background: #ffffff;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    color: #0b1f3a;
   }
 
   .session-stage:fullscreen .session-fs-tabs,
@@ -1632,11 +1715,11 @@
     width: min(14.75rem, calc(100% - 1.3rem));
     padding: 0.5rem 0.6rem 0.55rem;
     border-radius: 12px;
-    border: 1px solid rgba(232, 244, 252, 0.18);
-    background: rgba(10, 22, 40, 0.55);
-    backdrop-filter: blur(5px);
-    -webkit-backdrop-filter: blur(5px);
-    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(11, 31, 58, 0.18);
+    background: #ffffff;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: 0 2px 8px rgba(11, 31, 58, 0.12);
     pointer-events: none;
     transform: translateZ(0);
     will-change: transform;
@@ -1645,15 +1728,30 @@
   .session-stage:fullscreen .session-metrics-overlay .session-metric__label,
   .session-stage--fullscreen .session-metrics-overlay .session-metric__label {
     font-size: 0.52rem;
-    color: rgba(248, 250, 252, 0.72);
+    color: #1e3a5f;
   }
 
   .session-stage:fullscreen .session-metrics-overlay .session-metric__value,
-  .session-stage--fullscreen .session-metrics-overlay .session-metric__value {
+  .session-stage--fullscreen .session-metrics-overlay .session-metric__value,
+  .session-stage:fullscreen .session-metrics-overlay .session-metric--pace-overlay .session-metric__value,
+  .session-stage--fullscreen .session-metrics-overlay .session-metric--pace-overlay .session-metric__value {
     font-size: 0.88rem;
-    color: #f8fafc;
-    -webkit-text-fill-color: #f8fafc;
+    color: #0b1f3a;
+    -webkit-text-fill-color: #0b1f3a;
     white-space: nowrap;
+  }
+
+  .session-stage:fullscreen .session-metrics-overlay .session-metric__prog,
+  .session-stage--fullscreen .session-metrics-overlay .session-metric__prog,
+  .session-stage:fullscreen .session-metrics-overlay .session-metric--pace-overlay .session-metric__prog,
+  .session-stage--fullscreen .session-metrics-overlay .session-metric--pace-overlay .session-metric__prog {
+    color: #0b1f3a;
+    -webkit-text-fill-color: #0b1f3a;
+  }
+
+  .session-stage:fullscreen .session-metrics-overlay .session-metric--pace-overlay .session-metric__sep,
+  .session-stage--fullscreen .session-metrics-overlay .session-metric--pace-overlay .session-metric__sep {
+    color: #1e3a5f;
   }
 
   .session-stage:fullscreen .session-map-follow,

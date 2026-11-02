@@ -86,10 +86,10 @@
     if (speedMps == null || !Number.isFinite(speedMps) || speedMps < MIN_SPEED_MPS) {
       return '—';
     }
-    const sec = 500 / speedMps;
-    const m = Math.floor(sec / 60);
-    const s = (sec % 60).toFixed(1);
-    return m + ':' + s.padStart(4, '0');
+    const totalSec = Math.round(500 / speedMps);
+    const m = Math.floor(totalSec / 60);
+    const s = String(totalSec % 60).padStart(2, '0');
+    return m + ':' + s;
   }
 
   function prognosticPercent(speedMps, boatClass) {
@@ -108,7 +108,7 @@
   function formatPrognostic(speedMps, boatClass) {
     const pct = prognosticPercent(speedMps, boatClass);
     if (pct == null) return null;
-    return pct.toFixed(1) + '%';
+    return Math.round(pct) + '%';
   }
 
   function formatPaceWithPrognostic(speedMps) {
