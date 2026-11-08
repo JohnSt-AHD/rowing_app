@@ -1966,20 +1966,111 @@
     font-size: clamp(5.75rem, 26vh, 8rem);
   }
 
+  /* Landscape metrics only: chrome in the flow, with a margin inside the rails.
+     Graph and map keep the floating chrome and their own stage padding. */
+  .session-stage:fullscreen.session-stage--metrics .session-live-hud,
+  .session-stage--fullscreen.session-stage--metrics .session-live-hud {
+    padding: 10px 0;
+    gap: 8px;
+    min-height: 0;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-fs-chrome,
+  .session-stage--fullscreen.session-stage--metrics .session-fs-chrome {
+    position: relative;
+    top: auto;
+    left: auto;
+    right: auto;
+    width: 100%;
+    margin: 0;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.35rem;
+    min-width: 0;
+    z-index: 2;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-fs-timer,
+  .session-stage--fullscreen.session-stage--metrics .session-fs-timer {
+    flex: 0 0 auto;
+    padding: 0.26rem 0.45rem;
+    font-size: 0.95rem;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-fs-tabs,
+  .session-stage--fullscreen.session-stage--metrics .session-fs-tabs {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto;
+    justify-content: center;
+    gap: 0.08rem;
+    padding: 0.1rem;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-fs-tab,
+  .session-stage--fullscreen.session-stage--metrics .session-fs-tab {
+    padding: 0.24rem 0.32rem;
+    font-size: clamp(0.62rem, 1.4vw, 0.74rem);
+    white-space: nowrap;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-fs-chrome__actions,
+  .session-stage--fullscreen.session-stage--metrics .session-fs-chrome__actions {
+    flex: 0 1 auto;
+    min-width: 0;
+    margin-top: 0;
+    gap: 0.3rem;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-channel-badge,
+  .session-stage--fullscreen.session-stage--metrics .session-channel-badge {
+    flex: 0 1 auto;
+    max-width: 8.5rem;
+    padding: 0.22rem 0.4rem;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-fs-chrome__stop,
+  .session-stage--fullscreen.session-stage--metrics .session-fs-chrome__stop {
+    padding: 0.26rem 0.55rem;
+    font-size: 0.72rem;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-fs-panel[data-fs-panel='metrics'].is-active,
+  .session-stage--fullscreen.session-stage--metrics .session-fs-panel[data-fs-panel='metrics'].is-active {
+    flex: 1 1 0;
+    min-height: 0;
+    min-width: 0;
+    gap: 6px;
+  }
+
   .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero,
   .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero {
     position: relative;
+    container-type: size;
+    container-name: pacehero;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     width: 100%;
     max-width: 100%;
-    padding: 0.2rem 0.45rem 0.1rem;
+    height: 100%;
+    min-height: 0;
+    min-width: 0;
+    /* Top padding holds Pace/500m so the split can fill the card under it. */
+    padding: 1.15rem 0.5rem 0.2rem;
     gap: 0;
     box-sizing: border-box;
+    overflow: hidden;
   }
 
   .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__prog,
   .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__prog {
-    font-size: calc(clamp(9.4rem, 40vh, 13.6rem) * 0.471);
-    line-height: 0.95;
+    font-size: min(27cqh, 12cqi);
+    line-height: 0.9;
+    margin-top: 0;
+    max-width: 100%;
   }
 
   .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero > .session-metric__value,
@@ -2001,8 +2092,10 @@
 
   .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__pace-line .session-metric__value,
   .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__pace-line .session-metric__value {
-    font-size: calc(clamp(23rem, 104vh, 32rem) * 0.471);
-    line-height: 0.95;
+    /* Scale with the card: height first, width so the split stays inside the card. */
+    font-size: min(70cqh, 30cqi);
+    line-height: 0.88;
+    max-width: 100%;
   }
 
   .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__pace-suffix,
@@ -2026,20 +2119,26 @@
     padding-right: 68px;
   }
 
-  /* Landscape metrics: the same four boxes on one row, still equal.
-     Width tracks the short side so the squares stay inside the screen. */
+  /* 60px rails plus about 10px so the cards do not touch the rails or the screen edge. */
   .session-stage:fullscreen.session-stage--metrics .session-stage__inner,
   .session-stage--fullscreen.session-stage--metrics .session-stage__inner {
-    padding-left: 62px;
-    padding-right: 62px;
+    padding-left: 70px;
+    padding-right: 70px;
   }
 
   .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metrics-block--hero,
   .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metrics-block--hero {
-    gap: 0.15rem;
+    flex: 1 1 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(2.4rem, min(4.5rem, 28%));
+    align-items: stretch;
+    justify-content: stretch;
+    gap: 0.4rem;
     min-height: 0;
-    justify-content: flex-start;
+    min-width: 0;
     width: 100%;
+    max-width: 100%;
   }
 
   .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary,
@@ -2047,6 +2146,8 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
     width: 100%;
     max-width: 100%;
+    height: 100%;
+    min-height: 0;
     align-self: stretch;
     gap: 0.4rem;
   }
@@ -2055,24 +2156,54 @@
   .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary > .session-metric {
     aspect-ratio: auto;
     width: 100%;
-    height: 4.5rem;
+    height: 100%;
+    min-height: 0;
+    container-type: size;
   }
 
   .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__value,
   .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__value {
-    font-size: clamp(0.85rem, 20cqi, 1.55rem);
+    font-size: min(1.55rem, 42cqh, 24cqi);
+    line-height: 1;
   }
 
   .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__label,
   .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__label {
-    font-size: clamp(0.62rem, 13cqi, 0.8rem);
-    margin-top: 0.12rem;
+    font-size: min(0.8rem, 22cqh, 15cqi);
+    margin-top: 0.08rem;
+    line-height: 1.1;
+    white-space: nowrap;
   }
 
   .session-stage:fullscreen.session-stage--metrics .session-zone-badge,
   .session-stage--fullscreen.session-stage--metrics .session-zone-badge {
-    margin: 0 0 0.15rem;
-    padding: 0.2rem 0.55rem;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    width: auto;
+    max-width: 100%;
+    gap: 0.35rem;
+    margin: 0;
+    padding: 0.08rem 0.55rem;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-zone-badge__label,
+  .session-stage--fullscreen.session-stage--metrics .session-zone-badge__label {
+    font-size: 0.68rem;
+    line-height: 1.1;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-zone-badge__sub,
+  .session-stage--fullscreen.session-stage--metrics .session-zone-badge__sub {
+    min-height: 0;
+    font-size: 0.58rem;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-zone-badge__sub:empty,
+  .session-stage--fullscreen.session-stage--metrics .session-zone-badge__sub:empty {
+    display: none;
   }
 
   .spectrum-rail {
