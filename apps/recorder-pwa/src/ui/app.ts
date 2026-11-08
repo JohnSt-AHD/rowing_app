@@ -104,6 +104,7 @@ import {
   STROKE_AVG_WINDOW_MS,
   splitSecFromMps,
   splitSecToT,
+  strokeRateZoneColor,
   updateSpectrumRail,
 } from './session-display';
 import { StrokePeriodSpeedAvg } from '../lib/stroke-speed-smooth';
@@ -867,6 +868,9 @@ export function mountApp(root: HTMLElement): void {
         panel.getAttribute('data-fs-panel') === next,
       );
     });
+    root
+      .querySelector('[data-session-stage]')
+      ?.classList.toggle('session-stage--metrics', next === 'metrics');
     if (next !== 'map') {
       stopOtherBoatsPolling();
       clearOtherBoatMarkers();
@@ -982,6 +986,26 @@ export function mountApp(root: HTMLElement): void {
       const stats = controller?.getStats();
       skipWorkoutRest(Date.now(), stats?.distanceM ?? 0);
     });
+  }
+
+  /** Zone colour on the metrics-tab pace, HR, and stroke-rate cards. Time and distance stay neutral. */
+  function paintMetricZoneBorders(colors: {
+    pace: string | null;
+    hr: string | null;
+    spm: string | null;
+  }): void {
+    const paint = (selectors: string[], color: string | null) => {
+      const scoped = selectors
+        .map((sel) => `.session-fs-panel[data-fs-panel="metrics"] ${sel}`)
+        .join(', ');
+      root.querySelectorAll<HTMLElement>(scoped).forEach((el) => {
+        if (color) el.style.borderColor = color;
+        else el.style.removeProperty('border-color');
+      });
+    };
+    paint(['.session-metric--pace-hero', '.session-metric--pace'], colors.pace);
+    paint(['.session-metric--hr'], colors.hr);
+    paint(['.session-metric--spm'], colors.spm);
   }
 
   function setHrRail(bpm: number | null | undefined): void {
@@ -1105,6 +1129,11 @@ export function mountApp(root: HTMLElement): void {
         fillColor: hrT != null && hr != null ? hrBarColor(hr) : undefined,
       },
     );
+    paintMetricZoneBorders({
+      pace: paceProgPct != null ? speedChartColorForPrognostic(paceProgPct) : null,
+      hr: hr != null && hr > 0 ? hrBarColor(hr) : null,
+      spm: liveSpm != null && liveSpm > 0 ? strokeRateZoneColor(liveSpm) : null,
+    });
 
     const capsizeEl = root.querySelector('[data-hud-capsize]');
     if (capsizeEl) {
@@ -1537,6 +1566,9 @@ export function mountApp(root: HTMLElement): void {
           variant === 'hero'
             ? `<div class="session-metric session-metric--pace-hero">
                 <span class="session-metric__value" data-hud-split>—</span>
+                <span class="session-metric__pace-line">
+                  <span class="session-metric__value" data-hud-split>—</span><span class="session-metric__pace-suffix">Pace/500m</span>
+                </span>
                 <span class="session-metric__prog" data-hud-prog>—</span>
                 <span class="session-metric__label">Pace /500m <span class="session-metric__sub">10s avg</span></span>
               </div>
@@ -1755,7 +1787,7 @@ export function mountApp(root: HTMLElement): void {
 
   function wrapRecordingStage(body: string): string {
     return `
-      <div class="session-stage session-stage--fullscreen" data-session-stage>
+      <div class="session-stage session-stage--fullscreen${fsTab === 'metrics' ? ' session-stage--metrics' : ''}" data-session-stage>
         ${spectrumRailsHtml()}
         <div class="session-stage__inner">${body}</div>
       </div>

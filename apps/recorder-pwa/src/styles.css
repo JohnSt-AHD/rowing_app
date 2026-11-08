@@ -1053,11 +1053,14 @@
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  justify-content: flex-end;
 }
 
 .session-fs-chrome__stop {
   display: inline-flex;
+  flex: 0 0 auto;
   font-size: 0.75rem;
   padding: 0.35rem 0.75rem;
   white-space: nowrap;
@@ -1066,9 +1069,10 @@
 .session-channel-badge {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 0.05rem;
-  min-width: 7.5rem;
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: 11rem;
   padding: 0.35rem 0.55rem;
   border-radius: 10px;
@@ -1077,9 +1081,15 @@
   backdrop-filter: blur(6px);
   color: #e8f4fc;
   pointer-events: none;
+  overflow: hidden;
 }
 
 .session-channel-badge__label {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.02em;
@@ -1087,6 +1097,11 @@
 }
 
 .session-channel-badge__sub {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.58rem;
   font-weight: 650;
   color: rgba(248, 250, 252, 0.72);
@@ -1203,10 +1218,33 @@
   color: var(--ahd-muted);
 }
 
+.session-metric__pace-line {
+  display: none;
+}
+
+/* Portrait metrics: two rows of two equal squares under the pace tile. */
 .session-live-hud__metrics--secondary {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  width: min(100%, 32rem);
-  gap: 0.5rem 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  max-width: 100%;
+  gap: 0.45rem;
+  align-items: start;
+  justify-items: stretch;
+}
+
+.session-live-hud__metrics--secondary > .session-metric {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 0;
+  container-type: inline-size;
+  overflow: hidden;
+  padding: 0.35rem 0.28rem 0.4rem;
 }
 
 .session-fs-panel--split {
@@ -1409,6 +1447,49 @@
     env(safe-area-inset-left);
 }
 
+/* Metrics view: CrewSight stage blue behind the white tiles.
+   Graph and map keep the same navy stage. Zone rails are not restyled here. */
+.session-stage:fullscreen.session-stage--metrics,
+.session-stage--fullscreen.session-stage--metrics {
+  background: var(--ahd-bg, #0a1628);
+  height: 100dvh;
+  min-height: 100dvh;
+  max-height: 100dvh;
+}
+
+.session-stage--metrics .session-live-hud {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* Idle flow-pattern chip on the metrics view: solid white, dark text.
+   Lane colours (correct / no-go / wrong) stay. Graph and map keep the dark chip. */
+.session-stage--metrics .session-channel-badge[data-channel='unknown'],
+.session-stage--metrics .session-channel-badge[data-channel='no_lanes'] {
+  background: #ffffff;
+  border-color: rgba(11, 31, 58, 0.16);
+  color: #0b1f3a;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.session-stage--metrics .session-channel-badge[data-channel='unknown'] .session-channel-badge__sub,
+.session-stage--metrics .session-channel-badge[data-channel='no_lanes'] .session-channel-badge__sub {
+  color: #1e3a5f;
+}
+
+/* Stop sits on white in the metrics view. The translucent danger fill
+   and pale lettering disappear on white, so the button is solid red. */
+.session-stage:fullscreen.session-stage--metrics .session-fs-chrome__stop,
+.session-stage--fullscreen.session-stage--metrics .session-fs-chrome__stop {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
+  box-shadow: none;
+}
+
 /* Fullscreen: triple-width pace/HR spectrum rails */
 .session-stage:fullscreen .spectrum-rail,
 .session-stage--fullscreen .spectrum-rail {
@@ -1439,13 +1520,13 @@
   padding: 0.14rem 0.16rem;
 }
 
-/* Metrics tab: solid white tiles, dark text — readable in sun on the navy stage. */
+/* Metrics tab: solid white tiles, dark text, on the CrewSight blue stage. */
 .session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric,
 .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric {
   background: #ffffff;
-  border: 1px solid rgba(11, 31, 58, 0.14);
+  border: 3px solid rgba(11, 31, 58, 0.28);
   border-radius: 12px;
-  padding: 0.4rem 0.5rem 0.45rem;
+  padding: 0.45rem 0.55rem 0.5rem;
 }
 
 .session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric__value,
@@ -1468,6 +1549,47 @@
 .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__sub {
   color: #1e3a5f;
   opacity: 1;
+}
+
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero {
+  padding: 0.45rem 1rem 0.6rem;
+  width: min(100%, 18rem);
+  box-sizing: border-box;
+}
+
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__label,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__label {
+  font-size: 1.15rem;
+}
+
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__prog,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__prog {
+  font-size: clamp(2.4rem, 10vw, 3.6rem);
+}
+
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary > .session-metric,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary > .session-metric {
+  padding: 0.32rem 0.18rem 0.38rem;
+}
+
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__value,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__value {
+  /* Sized from the square so Time and Distance stay inside the box. */
+  font-size: clamp(1.65rem, 23cqi, 3.4rem);
+  line-height: 1;
+  letter-spacing: -0.03em;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.session-stage .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__label,
+.session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__label {
+  font-size: clamp(0.95rem, 16cqi, 1.2rem);
+  letter-spacing: 0.03em;
+  margin-top: 0.22rem;
+  max-width: 100%;
+  line-height: 1.15;
 }
 
 .session-stage:fullscreen .hub-topbar,
@@ -1527,13 +1649,31 @@
   margin-bottom: 0.5rem;
   flex-wrap: nowrap;
   flex-shrink: 0;
+  min-width: 0;
 }
 
-/* Portrait: metrics-only — hide graph/map tab switcher */
+.session-stage:fullscreen .session-fs-timer,
+.session-stage--fullscreen .session-fs-timer {
+  flex-shrink: 0;
+}
+
+/* Portrait: metrics-only — hide graph/map tab switcher.
+   Sit the cards against the rails so the squares use the width. */
 @media (orientation: portrait) {
   .session-stage:fullscreen .session-fs-tabs,
   .session-stage--fullscreen .session-fs-tabs {
     display: none;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-stage__inner,
+  .session-stage--fullscreen.session-stage--metrics .session-stage__inner {
+    padding-left: 50px;
+    padding-right: 50px;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-live-hud,
+  .session-stage--fullscreen.session-stage--metrics .session-live-hud {
+    padding: 0.25rem 0 0.35rem;
   }
 }
 
@@ -1564,7 +1704,7 @@
 
 .session-stage:fullscreen .session-metric--pace-hero .session-metric__value,
 .session-stage--fullscreen .session-metric--pace-hero .session-metric__value {
-  font-size: clamp(3.5rem, 16vw, 7rem);
+  font-size: clamp(5.6rem, 28vw, 9rem);
 }
 
 .session-stage:fullscreen .session-live-hud__regatta-text,
@@ -1586,6 +1726,12 @@
 }
 
 @media (orientation: landscape) {
+  .session-stage--fullscreen.session-stage--metrics {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+  }
+
   .session-stage:fullscreen .session-live-hud,
   .session-stage--fullscreen .session-live-hud {
     position: relative;
@@ -1658,6 +1804,27 @@
   .session-stage:fullscreen .session-fs-tab[aria-selected='true'],
   .session-stage--fullscreen .session-fs-tab[aria-selected='true'] {
     color: #0a1628;
+    background: #00e5ff;
+    border-color: transparent;
+  }
+
+  /* Metrics view: solid white tab bar and dark labels. Graph and map keep the translucent bar. */
+  .session-stage:fullscreen.session-stage--metrics .session-fs-tabs,
+  .session-stage--fullscreen.session-stage--metrics .session-fs-tabs {
+    background: #ffffff;
+    border: 1px solid rgba(11, 31, 58, 0.16);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-fs-tab,
+  .session-stage--fullscreen.session-stage--metrics .session-fs-tab {
+    color: #1e3a5f;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-fs-tab[aria-selected='true'],
+  .session-stage--fullscreen.session-stage--metrics .session-fs-tab[aria-selected='true'] {
+    color: #0b1f3a;
     background: #00e5ff;
     border-color: transparent;
   }
@@ -1796,8 +1963,62 @@
 
   .session-stage:fullscreen .session-metric--pace-hero .session-metric__value,
   .session-stage--fullscreen .session-metric--pace-hero .session-metric__value {
-    font-size: clamp(2.5rem, 14vh, 5rem);
+    font-size: clamp(5.75rem, 26vh, 8rem);
   }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    padding: 0.2rem 0.45rem 0.1rem;
+    gap: 0;
+    box-sizing: border-box;
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__prog,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero .session-metric__prog {
+    font-size: calc(clamp(9.4rem, 40vh, 13.6rem) * 0.471);
+    line-height: 0.95;
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero > .session-metric__value,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero > .session-metric__value,
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero > .session-metric__label,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric--pace-hero > .session-metric__label {
+    display: none;
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__pace-line,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__pace-line {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    white-space: nowrap;
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__pace-line .session-metric__value,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__pace-line .session-metric__value {
+    font-size: calc(clamp(23rem, 104vh, 32rem) * 0.471);
+    line-height: 0.95;
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__pace-suffix,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metric__pace-suffix {
+    position: absolute;
+    top: 0.28rem;
+    right: 0.45rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    line-height: 1;
+    color: #1e3a5f;
+    -webkit-text-fill-color: #1e3a5f;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+  }
+
 
   .session-stage:fullscreen .session-stage__inner,
   .session-stage--fullscreen .session-stage__inner {
@@ -1805,10 +2026,53 @@
     padding-right: 68px;
   }
 
-  .session-stage:fullscreen .session-live-hud__metrics--secondary,
-  .session-stage--fullscreen .session-live-hud__metrics--secondary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    max-width: min(720px, 70vw);
+  /* Landscape metrics: the same four boxes on one row, still equal.
+     Width tracks the short side so the squares stay inside the screen. */
+  .session-stage:fullscreen.session-stage--metrics .session-stage__inner,
+  .session-stage--fullscreen.session-stage--metrics .session-stage__inner {
+    padding-left: 62px;
+    padding-right: 62px;
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metrics-block--hero,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-metrics-block--hero {
+    gap: 0.15rem;
+    min-height: 0;
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+    max-width: 100%;
+    align-self: stretch;
+    gap: 0.4rem;
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary > .session-metric,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary > .session-metric {
+    aspect-ratio: auto;
+    width: 100%;
+    height: 4.5rem;
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__value,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__value {
+    font-size: clamp(0.85rem, 20cqi, 1.55rem);
+  }
+
+  .session-stage:fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__label,
+  .session-stage--fullscreen .session-fs-panel[data-fs-panel='metrics'] .session-live-hud__metrics--secondary .session-metric__label {
+    font-size: clamp(0.62rem, 13cqi, 0.8rem);
+    margin-top: 0.12rem;
+  }
+
+  .session-stage:fullscreen.session-stage--metrics .session-zone-badge,
+  .session-stage--fullscreen.session-stage--metrics .session-zone-badge {
+    margin: 0 0 0.15rem;
+    padding: 0.2rem 0.55rem;
   }
 
   .spectrum-rail {

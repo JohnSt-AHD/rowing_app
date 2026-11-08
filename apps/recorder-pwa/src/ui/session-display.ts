@@ -61,6 +61,22 @@ export function hrBarColor(bpm: number): string {
   return HR_BAR_COLORS[Math.min(n - 1, Math.floor(t * n))];
 }
 
+/**
+ * Stroke-rate box border. Same six hexes as HR_BAR_COLORS.
+ * The shown rate is a whole number, so the band follows Math.round:
+ * ≤20 cyan, 21–25 green, 26–30 yellow, 31–35 orange, 36–40 red, ≥41 purple.
+ * 20 stays cyan and 41 is purple, so those integers are not left between bands.
+ */
+export function strokeRateZoneColor(spm: number): string {
+  const n = Math.round(spm);
+  if (n <= 20) return HR_BAR_COLORS[0];
+  if (n <= 25) return HR_BAR_COLORS[1];
+  if (n <= 30) return HR_BAR_COLORS[2];
+  if (n <= 35) return HR_BAR_COLORS[3];
+  if (n <= 40) return HR_BAR_COLORS[4];
+  return HR_BAR_COLORS[5];
+}
+
 /** Vertical marker: 0% top = fast, 100% bottom = slow. */
 export function railPositionFromT(t: number): number {
   return (1 - clamp01(t)) * 100;
